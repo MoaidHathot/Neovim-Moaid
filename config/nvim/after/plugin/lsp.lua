@@ -1,8 +1,10 @@
-local lsp = require('lsp-zero').preset({})
+local zero = require('lsp-zero')
+local lsp = zero.preset({})
+local cmp_action = zero.cmp_action()
 
 local signature = require('lsp_signature')
 lsp.on_attach(function(client, bufnr)
-	lsp.default_keymaps({ buffer = bufnr })
+	lsp.default_keymaps({ buffer = bufnr, preserve_mappings = false })
 	lsp.buffer_autoformat()
 
 	vim.keymap.set({ 'n', 'x' }, '<leader>lf', function()
@@ -15,6 +17,10 @@ lsp.on_attach(function(client, bufnr)
 			border = 'rounded'
 		}
 	}, bufnr)
+
+	if client.server_capabilities.documentSymbolProvider then
+		require('nvim-navic').attach(client, bufnr)
+	end
 
 	-- vim.keymap.set('n', '<leader>le', "<cmd>Telescope lsp_references<CR>", {buffer = true})
 end)
@@ -29,6 +35,7 @@ vim.keymap.set({ 'n', }, 'gs', function()
 	end,
 	{ silent = true, desc = 'toggle signature' })
 
+-- vim.keymap.set('n', '<leader>la', vim.lsp.buf.code_action())
 
 -- (Optional) Configure lua language server for neovim
 local lspconfig = require('lspconfig')
@@ -55,6 +62,10 @@ local cmp_mappings = lsp.defaults.cmp_mappings({
 })
 
 cmp.setup {
+	mapping = {
+		['<Tab'] = cmp_action.tab_complete(),
+		['<S-Tab>'] = cmp_action.select_prev_or_fallback(),
+	}
 	-- sources = {
 	-- 	name = 'nvim_lsp'
 	-- }

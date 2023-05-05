@@ -11,7 +11,7 @@ which.register({
 		name = "Search"
 	},
 	l = {
-		name = "LSP"
+		name = "LSP",
 	},
 	h = "Harpoon Togle",
 	a = "Harpoon Add",
