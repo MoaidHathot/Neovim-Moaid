@@ -93,6 +93,26 @@ cmp.setup {
 	-- }
 }
 
+cmp.setup.cmdline('/', {
+	mapping = cmp.mapping.preset.cmdline(),
+	sources = { { name = 'buffer' } }
+})
+
+cmp.setup.cmdline(':', {
+	mapping = cmp.mapping.preset.cmdline(),
+	sources = cmp.config.sources({
+			{ name = 'path' }
+		},
+		{
+			{
+				name = 'cmdline',
+				option = {
+					ignore_cmds = { 'Main', '!' }
+				}
+			}
+		})
+})
+
 vim.api.nvim_set_keymap('i', "<A-s>", "<cmd>LspOverloadsSignature<CR>", { noremap = true, silent = true })
 vim.api.nvim_set_keymap('n', "<A-s>", "<cmd>LspOverloadsSignature<CR>", { noremap = true, silent = true })
 
