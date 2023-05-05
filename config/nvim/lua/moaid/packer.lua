@@ -48,6 +48,9 @@ return require('packer').startup(function(use)
 		}
 	}
 
+	use { 'hrsh7th/cmp-path' }
+	use { 'hrsh7th/cmp-buffer' }
+
 	use { 'neovim/nvim-lspconfig' }
 
 	use { "ray-x/lsp_signature.nvim" }
@@ -61,6 +64,10 @@ return require('packer').startup(function(use)
 		},
 	}
 
+	use { 'mfussenegger/nvim-dap' }
+	use { "rcarriga/nvim-dap-ui", requires = { "mfussenegger/nvim-dap" } }
+	use "folke/neodev.nvim"
+
 	use('tpope/vim-surround')
 
 	use('tpope/vim-repeat')
@@ -69,7 +76,6 @@ return require('packer').startup(function(use)
 		'phaazon/hop.nvim',
 		branch = 'v2',
 	}
-
 
 	use {
 		'lewis6991/gitsigns.nvim',
@@ -127,4 +133,14 @@ return require('packer').startup(function(use)
 	}
 
 	use { 'RRethy/vim-illuminate' }
+	use "lukas-reineke/indent-blankline.nvim"
+	use 'tamago324/nlsp-settings.nvim'
+	use { 'andymass/vim-matchup',
+		setup = function()
+			vim.g.matchup_matchparen_offscreen = { method = "popup" }
+		end }
+
+	use 'karb94/neoscroll.nvim'
+	use { 'norcalli/nvim-colorizer.lua' }
+	use 'HiPhish/nvim-ts-rainbow2'
 end)

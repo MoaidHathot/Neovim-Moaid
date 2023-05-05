@@ -1,6 +1,7 @@
 local zero = require('lsp-zero')
 local lsp = zero.preset({})
 local cmp_action = zero.cmp_action()
+-- local overloads = require('lsp-overloads')
 
 local signature = require('lsp_signature')
 lsp.on_attach(function(client, bufnr)
@@ -22,6 +23,10 @@ lsp.on_attach(function(client, bufnr)
 		require('nvim-navic').attach(client, bufnr)
 	end
 
+	-- if client.server_capabilities.signatureHelpProvider then
+	-- 	overloads.setup(client, {})
+	-- end
+
 	-- vim.keymap.set('n', '<leader>le', "<cmd>Telescope lsp_references<CR>", {buffer = true})
 end)
 
@@ -38,6 +43,18 @@ vim.keymap.set({ 'n', }, 'gs', function()
 -- vim.keymap.set('n', '<leader>la', vim.lsp.buf.code_action())
 
 -- (Optional) Configure lua language server for neovim
+
+local neodev = require('neodev')
+
+neodev.setup({
+	library = {
+		plugins = {
+			'nvim-dap-ui',
+			types = true
+		}
+	}
+})
+
 local lspconfig = require('lspconfig')
 lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
 
@@ -65,12 +82,19 @@ cmp.setup {
 	mapping = {
 		['<Tab'] = cmp_action.tab_complete(),
 		['<S-Tab>'] = cmp_action.select_prev_or_fallback(),
+	},
+	sources = {
+		{ name = 'path' },
+		-- { name = 'buffer' },
+		{ name = 'nvim_lsp' },
 	}
 	-- sources = {
 	-- 	name = 'nvim_lsp'
 	-- }
-
 }
+
+vim.api.nvim_set_keymap('i', "<A-s>", "<cmd>LspOverloadsSignature<CR>", { noremap = true, silent = true })
+vim.api.nvim_set_keymap('n', "<A-s>", "<cmd>LspOverloadsSignature<CR>", { noremap = true, silent = true })
 
 -- local capabilities = require('cmp_nvim_lsp').default_capabilities()
 -- lspconfig['Omnisharp'].setup {
@@ -85,3 +109,11 @@ lsp.setup_nvim_cmp({
 --lsp.set_preferences({ sign_icons = {} })
 
 lsp.setup()
+
+-- local null_ls = require('null-ls')
+--
+-- null_ls.setup({
+-- 	sources = {
+--
+-- 	}
+-- })
