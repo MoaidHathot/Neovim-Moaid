@@ -43,6 +43,8 @@ vim.keymap.set('n', "<A-k>", ":m '<-2<CR>gv-gv", { silent = true })
 vim.keymap.set('v', '>', ">gv")
 vim.keymap.set('v', '<', "<gv")
 
+vim.keymap.set('i', "<C-k>", 'k')
+
 -- vim.keymap.set('n', '<leader>c', '"+y<CR>')
 -- vim.keymap.set('i', '<leader>c', '"+y<CR>')
 -- vim.keymap.set('v', '<leader>c', '"+y<CR>')

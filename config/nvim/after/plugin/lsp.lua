@@ -1,11 +1,17 @@
 local zero = require('lsp-zero')
-local lsp = zero.preset({})
+local lsp = zero.preset('recommended')
+-- local lsp = zero.preset({
+-- 	name = 'recommended',
+-- 	set_lsp_keymaps = true,
+-- 	manage_nvim_cmp = true,
+-- 	suggest_lsp_servers = true
+-- })
 local cmp_action = zero.cmp_action()
--- local overloads = require('lsp-overloads')
 
 local signature = require('lsp_signature')
 lsp.on_attach(function(client, bufnr)
 	lsp.default_keymaps({ buffer = bufnr, preserve_mappings = false })
+	-- lsp.default_keymaps({ buffer = bufnr, preserve_mappings = true })
 	lsp.buffer_autoformat()
 
 	vim.keymap.set({ 'n', 'x' }, '<leader>lf', function()
@@ -16,29 +22,47 @@ lsp.on_attach(function(client, bufnr)
 		bind = true,
 		handler_opts = {
 			border = 'rounded'
-		}
+		},
+		max_width = 130,
+		wrap = true,
 	}, bufnr)
 
-	if client.server_capabilities.documentSymbolProvider then
-		require('nvim-navic').attach(client, bufnr)
-	end
+	-- if client.server_capabilities.documentSymbolProvider then
+	-- 	require('nvim-navic').attach(client, bufnr)
+	-- end
 
 	-- if client.server_capabilities.signatureHelpProvider then
 	-- 	overloads.setup(client, {})
 	-- end
 
 	-- vim.keymap.set('n', '<leader>le', "<cmd>Telescope lsp_references<CR>", {buffer = true})
+	-- bind('n', '<leader>r', '<cmd> lua vim.lsp.buf.rename()<cr>')
 end)
+
+signature.setup {
+	bind = true,
+	handler_opts = {
+		border = 'rounded'
+	},
+	max_width = 130,
+	wrap = true,
+}
+-- local logger = require()
 
 vim.keymap.set({ 'n' }, '<C-k>', function()
 		signature.toggle_float_win()
 	end,
 	{ silent = true, desc = 'toggle signature' })
 
-vim.keymap.set({ 'n', }, 'gs', function()
-		vim.lsp.buf.signature_help()
-	end,
-	{ silent = true, desc = 'toggle signature' })
+-- vim.keymap.set({ 'n' }, '<C-l>', function()
+-- 		signature.signature_help()
+-- 	end,
+-- 	{ silent = true, desc = 'toggle signature' })
+--
+-- vim.keymap.set({ 'n', }, 'gs', function()
+-- 		vim.lsp.buf.signature_help()
+-- 	end,
+-- 	{ silent = true, desc = 'toggle signature' })
 
 -- vim.keymap.set('n', '<leader>la', vim.lsp.buf.code_action())
 
@@ -61,8 +85,8 @@ lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
 lsp.ensure_installed({
 	--'tsserver',
 	--'eslint',
-	--'Omnisharp',
-	--'sumneko_lua',
+	-- 'Omnisharp',
+	-- 'sumneko_lua',
 	-- 'rust_analyzer'
 })
 
@@ -72,11 +96,42 @@ local cmp_select = { behavior = cmp.SelectBehavior.Select }
 local cmp_mappings = lsp.defaults.cmp_mappings({
 	['<C-p>'] = cmp.mapping.select_prev_item(cmp_select),
 	['<C-n>'] = cmp.mapping.select_next_item(cmp_select),
+	-- ['<C-d>'] = cmp.mapping.scroll_docs(-4),
+	-- ['<C-f>'] = cmp.mapping.scroll_docs(4),
 	['<C-y>'] = cmp.mapping.confirm({ select = true }),
 	['<CR>'] = cmp.mapping.confirm({ select = true }),
 	['<Tab>'] = cmp.mapping.confirm({ select = true }),
 	['<C-space>'] = cmp.mapping.complete(),
 })
+
+
+-- vim.api.nvim_set_keymap('i', "<A-s>", "<cmd>LspOverloadsSignature<CR>", { noremap = true, silent = true })
+-- vim.api.nvim_set_keymap('n', "<A-s>", "<cmd>LspOverloadsSignature<CR>", { noremap = true, silent = true })
+-- vim.api.nvim_set_keymap('i', "<leader>zz", "<cmd>LspOverloadsSignature<CR>", { noremap = true, silent = true })
+-- vim.api.nvim_set_keymap('n', "<leader>zz", "<cmd>LspOverloadsSignature<CR>", { noremap = true, silent = true })
+--
+-- local capabilities = require('cmp_nvim_lsp').default_capabilities()
+-- lspconfig['Omnisharp'].setup {
+-- 	capabilities = capabilities
+-- }
+
+
+lsp.setup_nvim_cmp({
+	mapping = cmp_mappings
+})
+
+--lsp.set_preferences({ sign_icons = {} })
+
+lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
+lsp.setup()
+
+-- local null_ls = require('null-ls')
+--
+-- null_ls.setup({
+-- 	sources = {
+--
+-- 	}
+-- })
 
 cmp.setup {
 	mapping = {
@@ -87,6 +142,8 @@ cmp.setup {
 		{ name = 'path' },
 		-- { name = 'buffer' },
 		{ name = 'nvim_lsp' },
+		{ name = 'nvim_lua' },
+		{ name = 'nvim_lsp_signature_help' }
 	}
 	-- sources = {
 	-- 	name = 'nvim_lsp'
@@ -110,30 +167,6 @@ cmp.setup.cmdline(':', {
 					ignore_cmds = { 'Main', '!' }
 				}
 			}
-		})
+		}
+	)
 })
-
-vim.api.nvim_set_keymap('i', "<A-s>", "<cmd>LspOverloadsSignature<CR>", { noremap = true, silent = true })
-vim.api.nvim_set_keymap('n', "<A-s>", "<cmd>LspOverloadsSignature<CR>", { noremap = true, silent = true })
-
--- local capabilities = require('cmp_nvim_lsp').default_capabilities()
--- lspconfig['Omnisharp'].setup {
--- 	capabilities = capabilities
--- }
-
-
-lsp.setup_nvim_cmp({
-	mapping = cmp_mappings
-})
-
---lsp.set_preferences({ sign_icons = {} })
-
-lsp.setup()
-
--- local null_ls = require('null-ls')
---
--- null_ls.setup({
--- 	sources = {
---
--- 	}
--- })

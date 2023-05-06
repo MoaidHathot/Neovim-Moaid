@@ -51,6 +51,8 @@ return require('packer').startup(function(use)
 	use { 'hrsh7th/cmp-path' }
 	use { 'hrsh7th/cmp-buffer' }
 	use { 'hrsh7th/cmp-cmdline' }
+	use { 'hrsh7th/cmp-nvim-lua' }
+	use { 'hrsh7th/cmp-nvim-lsp-signature-help' }
 
 	use { 'neovim/nvim-lspconfig' }
 
@@ -137,7 +139,6 @@ return require('packer').startup(function(use)
 
 	use { 'RRethy/vim-illuminate' }
 	use "lukas-reineke/indent-blankline.nvim"
-	use 'tamago324/nlsp-settings.nvim'
 	use { 'andymass/vim-matchup',
 		setup = function()
 			vim.g.matchup_matchparen_offscreen = { method = "popup" }
