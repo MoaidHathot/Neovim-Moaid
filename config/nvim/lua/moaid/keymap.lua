@@ -14,10 +14,10 @@ vim.keymap.set('n', '<C-backspace>', "cb")
 vim.keymap.set('n', '<leader>q', ':q!<CR>:q!<CR>:q!<CR>')
 
 -- Split navigation and management
-vim.keymap.set('n', '<leader>bb', ':bprev<CR>')
-vim.keymap.set('n', '<leader>bn', ':bnext<CR>')
-vim.keymap.set('n', '<leader>bd', ':bprev<CR>:bdelete #<CR>')
+vim.keymap.set('n', '<leader>bb', ':bprev<CR>', { silent = true })
+vim.keymap.set('n', '<leader>bn', ':bnext<CR>', { silent = true })
 -- vim.keymap.set('n', '<leader>c', ':bprev<CR>:bdelete #<CR>')
+vim.keymap.set('n', '<leader>bd', ':bprev<CR>:bdelete #<CR>')
 
 -- Move between splits
 vim.keymap.set('n', '<C-h>', ':wincmd h<CR>', { silent = true })

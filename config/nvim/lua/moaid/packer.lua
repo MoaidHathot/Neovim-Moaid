@@ -13,10 +13,6 @@ return require('packer').startup(function(use)
 
 	use({
 		'rose-pine/neovim',
-		as = 'rose-pine',
-		config = function()
-			vim.cmd('colorscheme rose-pine')
-		end
 	})
 
 
@@ -48,11 +44,14 @@ return require('packer').startup(function(use)
 		}
 	}
 
+	use { 'Issafalcon/lsp-overloads.nvim' }
+
 	use { 'hrsh7th/cmp-path' }
 	use { 'hrsh7th/cmp-buffer' }
 	use { 'hrsh7th/cmp-cmdline' }
 	use { 'hrsh7th/cmp-nvim-lua' }
 	use { 'hrsh7th/cmp-nvim-lsp-signature-help' }
+	use { 'saadparwaiz1/cmp_luasnip' }
 
 	use { 'neovim/nvim-lspconfig' }
 
@@ -83,10 +82,7 @@ return require('packer').startup(function(use)
 	}
 
 	use {
-		'lewis6991/gitsigns.nvim',
-		config = function()
-			require('gitsigns').setup()
-		end
+		'lewis6991/gitsigns.nvim'
 	}
 
 	use {
@@ -132,11 +128,6 @@ return require('packer').startup(function(use)
 
 	use { 'rcarriga/nvim-notify' }
 
-	use {
-		"SmiteshP/nvim-navic",
-		requires = "neovim/nvim-lspconfig"
-	}
-
 	use { 'RRethy/vim-illuminate' }
 	use "lukas-reineke/indent-blankline.nvim"
 	use { 'andymass/vim-matchup',
@@ -147,4 +138,20 @@ return require('packer').startup(function(use)
 	use 'karb94/neoscroll.nvim'
 	use { 'norcalli/nvim-colorizer.lua' }
 	use 'HiPhish/nvim-ts-rainbow2'
+	use 'lvimuser/lsp-inlayhints.nvim'
+	use { 'L3MON4D3/LuaSnip' }
+	use "rafamadriz/friendly-snippets"
+
+	use "rebelot/kanagawa.nvim"
+	use 'folke/tokyonight.nvim'
+
+	use({
+		"utilyre/barbecue.nvim",
+		tag = "*",
+		requires = {
+			"SmiteshP/nvim-navic",
+			"nvim-tree/nvim-web-devicons", -- optional dependency
+		},
+		after = "nvim-web-devicons", -- keep this if you're using NvChad
+	})
 end)

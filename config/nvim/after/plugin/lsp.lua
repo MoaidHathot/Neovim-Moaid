@@ -9,6 +9,10 @@ local lsp = zero.preset('recommended')
 local cmp_action = zero.cmp_action()
 
 local signature = require('lsp_signature')
+local overloads = require('lsp-overloads')
+local hints = require('lsp-inlayhints')
+-- local navic = require('nvim-navic')
+
 lsp.on_attach(function(client, bufnr)
 	lsp.default_keymaps({ buffer = bufnr, preserve_mappings = false })
 	-- lsp.default_keymaps({ buffer = bufnr, preserve_mappings = true })
@@ -18,26 +22,34 @@ lsp.on_attach(function(client, bufnr)
 		vim.lsp.buf.format({ async = false, timeout_ms = 10000 })
 	end)
 
-	signature.on_attach({
-		bind = true,
-		handler_opts = {
-			border = 'rounded'
-		},
-		max_width = 130,
-		wrap = true,
-	}, bufnr)
+	-- signature.on_attach({
+	-- 	bind = true,
+	-- 	handler_opts = {
+	-- 		border = 'rounded'
+	-- 	},
+	-- 	max_width = 130,
+	-- 	wrap = true,
+	-- }, bufnr)
+	--
+
 
 	-- if client.server_capabilities.documentSymbolProvider then
-	-- 	require('nvim-navic').attach(client, bufnr)
+	-- 	-- require('nvim-navic').attach(client, bufnr)
+	-- 	navic.attach(client, bufnr)
 	-- end
 
-	-- if client.server_capabilities.signatureHelpProvider then
-	-- 	overloads.setup(client, {})
-	-- end
+	if client.server_capabilities.signatureHelpProvider then
+		overloads.setup(client, {})
+	end
 
+	hints.on_attach(client, bufnr)
 	-- vim.keymap.set('n', '<leader>le', "<cmd>Telescope lsp_references<CR>", {buffer = true})
 	-- bind('n', '<leader>r', '<cmd> lua vim.lsp.buf.rename()<cr>')
 end)
+
+hints.setup()
+
+vim.keymap.set('n', '<leader>lh', "<cmd>lua require('lsp-inlayhints').toggle()<CR>")
 
 signature.setup {
 	bind = true,
@@ -46,23 +58,23 @@ signature.setup {
 	},
 	max_width = 130,
 	wrap = true,
+	floating_window = false,
 }
--- local logger = require()
 
-vim.keymap.set({ 'n' }, '<C-k>', function()
-		signature.toggle_float_win()
-	end,
-	{ silent = true, desc = 'toggle signature' })
+-- vim.keymap.set({ 'n' }, '<C-k>', function()
+-- 		signature.toggle_float_win()
+-- 	end,
+-- 	{ silent = true, desc = 'toggle signature' })
 
 -- vim.keymap.set({ 'n' }, '<C-l>', function()
 -- 		signature.signature_help()
 -- 	end,
 -- 	{ silent = true, desc = 'toggle signature' })
 --
--- vim.keymap.set({ 'n', }, 'gs', function()
--- 		vim.lsp.buf.signature_help()
--- 	end,
--- 	{ silent = true, desc = 'toggle signature' })
+vim.keymap.set({ 'n', }, 'gs', function()
+		vim.lsp.buf.signature_help()
+	end,
+	{ silent = true, desc = 'toggle signature' })
 
 -- vim.keymap.set('n', '<leader>la', vim.lsp.buf.code_action())
 
@@ -132,6 +144,8 @@ lsp.setup()
 --
 -- 	}
 -- })
+--
+local luasnip = require('luasnip')
 
 cmp.setup {
 	mapping = {
@@ -143,7 +157,13 @@ cmp.setup {
 		-- { name = 'buffer' },
 		{ name = 'nvim_lsp' },
 		{ name = 'nvim_lua' },
-		{ name = 'nvim_lsp_signature_help' }
+		{ name = 'luasnip' },
+		-- { name = 'nvim_lsp_signature_help' }
+	},
+	snippet = {
+		expand = function(args)
+			luasnip.lsp_expand(args.body)
+		end
 	}
 	-- sources = {
 	-- 	name = 'nvim_lsp'
