@@ -24,5 +24,8 @@ end
 --
 -- ColorMyPencils('tokyonight-night')
 -- ColorMyPencils('tokyonight-storm')
-ColorMyPencils('tokyonight-moon')
+-- ColorMyPencils('tokyonight-moon')
 -- ColorMyPencils('tokyonight-day')
+--
+--
+ColorMyPencils('lunar')

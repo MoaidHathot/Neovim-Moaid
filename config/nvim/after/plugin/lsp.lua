@@ -32,7 +32,6 @@ lsp.on_attach(function(client, bufnr)
 	-- }, bufnr)
 	--
 
-
 	-- if client.server_capabilities.documentSymbolProvider then
 	-- 	-- require('nvim-navic').attach(client, bufnr)
 	-- 	navic.attach(client, bufnr)
@@ -43,6 +42,7 @@ lsp.on_attach(function(client, bufnr)
 	end
 
 	hints.on_attach(client, bufnr)
+
 	-- vim.keymap.set('n', '<leader>le', "<cmd>Telescope lsp_references<CR>", {buffer = true})
 	-- bind('n', '<leader>r', '<cmd> lua vim.lsp.buf.rename()<cr>')
 end)
@@ -151,6 +151,13 @@ cmp.setup {
 	mapping = {
 		['<Tab'] = cmp_action.tab_complete(),
 		['<S-Tab>'] = cmp_action.select_prev_or_fallback(),
+		-- check if the below <c-l> is needed. It was added as a test
+		['<C-l>'] = cmp.mapping(function(fallback)
+			if cmp.visible() then
+				return cmp.complete_common_string()
+			end
+			fallback()
+		end, { 'i', 'c' })
 	},
 	sources = {
 		{ name = 'path' },

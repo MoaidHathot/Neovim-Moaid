@@ -154,4 +154,7 @@ return require('packer').startup(function(use)
 		},
 		after = "nvim-web-devicons", -- keep this if you're using NvChad
 	})
+
+	use 'LunarVim/lunar.nvim'
+	use "lunarvim/Onedarker.nvim"
 end)

@@ -13,6 +13,17 @@ which.register({
 	l = {
 		name = "LSP",
 	},
+	d = {
+		name = "Debugging",
+		s = "Start/Continue",
+		t = 'Toggle Breakpoint',
+		u = 'Toggle UI',
+		i = 'Step Into',
+		o = 'Step Over',
+		['<F10>'] = 'Step Over',
+		['<F5>'] = "Star/Continue",
+		['<F11>'] = 'Step Into',
+	},
 	h = "Harpoon Togle",
 	a = "Harpoon Add",
 	['1'] = "Harpoon #1",

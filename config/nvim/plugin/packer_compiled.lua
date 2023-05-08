@@ -84,13 +84,17 @@ _G.packer_plugins = {
     path = "C:\\Users\\moaid\\AppData\\Local\\nvim-data\\site\\pack\\packer\\start\\LuaSnip",
     url = "https://github.com/L3MON4D3/LuaSnip"
   },
+  ["Onedarker.nvim"] = {
+    loaded = true,
+    path = "C:\\Users\\moaid\\AppData\\Local\\nvim-data\\site\\pack\\packer\\start\\Onedarker.nvim",
+    url = "https://github.com/lunarvim/Onedarker.nvim"
+  },
   ["alpha-nvim"] = {
     loaded = true,
     path = "C:\\Users\\moaid\\AppData\\Local\\nvim-data\\site\\pack\\packer\\start\\alpha-nvim",
     url = "https://github.com/goolord/alpha-nvim"
   },
   ["barbecue.nvim"] = {
-    config = { "\27LJ\2\n6\0\0\3\0\3\0\0066\0\0\0'\2\1\0B\0\2\0029\0\2\0B\0\1\1K\0\1\0\nsetup\rbarbecue\frequire\0" },
     load_after = {},
     loaded = true,
     needs_bufread = false,
@@ -196,6 +200,11 @@ _G.packer_plugins = {
     loaded = true,
     path = "C:\\Users\\moaid\\AppData\\Local\\nvim-data\\site\\pack\\packer\\start\\lualine.nvim",
     url = "https://github.com/nvim-lualine/lualine.nvim"
+  },
+  ["lunar.nvim"] = {
+    loaded = true,
+    path = "C:\\Users\\moaid\\AppData\\Local\\nvim-data\\site\\pack\\packer\\start\\lunar.nvim",
+    url = "https://github.com/LunarVim/lunar.nvim"
   },
   ["mason-lspconfig.nvim"] = {
     loaded = true,
@@ -383,10 +392,6 @@ time([[packadd for vim-matchup]], false)
 time([[Sequenced loading]], true)
 vim.cmd [[ packadd nvim-web-devicons ]]
 vim.cmd [[ packadd barbecue.nvim ]]
-
--- Config for: barbecue.nvim
-try_loadstring("\27LJ\2\n6\0\0\3\0\3\0\0066\0\0\0'\2\1\0B\0\2\0029\0\2\0B\0\1\1K\0\1\0\nsetup\rbarbecue\frequire\0", "config", "barbecue.nvim")
-
 time([[Sequenced loading]], false)
 
 _G._packer.inside_compile = false
