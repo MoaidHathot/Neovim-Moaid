@@ -73,6 +73,9 @@ vim.keymap.set('i', "<C-k>", 'k')
 
 vim.keymap.set('n', '<leader>;', ":Alpha<CR>")
 
+vim.keymap.set('n', '<leader>ps', "<cmd>:so<CR>:PackerSync<CR>")
+vim.keymap.set('n', '<leader>ms', "<cmd>:w<CR>:so<CR>")
+
 -- vim.keymap.set('n', '<leader>c', '"+y<CR>')
 -- vim.keymap.set('i', '<leader>c', '"+y<CR>')
 -- vim.keymap.set('v', '<leader>c', '"+y<CR>')

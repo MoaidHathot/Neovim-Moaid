@@ -28,4 +28,6 @@ end
 -- ColorMyPencils('tokyonight-day')
 --
 --
-ColorMyPencils('lunar')
+-- ColorMyPencils('lunar')
+--
+ColorMyPencils('OneDarker')

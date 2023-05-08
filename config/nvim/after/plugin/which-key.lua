@@ -43,5 +43,14 @@ which.register({
 		n = "Next Buffer",
 		d = "Delete Buffer"
 	},
+	p = {
+		name = "Packer",
+		s = "Sync"
+	},
+	m = {
+		name = "Markdown",
+		g = "Glow Show",
+		s = "Shout Out"
+	},
 	['<F5>'] = "Toggle History"
 }, { prefix = "<leader>" })
