@@ -73,6 +73,8 @@ vim.keymap.set('i', "<C-k>", 'k')
 
 vim.keymap.set('n', '<leader>;', ":Alpha<CR>")
 
+vim.keymap.set('i', '<C-c>', '<Esc>')
+
 -- vim.keymap.set('n', '<leader>c', '"+y<CR>')
 -- vim.keymap.set('i', '<leader>c', '"+y<CR>')
 -- vim.keymap.set('v', '<leader>c', '"+y<CR>')
