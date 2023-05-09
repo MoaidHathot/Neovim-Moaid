@@ -108,13 +108,15 @@ local cmp_select = { behavior = cmp.SelectBehavior.Select }
 local cmp_mappings = lsp.defaults.cmp_mappings({
 	['<C-p>'] = cmp.mapping.select_prev_item(cmp_select),
 	['<C-n>'] = cmp.mapping.select_next_item(cmp_select),
-	-- ['<C-d>'] = cmp.mapping.scroll_docs(-4),
+	-- ['<leader>.'] = cmp.mapping.complete_common_string(),
 	-- ['<C-f>'] = cmp.mapping.scroll_docs(4),
 	['<C-y>'] = cmp.mapping.confirm({ select = true }),
 	['<CR>'] = cmp.mapping.confirm({ select = true }),
 	['<Tab>'] = cmp.mapping.confirm({ select = true }),
-	['<C-space>'] = cmp.mapping.complete(),
+	-- ['<C-space>'] = cmp.mapping.complete(),
 })
+
+
 
 
 -- vim.api.nvim_set_keymap('i', "<A-s>", "<cmd>LspOverloadsSignature<CR>", { noremap = true, silent = true })
@@ -157,7 +159,7 @@ cmp.setup {
 				return cmp.complete_common_string()
 			end
 			fallback()
-		end, { 'i', 'c' })
+		end, { 'i', 'c', 'n' })
 	},
 	sources = {
 		{ name = 'path' },

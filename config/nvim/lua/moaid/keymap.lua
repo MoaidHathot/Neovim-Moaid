@@ -12,23 +12,19 @@ local function get_bufs_loaded()
 	return bufs_loaded
 end
 
-local function save_all_bufs(bufs)
-	for i, buf in ipairs(bufs) do
-		vim.api.nvim_buf_call(buf, function()
-			vim.api.nvim_command(':w')
-		end)
-	end
-end
-
 -- save document
-vim.keymap.set("n", "<C-s>", vim.cmd.w, { silent = true })
-vim.keymap.set("i", "<C-s>", vim.cmd.w, { silent = true })
-vim.keymap.set("v", "<C-s>", vim.cmd.w, { silent = true })
+vim.keymap.set("n", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
+vim.keymap.set("i", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
+vim.keymap.set("v", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
 
 -- save all documents
-vim.keymap.set("n", "<C-S-s>", vim.cmd.wall, { silent = false })
-vim.keymap.set("i", "<C-S>s", vim.cmd.wall, { silent = true })
-vim.keymap.set("v", "<C-S>s", vim.cmd.wall, { silent = true })
+-- vim.keymap.set("n", "<C-S-s>", vim.cmd.wall, { silent = true })
+-- vim.keymap.set("i", "<cs-s>", vim.cmd.wall, { silent = true })
+-- vim.keymap.set("v", "<cs-R>", vim.cmd.wall, { silent = true })
+
+vim.keymap.set("n", "<leader>ma", vim.cmd.wall, { desc = "Save All Buffers", silent = true })
+vim.keymap.set("v", "<leader>ma", vim.cmd.wall, { desc = "Save All Buffers", silent = true })
+vim.keymap.set('n', '<leader>mq', ':wa<CR>', { desc = "Save All Buffers", })
 
 -- Delete text
 vim.keymap.set('i', '<C-Del>', "<Esc>ce")
@@ -37,7 +33,8 @@ vim.keymap.set('n', '<C-Del>', "ce")
 vim.keymap.set('n', '<C-backspace>', "cb")
 
 -- vim.keymap.set('n', '<leader>q', ':q!<CR>:q!<CR>:q!<CR>')
-vim.keymap.set('n', '<leader>q', ':q<CR>:q<CR>:q<CR>')
+vim.keymap.set('n', '<leader>q', ':qa<CR>:qa<CR>:qa<CR>')
+vim.keymap.set('n', '<leader>Q', ':q!<CR>:q!<CR>:q!<CR>')
 
 -- Split navigation and management
 vim.keymap.set('n', '<leader>bb', ':bprev<CR>', { silent = true })
@@ -78,6 +75,13 @@ vim.keymap.set('n', '<leader>;', ":Alpha<CR>")
 vim.keymap.set('n', '<leader>ps', "<cmd>:w<CR>:so<CR>:PackerSync<CR>")
 vim.keymap.set('n', '<leader>ms', "<cmd>:w<CR>:so<CR>")
 vim.keymap.set('i', '<C-c>', '<Esc>')
+
+vim.keymap.set('n', '<leader>fa', "gg<S-v>G<CR>", { desc = "Select All File" })
+vim.keymap.set('n', '<leader>fC', '<cmd>:%y+<CR>', { desc = { 'Copy All File To OS' } })
+-- vim.keymap.set('n', '<leader>fV', 'gg<S-v>G<CR><leader>fv')
+vim.keymap.set('n', '<leader>fv', '"+p', { desc = "Paste from OS" })
+vim.keymap.set('v', '<leader>fv', '"+p', { desc = "Paste from OS" })
+vim.keymap.set('v', '<leader>fc', '"+y', { desc = "Copy to OS" })
 
 -- vim.keymap.set('n', '<leader>c', '"+y<CR>')
 -- vim.keymap.set('i', '<leader>c', '"+y<CR>')
