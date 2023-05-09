@@ -13,7 +13,7 @@ toggleterm.setup {
 }
 
 function _G.set_terminal_keymaps()
-	local opts = {buffer =0}
+	local opts = { buffer = 0 }
 	vim.keymap.set('t', '<esc>', [[<C-\><C-n>]], opts)
 end
 
@@ -28,7 +28,7 @@ terminal1:new {
 	open_mapping = [[<M-1>]],
 	start_in_insert = true,
 	terminal_mappings = true,
-	direction = 'vertical',
+	direction = 'float',
 	shell = "pwsh.exe -NoLogo",
 	auto_scroll = true,
 }
@@ -37,6 +37,21 @@ function _toggleTerminal1()
 	terminal1:toggle()
 end
 
+local terminal2 = require('toggleterm.terminal').Terminal
+
+terminal2:new {
+	cmd = "lazygit",
+	direction = "float",
+	float_opts = {
+		border = "double"
+	}
+}
+
+function _lazygitToggle()
+	terminal2:toggle()
+end
+
 vim.keymap.set('n', "<M-1>", '<cmd>lua _toggleTerminal1()<CR><Esc>')
+vim.keymap.set('n', "<M-2>", '<cmd>lua _lazygitToggle()<CR><Esc>')
 
 -- vim.api.nvim_set_keymap("n", "<M-1>", "<cmd>lua _toggleTerminal1()<CR>:<C-\\><C-n>", {noremap = true, silent = true})
