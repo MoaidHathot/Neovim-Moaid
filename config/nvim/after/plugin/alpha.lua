@@ -29,4 +29,4 @@ dashboard.section.buttons.val = {
 
 dashboard.section.footer.val = " Moaid Hathot"
 
-alpha.setup(dashboard.config)
+-- alpha.setup(dashboard.config)
