@@ -159,4 +159,20 @@ return require('packer').startup(function(use)
 	use 'LunarVim/lunar.nvim'
 	use "lunarvim/Onedarker.nvim"
 	use "ellisonleao/glow.nvim"
+	use {
+		"Shatur/neovim-session-manager",
+		requires = {
+			{ "nvim-lua/plenary.nvim" }
+		}
+	}
+
+	use 'nvim-telescope/telescope-ui-select.nvim'
+	use {
+		"nvim-telescope/telescope-file-browser.nvim",
+		requires = { "nvim-telescope/telescope.nvim", "nvim-lua/plenary.nvim" }
+	}
+	use {
+		'nvim-telescope/telescope-project.nvim',
+		requires = { 'telescope.nvim', 'telescope/telescope-file-browser.nvim' }
+	}
 end)

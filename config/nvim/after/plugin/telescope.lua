@@ -1,11 +1,32 @@
 local builtin = require('telescope.builtin')
+local telescope = require('telescope')
+local theme = require('telescope.themes')
 
---vim.keymap.set('n', '<leader>pf', builtin.find_files, {})
 
--- vim.keymap.set('n', '<leader>f', builtin.find_files, {})
--- vim.keymap.set('n', '<leader>f', builtin.find_files, { desc = 'Find Files' })
--- vim.keymap.set('n', '<leader>ff', builtin.find_files, { desc = 'Find Files' })
+telescope.setup {
+	extensions = {
+		["ui-select"] = {
+			theme.get_dropdown {
 
+			},
+			file_browser = {
+				theme = 'ivy',
+				hijack_newtrw = true,
+			},
+			project = {
+				theme = 'dropdown',
+				sync_with_nvim_tree = true,
+				-- base_dirs = {
+				-- 	{ 'S:/Programming/Github', max_depth = 7 },
+				-- }
+			}
+		}
+	}
+}
+
+telescope.load_extension('ui-select')
+telescope.load_extension('file_browser')
+telescope.load_extension('project')
 
 vim.keymap.set('n', '<leader>st', builtin.buffers, { desc = 'Find Buffers' })
 vim.keymap.set('n', '<leader>sf', builtin.find_files, { desc = 'Find Files' })
@@ -16,7 +37,16 @@ vim.keymap.set('n', '<leader>sc', builtin.current_buffer_fuzzy_find, { desc = 'F
 vim.keymap.set('n', '<leader>sd', builtin.diagnostics, { desc = 'Find Diagnostics' })
 vim.keymap.set('n', '<leader>sk', builtin.keymaps, { desc = 'Find Keymaps' })
 vim.keymap.set('n', '<leader>sp', builtin.git_files, { desc = 'Find Project git files' })
+vim.keymap.set('n', '<leader>sB', ":Telescope file_browser path=%:p:h select_buffer=true<CR>")
+vim.keymap.set('n', '<leader>sP', ":Telescope project<CR>")
+vim.keymap.set('n', '<leader>sr', builtin.registers, { desc = 'Find Registers' })
+vim.keymap.set('n', '<leader>sR', builtin.resume, { desc = 'Open last picker' })
+vim.keymap.set('n', '<leader>sm', builtin.marks, { desc = 'Find Marks' })
+vim.keymap.set('n', '<leader>sC', builtin.colorscheme, { desc = 'Find Color Scheme' })
+vim.keymap.set('n', '<leader>sj', builtin.jumplist, { desc = 'Find Jump List' })
+vim.keymap.set('n', '<leader>so', builtin.oldfiles, { desc = 'Find Recent Files' })
 
--- local telescope = require('telescope')
--- local actions = require('telescope.actions')
--- local trouble = require('trouble.providers.telescope')
+vim.keymap.set('n', '<leader>lQ', builtin.quickfix, { desc = 'Find Quick Fixes' })
+vim.keymap.set('n', '<leader>gi', builtin.lsp_implementations, { desc = 'Find Implementations' })
+vim.keymap.set('n', '<leader>gd', builtin.lsp_definitions, { desc = 'Find Definitions' })
+vim.keymap.set('n', '<leader>gD', builtin.lsp_type_definitions, { desc = 'Find Definitions' })

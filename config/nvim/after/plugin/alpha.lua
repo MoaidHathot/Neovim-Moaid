@@ -17,10 +17,10 @@ dashboard.section.header.val = name
 
 dashboard.section.buttons.val = {
 	dashboard.button('n', "  New file", ":ene <BAR> startinsert <CR>"),
-	dashboard.button('f', " Find file"),
-	dashboard.button('r', " Recently opened files"),
-	dashboard.button('p', " Recently opened projects"),
-	dashboard.button('p', " Find text"),
+	dashboard.button('f', " Find file", "<leader>sf"),
+	dashboard.button('r', " Recently opened files", "<leader>so"),
+	dashboard.button('p', " Recently opened projects", "<leader>sP"),
+	dashboard.button('t', " Find text", "<leader>sg"),
 	-- dashboard.button('p', "ﴬ"),
 	-- dashboard.button('p', ""),
 	-- dashboard.button('p', ""),
