@@ -102,6 +102,25 @@ lsp.ensure_installed({
 	-- 'rust_analyzer'
 })
 
+local schemas = require('schemastore')
+
+lspconfig.jsonls.setup {
+	settings = {
+		json = {
+			schemas = schemas.json.schemas(),
+			validate = { enable = true },
+		}
+	}
+}
+
+lspconfig.yamlls.setup {
+	settins = {
+		yamlls = {
+			schemas = schemas.yaml.schemas(),
+		},
+	},
+}
+
 local cmp = require('cmp')
 local cmp_select = { behavior = cmp.SelectBehavior.Select }
 

@@ -176,4 +176,5 @@ return require('packer').startup(function(use)
 		'nvim-telescope/telescope-project.nvim',
 		requires = { 'telescope.nvim', 'telescope/telescope-file-browser.nvim' }
 	}
+	use "b0o/schemastore.nvim"
 end)

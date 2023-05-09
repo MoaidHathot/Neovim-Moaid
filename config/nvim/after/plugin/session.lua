@@ -14,7 +14,12 @@ vim.api.nvim_create_autocmd({ 'BufWritePost' }, {
 			and not vim.bo.filetype ~= 'gitcommit'
 			and not vim.bo.filetype ~= 'gitrebase'
 		then
+			local api = require("nvim-tree.api").tree
+			local visible = api ~= nil and api.is_visible()
 			session.autosave_session()
+			if visible then
+				api.open()
+			end
 		end
 	end
 })

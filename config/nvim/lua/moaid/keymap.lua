@@ -1,17 +1,5 @@
 vim.g.mapleader = " "
 
-local function get_bufs_loaded()
-	local bufs_loaded = {}
-
-	for i, buf_hndl in ipairs(vim.api.nvim_list_bufs()) do
-		if vim.api.nvim_buf_is_loaded(buf_hndl) then
-			bufs_loaded[i] = buf_hndl
-		end
-	end
-
-	return bufs_loaded
-end
-
 -- save document
 vim.keymap.set("n", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
 vim.keymap.set("i", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
@@ -22,9 +10,9 @@ vim.keymap.set("v", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
 -- vim.keymap.set("i", "<cs-s>", vim.cmd.wall, { silent = true })
 -- vim.keymap.set("v", "<cs-R>", vim.cmd.wall, { silent = true })
 
-vim.keymap.set("n", "<leader>ma", vim.cmd.wall, { desc = "Save All Buffers", silent = true })
-vim.keymap.set("v", "<leader>ma", vim.cmd.wall, { desc = "Save All Buffers", silent = true })
-vim.keymap.set('n', '<leader>mq', ':wa<CR>', { desc = "Save All Buffers", })
+vim.keymap.set("n", "<leader>fs", vim.cmd.wall, { desc = "Save All Buffers", silent = true })
+vim.keymap.set("v", "<leader>fs", vim.cmd.wall, { desc = "Save All Buffers", silent = true })
+-- vim.keymap.set('n', '<leader>mq', ':wa<CR>', { desc = "Save All Buffers", })
 
 -- Delete text
 vim.keymap.set('i', '<C-Del>', "<Esc>ce")
@@ -73,7 +61,7 @@ vim.keymap.set('i', "<C-k>", 'k')
 vim.keymap.set('n', '<leader>;', ":Alpha<CR>")
 
 vim.keymap.set('n', '<leader>ps', "<cmd>:w<CR>:so<CR>:PackerSync<CR>")
-vim.keymap.set('n', '<leader>ms', "<cmd>:w<CR>:so<CR>")
+-- vim.keymap.set('n', '<leader>ms', "<cmd>:w<CR>:so<CR>")
 vim.keymap.set('i', '<C-c>', '<Esc>')
 
 vim.keymap.set('n', '<leader>fa', "gg<S-v>G<CR>", { desc = "Select All File" })
@@ -82,7 +70,7 @@ vim.keymap.set('n', '<leader>fC', '<cmd>:%y+<CR>', { desc = { 'Copy All File To 
 vim.keymap.set('n', '<leader>fv', '"+p', { desc = "Paste from OS" })
 vim.keymap.set('v', '<leader>fv', '"+p', { desc = "Paste from OS" })
 vim.keymap.set('v', '<leader>fc', '"+y', { desc = "Copy to OS" })
-
+vim.keymap.set('n', '<leader>ms', "<cmd>:w<CR>:so<CR>", { desc = "Shout Out" })
 -- vim.keymap.set('n', '<leader>c', '"+y<CR>')
 -- vim.keymap.set('i', '<leader>c', '"+y<CR>')
 -- vim.keymap.set('v', '<leader>c', '"+y<CR>')
