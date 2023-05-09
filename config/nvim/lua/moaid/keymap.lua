@@ -51,6 +51,8 @@ vim.keymap.set('n', '<C-l>', ':wincmd l<CR>', { silent = true })
 vim.keymap.set('n', '<C-j>', ':wincmd j<CR>', { silent = true })
 vim.keymap.set('n', '<C-k>', ':wincmd k<CR>', { silent = true })
 
+vim.keymap.set('n', "<S-q>", '<cmd>:q<CR>', { desc = "Close Without Saving" })
+
 -- Reise splits
 vim.keymap.set('n', '<C-Right>', ':vertical-resize +1<CR>', { silent = true })
 vim.keymap.set('n', '<C-Left>', ':vertical-resize -1<CR>', { silent = true })
