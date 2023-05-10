@@ -1,6 +1,6 @@
 local dap = require('dap')
 
-local log = require('structlog')
+-- local log = require('structlog')
 
 local function getHighestVersionDirectory(dir)
 	local command = 'dir /B ' .. dir -- For Windows, use 'dir /B ' .. dir instead
@@ -14,7 +14,9 @@ local function getHighestVersionDirectory(dir)
 			max_dir = dirname
 		end
 	end
-	p:close()
+	if p ~= nil then
+		p:close()
+	end
 
 	return max_dir
 end
