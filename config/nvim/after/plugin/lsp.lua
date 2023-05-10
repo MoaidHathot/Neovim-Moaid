@@ -6,10 +6,8 @@ local lsp = zero.preset('recommended')
 -- 	manage_nvim_cmp = true,
 -- 	suggest_lsp_servers = true
 -- })
-local cmp_action = zero.cmp_action()
 
 local signature = require('lsp_signature')
-local overloads = require('lsp-overloads')
 local hints = require('lsp-inlayhints')
 -- local navic = require('nvim-navic')
 
@@ -38,6 +36,7 @@ lsp.on_attach(function(client, bufnr)
 	-- end
 
 	if client.server_capabilities.signatureHelpProvider then
+		local overloads = require('lsp-overloads')
 		overloads.setup(client, {})
 	end
 
@@ -166,8 +165,8 @@ lsp.setup()
 -- 	}
 -- })
 --
-local luasnip = require('luasnip')
 
+local cmp_action = zero.cmp_action()
 cmp.setup {
 	mapping = {
 		['<Tab'] = cmp_action.tab_complete(),
@@ -190,6 +189,7 @@ cmp.setup {
 	},
 	snippet = {
 		expand = function(args)
+			local luasnip = require('luasnip')
 			luasnip.lsp_expand(args.body)
 		end
 	}

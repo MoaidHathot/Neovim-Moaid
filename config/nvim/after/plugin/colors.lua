@@ -30,4 +30,10 @@ end
 --
 -- ColorMyPencils('lunar')
 --
-ColorMyPencils('OneDarker')
+-- ColorMyPencils('OneDarker')
+--
+ColorMyPencils('catppuccin')
+-- ColorMyPencils('catppuccin-latte')
+-- ColorMyPencils('catppuccin-frappe')
+-- ColorMyPencils('catppuccin-macchiato')
+-- ColorMyPencils('catppuccin-mocha')

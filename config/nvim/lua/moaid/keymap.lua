@@ -25,16 +25,21 @@ vim.keymap.set('n', '<leader>q', ':qa<CR>:qa<CR>:qa<CR>')
 vim.keymap.set('n', '<leader>Q', ':q!<CR>:q!<CR>:q!<CR>')
 
 -- Split navigation and management
-vim.keymap.set('n', '<leader>bb', ':bprev<CR>', { silent = true })
-vim.keymap.set('n', '<leader>bn', ':bnext<CR>', { silent = true })
+vim.keymap.set('n', '<leader>bb', ':bprev<CR>', { desc = 'Goto Previous Buffer', silent = true })
+vim.keymap.set('n', '<leader>bn', ':bnext<CR>', { desc = 'Goto Next Buffer', silent = true })
 -- vim.keymap.set('n', '<leader>c', ':bprev<CR>:bdelete #<CR>')
-vim.keymap.set('n', '<leader>bd', ':bprev<CR>:bdelete #<CR>')
+vim.keymap.set('n', '<leader>bd', ':bprev<CR>:bdelete #<CR>', { desc = 'Close Current Buffer' })
+vim.keymap.set('n', '<leader>bD', "<cmd>:%bd<CR>", { desc = 'Close All Buffers' })
+vim.keymap.set('n', '<leader>bf', "<cmd>:BufferLinePick<CR>", { desc = 'Pick Buffer' })
+vim.keymap.set('n', '<leader>bs', "<cmd>:BufferLinePick<CR>", { desc = 'Pick Buffer' })
+vim.keymap.set('n', '<leader>bp', "<cmd>:BufferLineTogglePin<CR>", { desc = 'Pin Buffer' })
+vim.keymap.set('n', '<leader>br', "<cmd>:e!<CR>", { desc = 'Reload Buffer' })
 
 -- Move between splits
-vim.keymap.set('n', '<C-h>', ':wincmd h<CR>', { silent = true })
-vim.keymap.set('n', '<C-l>', ':wincmd l<CR>', { silent = true })
-vim.keymap.set('n', '<C-j>', ':wincmd j<CR>', { silent = true })
-vim.keymap.set('n', '<C-k>', ':wincmd k<CR>', { silent = true })
+vim.keymap.set('n', '<C-h>', ':wincmd h<CR>', { desc = 'Goto Left Buffer', silent = true })
+vim.keymap.set('n', '<C-l>', ':wincmd l<CR>', { desc = 'Goto Right Buffer', silent = true })
+vim.keymap.set('n', '<C-j>', ':wincmd j<CR>', { desc = 'Goto Below Buffer', silent = true })
+vim.keymap.set('n', '<C-k>', ':wincmd k<CR>', { desc = 'Goto Above Buffer', silent = true })
 
 vim.keymap.set('n', "<S-q>", '<cmd>:q<CR>', { desc = "Close Without Saving" })
 
@@ -46,11 +51,11 @@ vim.keymap.set('n', '<C-Down>', ':resize +1<CR>', { silent = true })
 
 -- Move current line / block with Alt-j/k a la vscode.
 vim.keymap.set('n', "<M-j>", ":m .+1<CR>==", { silent = true })
-vim.keymap.set('n', "<M-k>", ":m .-2<CR>==, { silent = true }")
+vim.keymap.set('n', "<M-k>", ":m .-2<CR>==", { silent = true })
 
 -- Better line / block movement
-vim.keymap.set('n', "<A-j>", ":m '>+1<CR>gv-gv", { silent = true })
-vim.keymap.set('n', "<A-k>", ":m '<-2<CR>gv-gv", { silent = true })
+-- vim.keymap.set('n', "<A-j>", ":m '>+1<CR>gv-gv", { silent = true })
+-- vim.keymap.set('n', "<A-k>", ":m '<-2<CR>gv-gv", { silent = true })
 
 -- Better indenting in Visual mode
 vim.keymap.set('v', '>', ">gv")

@@ -1,3 +1,4 @@
+--
 -- This file can be loaded by calling `lua require('plugins')` from your init.vim
 -- Only required if you have packer configured as `opt`
 vim.cmd [[packadd packer.nvim]]
@@ -177,4 +178,6 @@ return require('packer').startup(function(use)
 		requires = { 'telescope.nvim', 'telescope/telescope-file-browser.nvim' }
 	}
 	use "b0o/schemastore.nvim"
+	use 'dstein64/vim-startuptime'
+	use { "catppuccin/nvim", as = "catppuccin" }
 end)
