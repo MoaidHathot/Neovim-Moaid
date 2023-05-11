@@ -5,10 +5,10 @@ require('rose-pine').setup {
 	bol_vert_split = false
 }
 
-require('kanagawa').setup {
-
-}
-
+-- require('kanagawa').setup {
+--
+-- }
+--
 
 function ColorMyPencils(color)
 	color = color or "rose-pine"
@@ -31,8 +31,16 @@ end
 --
 -- ColorMyPencils('OneDarker')
 --
-ColorMyPencils('catppuccin')
+-- ColorMyPencils('catppuccin')
 -- ColorMyPencils('catppuccin-latte')
 -- ColorMyPencils('catppuccin-frappe')
 -- ColorMyPencils('catppuccin-macchiato')
 -- ColorMyPencils('catppuccin-mocha')
+
+-- ColorMyPencils('Everblush')
+
+-- 'default' | 'neon' | 'auro'
+vim.g.edge_style = 'neon'
+-- vim.g.edge_style = 'default'
+-- vim.g.edge_style = 'aura'
+ColorMyPencils('edge')
