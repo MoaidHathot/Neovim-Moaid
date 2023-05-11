@@ -99,6 +99,7 @@ lsp.ensure_installed({
 	-- 'Omnisharp',
 	-- 'sumneko_lua',
 	-- 'rust_analyzer'
+	-- 'c_sharp'
 })
 
 local schemas = require('schemastore')

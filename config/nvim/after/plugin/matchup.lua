@@ -1,6 +1,5 @@
-local matchup = require('nvim-treesitter.configs')
-
-matchup.setup {
+local config = require('nvim-treesitter.configs')
+config.setup {
 	matchup = {
 		enabled = true,
 	}

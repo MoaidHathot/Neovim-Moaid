@@ -1,3 +1,4 @@
-require("moaid.keymap")
-require("moaid.packer")
 require("moaid.set")
+require('moaid.lazy')
+require("moaid.keymap")
+-- require("moaid.packer")

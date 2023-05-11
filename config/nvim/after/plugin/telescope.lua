@@ -4,24 +4,24 @@ local theme = require('telescope.themes')
 
 
 telescope.setup {
-	extensions = {
-		["ui-select"] = {
-			theme.get_dropdown {
+    extensions = {
+        ["ui-select"] = {
+            theme.get_dropdown {
 
-			},
-			file_browser = {
-				theme = 'ivy',
-				hijack_newtrw = true,
-			},
-			project = {
-				theme = 'dropdown',
-				sync_with_nvim_tree = true,
-				-- base_dirs = {
-				-- 	{ 'S:/Programming/Github', max_depth = 7 },
-				-- }
-			}
-		}
-	}
+            },
+            file_browser = {
+                theme = 'ivy',
+                hijack_newtrw = true,
+            },
+            project = {
+                theme = 'dropdown',
+                sync_with_nvim_tree = true,
+                -- base_dirs = {
+                -- 	{ 'S:/Programming/Github', max_depth = 7 },
+                -- }
+            }
+        }
+    }
 }
 
 telescope.load_extension('ui-select')

@@ -8,9 +8,6 @@ local name = {
 	[[]],
 	[[]],
 	[[]],
-	[[]],
-	[[]],
-	[[]],
 	[[ /$$      /$$                     /$$       /$$       /$$   /$$             /$$     /$$                   /$$    ]],
 	[[| $$$    /$$$                    |__/      | $$      | $$  | $$            | $$    | $$                  | $$    ]],
 	[[| $$$$  /$$$$  /$$$$$$   /$$$$$$  /$$  /$$$$$$$      | $$  | $$  /$$$$$$  /$$$$$$  | $$$$$$$   /$$$$$$  /$$$$$$  ]],
@@ -47,3 +44,5 @@ dashboard.section.buttons.val = {
 dashboard.section.footer.val = " Moaid Hathot"
 
 alpha.setup(dashboard.config)
+
+vim.keymap.set('n', '<leader>;', ":Alpha<CR>", { desc = "Toggle Alpha", silent = true })
