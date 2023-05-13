@@ -174,7 +174,7 @@ local function toggleLines()
 	return new_value
 end
 
-vim.keymap.set('n', '<leader>lu', toggleLines)
+vim.keymap.set('n', '<leader>lu', toggleLines, { desc = "Toggle Underline Diagnostics", silent = true })
 
 lsp.setup()
 
