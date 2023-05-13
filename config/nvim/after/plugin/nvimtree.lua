@@ -3,14 +3,29 @@ local tree = require('nvim-tree')
 tree.setup {
 	renderer = {
 		group_empty = true,
+		highlight_git = true,
+		-- highlight_opened_files = 'true',
+		special_files = { "bin", "debug" }
+
+	},
+	update_focused_file = {
+		enable = true
 	},
 	filters = {
 		dotfiles = true,
-	}
+	},
+	view = {
+		number = true,
+		relativenumber = true
+	},
+	diagnostics = {
+		enable = true,
+		show_on_dirs = true,
+	},
+	modified = {
+		enable = true,
+	},
 }
-
-vim.opt.termguicolors = true
-
 
 vim.keymap.set("n", "<leader>e", vim.cmd.NvimTreeToggle)
 vim.keymap.set('n', "<leader>tc", vim.cmd.NvimTreeCollapse)

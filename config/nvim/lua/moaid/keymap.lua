@@ -36,18 +36,24 @@ vim.keymap.set('n', '<leader>bp', "<cmd>:BufferLineTogglePin<CR>", { desc = 'Pin
 vim.keymap.set('n', '<leader>br', "<cmd>:e!<CR>", { desc = 'Reload Buffer' })
 
 -- Move between splits
-vim.keymap.set('n', '<C-h>', ':wincmd h<CR>', { desc = 'Goto Left Buffer', silent = true })
-vim.keymap.set('n', '<C-l>', ':wincmd l<CR>', { desc = 'Goto Right Buffer', silent = true })
-vim.keymap.set('n', '<C-j>', ':wincmd j<CR>', { desc = 'Goto Below Buffer', silent = true })
-vim.keymap.set('n', '<C-k>', ':wincmd k<CR>', { desc = 'Goto Above Buffer', silent = true })
+vim.keymap.set({ 'n', }, '<C-h>', ':wincmd h<CR>', { desc = 'Goto Left Buffer', silent = true })
+vim.keymap.set({ 'n', }, '<C-l>', ':wincmd l<CR>', { desc = 'Goto Right Buffer', silent = true })
+vim.keymap.set({ 'n', }, '<C-j>', ':wincmd j<CR>', { desc = 'Goto Below Buffer', silent = true })
+vim.keymap.set({ 'n', }, '<C-k>', ':wincmd k<CR>', { desc = 'Goto Above Buffer', silent = true })
+
+vim.keymap.set('t', '<C-h>', '[[<Cmd>wincmd h<CR>]]', { desc = 'Goto Left Buffer', silent = true, buffer = 0 })
+vim.keymap.set('t', '<C-l>', '[[<Cmd>wincmd l<CR>]]', { desc = 'Goto Right Buffer', silent = true, buffer = 0 })
+vim.keymap.set('t', '<C-j>', '[[<Cmd>wincmd j<CR>]]', { desc = 'Goto Below Buffer', silent = true, buffer = 0 })
+vim.keymap.set('t', '<C-k>', '[[<Cmd>wincmd k<CR>]]', { desc = 'Goto Above Buffer', silent = true, buffer = 0 })
+
 
 vim.keymap.set('n', "<S-q>", '<cmd>:q<CR>', { desc = "Close Without Saving" })
 
 -- Reise splits
-vim.keymap.set('n', '<leader><Right>', ':vertical-resize +1<CR>', { silent = true })
-vim.keymap.set('n', '<leader><Left>', ':vertical-resize -1<CR>', { silent = true })
-vim.keymap.set('n', '<leader>-<Up>', ':resize -1<CR>', { silent = true })
-vim.keymap.set('n', '<leader><Down>', ':resize +1<CR>', { silent = true })
+vim.keymap.set({ 'n', 't' }, '<S-Right>', ':vertical-resize +1<CR>', { silent = true })
+vim.keymap.set({ 'n', 't' }, '<S-Left>', ':vertical-resize -1<CR>', { silent = true })
+vim.keymap.set({ 'n', 't' }, '<C-Up>', ':resize -1<CR>', { silent = true })
+vim.keymap.set({ 'n', 't' }, '<C-Down>', ':resize +1<CR>', { silent = true })
 
 -- Move current line / block with Alt-j/k a la vscode.
 vim.keymap.set('n', "<M-Down>", ":m .+1<CR>==", { silent = true })

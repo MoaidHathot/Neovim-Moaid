@@ -15,3 +15,5 @@ My Neovim Configuration
 		* make sure to use a stable release
 	* fd
 	* ripgrep
+    * jq (for nvim-rest)
+    * html-tidy (for nvim-rest)
