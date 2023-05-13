@@ -8,7 +8,6 @@ local lsp = zero.preset('recommended')
 -- })
 
 local signature = require('lsp_signature')
-local hints = require('lsp-inlayhints')
 -- local navic = require('nvim-navic')
 
 lsp.on_attach(function(client, bufnr)
@@ -20,45 +19,35 @@ lsp.on_attach(function(client, bufnr)
 		vim.lsp.buf.format({ async = false, timeout_ms = 10000 })
 	end)
 
-	-- signature.on_attach({
-	-- 	bind = true,
-	-- 	handler_opts = {
-	-- 		border = 'rounded'
-	-- 	},
-	-- 	max_width = 130,
-	-- 	wrap = true,
-	-- }, bufnr)
-	--
 
-	-- if client.server_capabilities.documentSymbolProvider then
-	-- 	-- require('nvim-navic').attach(client, bufnr)
-	-- 	navic.attach(client, bufnr)
+	-- if client.server_capabilities.signatureHelpProvider then
+	-- 	print("**** Ataching")
+	-- 	local overloads = require('lsp-overloads')
+	-- 	overloads.setup(client, {
+	-- 		keymaps = {
+	-- 			-- next_signature = "<C-j>",
+	-- 			next_signature = '<leader>lk',
+	-- 			-- previous_signature = "<C-k>",
+	-- 			previous_signature = "<leader>lj",
+	-- 			next_parameter = '<C-l>',
+	-- 			previous_parameter = '<C-h>',
+	-- 			close_signature = "<A-s>"
+	-- 		},
+	-- 		display_automatically = true
+	-- 	})
 	-- end
-
-	if client.server_capabilities.signatureHelpProvider then
-		local overloads = require('lsp-overloads')
-		overloads.setup(client, {})
-	end
-
+	local hints = require('lsp-inlayhints')
+	hints.setup()
 	hints.on_attach(client, bufnr)
 
 	-- vim.keymap.set('n', '<leader>le', "<cmd>Telescope lsp_references<CR>", {buffer = true})
 	-- bind('n', '<leader>r', '<cmd> lua vim.lsp.buf.rename()<cr>')
 end)
 
-hints.setup()
 
 vim.keymap.set('n', '<leader>lh', "<cmd>lua require('lsp-inlayhints').toggle()<CR>")
 
-signature.setup {
-	bind = true,
-	handler_opts = {
-		border = 'rounded'
-	},
-	max_width = 130,
-	wrap = true,
-	floating_window = false,
-}
+
 
 -- vim.keymap.set({ 'n' }, '<C-k>', function()
 -- 		signature.toggle_float_win()
@@ -70,8 +59,14 @@ signature.setup {
 -- 	end,
 -- 	{ silent = true, desc = 'toggle signature' })
 --
-vim.keymap.set({ 'n', }, 'gs', function()
+vim.keymap.set({ 'n', }, '<C-M-k>', function()
 		vim.lsp.buf.signature_help()
+	end,
+	{ silent = true, desc = 'toggle signature' })
+
+
+vim.keymap.set({ 'n', }, '<leader>ls', function()
+		require('lsp_signature').toggle_float_win()
 	end,
 	{ silent = true, desc = 'toggle signature' })
 
@@ -91,16 +86,6 @@ neodev.setup({
 })
 
 local lspconfig = require('lspconfig')
-lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
-
-lsp.ensure_installed({
-	--'tsserver',
-	--'eslint',
-	-- 'Omnisharp',
-	-- 'sumneko_lua',
-	-- 'rust_analyzer'
-	-- 'c_sharp'
-})
 
 local schemas = require('schemastore')
 
@@ -120,6 +105,21 @@ lspconfig.yamlls.setup {
 		},
 	},
 }
+
+lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
+lspconfig.omnisharp.setup({})
+
+signature.setup {
+	bind = true,
+	handler_opts = {
+		border = 'rounded'
+	},
+	max_width = 130,
+	wrap = true,
+	floating_window = true,
+	always_trigger = true,
+}
+
 
 local cmp = require('cmp')
 local cmp_select = { behavior = cmp.SelectBehavior.Select }
@@ -169,6 +169,10 @@ lsp.setup()
 
 local cmp_action = zero.cmp_action()
 cmp.setup {
+	windows = {
+		completion = cmp.config.window.bordered(),
+		documentation = cmp.config.window.bordered(),
+	},
 	mapping = {
 		['<Tab'] = cmp_action.tab_complete(),
 		['<S-Tab>'] = cmp_action.select_prev_or_fallback(),
@@ -218,4 +222,25 @@ cmp.setup.cmdline(':', {
 			}
 		}
 	)
+})
+
+
+vim.api.nvim_create_autocmd("LspAttach", {
+	callback = function(ev)
+		local client = vim.lsp.get_client_by_id(ev.data.client_id)
+		local function toSnakeCase(str)
+			return string.gsub(str, "%s*[- ]%s*", "_")
+		end
+
+		if client.name == 'omnisharp' then
+			local tokenModifiers = client.server_capabilities.semanticTokensProvider.legend.tokenModifiers
+			for i, v in ipairs(tokenModifiers) do
+				tokenModifiers[i] = toSnakeCase(v)
+			end
+			local tokenTypes = client.server_capabilities.semanticTokensProvider.legend.tokenTypes
+			for i, v in ipairs(tokenTypes) do
+				tokenTypes[i] = toSnakeCase(v)
+			end
+		end
+	end,
 })
