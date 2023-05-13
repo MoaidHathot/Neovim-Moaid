@@ -1,4 +1,5 @@
 local zero = require('lsp-zero')
+-- local lsp = zero.preset({})
 local lsp = zero.preset('recommended')
 -- local lsp = zero.preset({
 -- 	name = 'recommended',
@@ -7,11 +8,11 @@ local lsp = zero.preset('recommended')
 -- 	suggest_lsp_servers = true
 -- })
 
-local signature = require('lsp_signature')
+-- local signature = require('lsp_signature')
 -- local navic = require('nvim-navic')
 
 lsp.on_attach(function(client, bufnr)
-	lsp.default_keymaps({ buffer = bufnr, preserve_mappings = false })
+	lsp.default_keymaps({ buffer = bufnr, preserve_mappings = true })
 	-- lsp.default_keymaps({ buffer = bufnr, preserve_mappings = true })
 	lsp.buffer_autoformat()
 
@@ -20,34 +21,34 @@ lsp.on_attach(function(client, bufnr)
 	end)
 
 
-	-- if client.server_capabilities.signatureHelpProvider then
-	-- 	print("**** Ataching")
-	-- 	local overloads = require('lsp-overloads')
-	-- 	overloads.setup(client, {
-	-- 		keymaps = {
-	-- 			-- next_signature = "<C-j>",
-	-- 			next_signature = '<leader>lk',
-	-- 			-- previous_signature = "<C-k>",
-	-- 			previous_signature = "<leader>lj",
-	-- 			next_parameter = '<C-l>',
-	-- 			previous_parameter = '<C-h>',
-	-- 			close_signature = "<A-s>"
-	-- 		},
-	-- 		display_automatically = true
-	-- 	})
-	-- end
-	local hints = require('lsp-inlayhints')
-	hints.setup()
-	hints.on_attach(client, bufnr)
-
+	if client.server_capabilities.signatureHelpProvider then
+		local overloads = require('lsp-overloads')
+		overloads.setup(client, {})
+		-- overloads.setup(client, {
+		-- 	keymaps = {
+		-- 		-- next_signature = "<C-j>",
+		-- 		next_signature = '<leader>lk',
+		-- 		-- previous_signature = "<C-k>",
+		-- 		previous_signature = "<leader>lj",
+		-- 		next_parameter = '<C-l>',
+		-- 		previous_parameter = '<C-h>',
+		-- 		close_signature = "<A-s>"
+		-- 	},
+		-- 	display_automatically = true
+		-- })
+	end
 	-- vim.keymap.set('n', '<leader>le', "<cmd>Telescope lsp_references<CR>", {buffer = true})
 	-- bind('n', '<leader>r', '<cmd> lua vim.lsp.buf.rename()<cr>')
 end)
 
-
-vim.keymap.set('n', '<leader>lh', "<cmd>lua require('lsp-inlayhints').toggle()<CR>")
-
-
+vim.keymap.set('n', '<A-k>', ":LspOverloadsSignature<CR>", { desc = 'Toggle Method Signature Overloads', silent = true })
+vim.keymap.set('i', '<A-k>', "<CMD>:LspOverloadsSignature<CR>",
+	{ desc = 'Toggle Method Signature Overloads', silent = true })
+-- vim.api.nvim_set_keymap("n", "<A-s>", ":LspOverloadsSignature<CR>",
+-- 	{ noremap = true, silent = true, desc = 'Toggle Method Signature Overloads' })
+--
+-- vim.api.nvim_set_keymap("i", "<A-s>", "<cmd>LspOverloadsSignature<CR>",
+-- 	{ noremap = true, silent = true, desc = 'Toggle Method Signature Overloads' })
 
 -- vim.keymap.set({ 'n' }, '<C-k>', function()
 -- 		signature.toggle_float_win()
@@ -109,16 +110,16 @@ lspconfig.yamlls.setup {
 lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
 lspconfig.omnisharp.setup({})
 
-signature.setup {
-	bind = true,
-	handler_opts = {
-		border = 'rounded'
-	},
-	max_width = 130,
-	wrap = true,
-	floating_window = true,
-	always_trigger = true,
-}
+-- signature.setup {
+-- 	bind = true,
+-- 	handler_opts = {
+-- 		border = 'rounded'
+-- 	},
+-- 	max_width = 130,
+-- 	wrap = true,
+-- 	floating_window = true,
+-- 	always_trigger = true,
+-- }
 
 
 local cmp = require('cmp')
@@ -135,9 +136,6 @@ local cmp_mappings = lsp.defaults.cmp_mappings({
 	-- ['<C-space>'] = cmp.mapping.complete(),
 })
 
-
-
-
 -- vim.api.nvim_set_keymap('i', "<A-s>", "<cmd>LspOverloadsSignature<CR>", { noremap = true, silent = true })
 -- vim.api.nvim_set_keymap('n', "<A-s>", "<cmd>LspOverloadsSignature<CR>", { noremap = true, silent = true })
 -- vim.api.nvim_set_keymap('i', "<leader>zz", "<cmd>LspOverloadsSignature<CR>", { noremap = true, silent = true })
@@ -153,7 +151,12 @@ lsp.setup_nvim_cmp({
 	mapping = cmp_mappings
 })
 
---lsp.set_preferences({ sign_icons = {} })
+lsp.set_sign_icons({
+	error = '✘',
+	warn = '▲',
+	hint = '⚑',
+	info = '»'
+})
 
 lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
 lsp.setup()
@@ -197,6 +200,14 @@ cmp.setup {
 			local luasnip = require('luasnip')
 			luasnip.lsp_expand(args.body)
 		end
+	},
+	formatting = {
+		fields = { 'abbr', 'kind', 'menu' },
+		format = require('lspkind').cmp_format({
+			mode = 'symbol_text',
+			maxwidth = 50,
+			ellipsis_char = '...'
+		})
 	}
 	-- sources = {
 	-- 	name = 'nvim_lsp'
@@ -243,4 +254,22 @@ vim.api.nvim_create_autocmd("LspAttach", {
 			end
 		end
 	end,
+})
+
+
+local null = require('null-ls')
+
+null.setup({
+	sources = {
+		-- null.builtins.formatting.prettier,
+		-- null.builtins.diagnostics.eslint,
+		-- null.builtins.formatting.stylua,
+	}
+})
+
+
+
+require('mason').setup()
+require('mason-null-ls').setup({
+	automatic_setup = true,
 })

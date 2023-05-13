@@ -1,6 +1,6 @@
 return {
 
-	{ 'nvim-treesitter/nvim-treesitter',     build = { ':TSUpdate' },                          lazy = true },
+	{ 'nvim-treesitter/nvim-treesitter', build = { ':TSUpdate' }, lazy = true },
 	{
 		'VonHeikemen/lsp-zero.nvim',
 		branch = 'v2.x',
@@ -23,6 +23,17 @@ return {
 		},
 		lazy = false
 	},
+	{ 'jose-elias-alvarez/null-ls.nvim', lazy = true },
+	{
+		"jay-babu/mason-null-ls.nvim",
+		event = { "BufReadPre", "BufNewFile" },
+		dependencies = {
+			"williamboman/mason.nvim",
+			"jose-elias-alvarez/null-ls.nvim",
+		},
+	},
+	--
+	{ 'onsails/lspkind.nvim',                lazy = true },
 	{ 'hrsh7th/cmp-path',                    lazy = false },
 	{ 'hrsh7th/cmp-buffer',                  lazy = false },
 	{ 'hrsh7th/cmp-cmdline',                 lazy = false },
@@ -51,7 +62,7 @@ return {
 	{ 'karb94/neoscroll.nvim',               lazy = true },
 	{ 'norcalli/nvim-colorizer.lua',         lazy = true },
 	{ 'HiPhish/nvim-ts-rainbow2',            lazy = true },
-	{ 'nvim-telescope/telescope.nvim',       dependencies = { 'nvim-lua/plenary.nvim' }, version = '0.1.1', lazy = true },
+	{ 'nvim-telescope/telescope.nvim',       dependencies = { 'nvim-lua/plenary.nvim' }, lazy = true },
 	{ "Shatur/neovim-session-manager",       dependencies = { "nvim-lua/plenary.nvim" }, lazy = true },
 	{
 		"nvim-telescope/telescope-file-browser.nvim",
@@ -73,7 +84,6 @@ return {
 	{ 'nvim-tree/nvim-tree.lua',                 dependencies = { 'nvim-tree/nvim-web-devicons' }, lazy = true },
 	{ 'lewis6991/gitsigns.nvim',                 lazy = true },
 	{ "folke/which-key.nvim",                    lazy = true },
-	{ 'lvimuser/lsp-inlayhints.nvim',            lazy = true },
 	{ 'L3MON4D3/LuaSnip',                        lazy = true },
 	{ "rafamadriz/friendly-snippets",            lazy = true },
 	{ "b0o/schemastore.nvim",                    lazy = true },

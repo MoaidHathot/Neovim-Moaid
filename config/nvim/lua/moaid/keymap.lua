@@ -48,8 +48,8 @@ vim.keymap.set('n', '<C-Up>', ':resize -1<CR>', { silent = true })
 vim.keymap.set('n', '<C-Down>', ':resize +1<CR>', { silent = true })
 
 -- Move current line / block with Alt-j/k a la vscode.
-vim.keymap.set('n', "<M-j>", ":m .+1<CR>==", { silent = true })
-vim.keymap.set('n', "<M-k>", ":m .-2<CR>==", { silent = true })
+vim.keymap.set('n', "<M-Down>", ":m .+1<CR>==", { silent = true })
+vim.keymap.set('n', "<M-Up>", ":m .-2<CR>==", { silent = true })
 
 -- Better line / block movement
 -- vim.keymap.set('n', "<A-j>", ":m '>+1<CR>gv-gv", { silent = true })
