@@ -43,4 +43,7 @@ end
 vim.g.edge_style = 'neon'
 -- vim.g.edge_style = 'default'
 -- vim.g.edge_style = 'aura'
-ColorMyPencils('edge')
+-- ColorMyPencils('edge')
+--
+--
+ColorMyPencils('vscode')

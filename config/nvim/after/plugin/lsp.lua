@@ -110,6 +110,8 @@ lspconfig.yamlls.setup {
 lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
 lspconfig.omnisharp.setup({})
 
+
+
 -- signature.setup {
 -- 	bind = true,
 -- 	handler_opts = {
@@ -159,16 +161,22 @@ lsp.set_sign_icons({
 })
 
 lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
-lsp.setup()
 
--- local null_ls = require('null-ls')
---
--- null_ls.setup({
--- 	sources = {
---
--- 	}
--- })
---
+
+require('lsp_lines').setup()
+vim.diagnostic.config({
+	virtual_text = false,
+})
+
+local function toggleLines()
+	local new_value = not vim.diagnostic.config().virtual_lines
+	vim.diagnostic.config({ virtual_lines = new_value, virtual_text = not new_value })
+	return new_value
+end
+
+vim.keymap.set('n', '<leader>lu', toggleLines)
+
+lsp.setup()
 
 local cmp_action = zero.cmp_action()
 cmp.setup {
