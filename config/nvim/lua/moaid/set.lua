@@ -28,6 +28,10 @@ vim.opt.isfname:append("@-@")
 
 vim.opt.updatetime = 50
 
---vim.opt.colorcolumn = "140"
+
+-- vim.opt.colorcolumn = "140"
 
 vim.g.mapleader = " "
+
+-- vim.api.nvim_exec2('set formatoptions-=cro', {})
+vim.opt.formatoptions:remove { 'c', 'r', 'o' }

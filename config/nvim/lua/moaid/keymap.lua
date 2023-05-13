@@ -25,6 +25,8 @@ vim.keymap.set('n', '<leader>Q', ':q!<CR>:q!<CR>:q!<CR>')
 -- Split navigation and management
 vim.keymap.set('n', '<leader>bb', ':bprev<CR>', { desc = 'Goto Previous Buffer', silent = true })
 vim.keymap.set('n', '<leader>bn', ':bnext<CR>', { desc = 'Goto Next Buffer', silent = true })
+vim.keymap.set('n', '<C-left>', ':bprev<CR>', { desc = 'Goto Previous Buffer', silent = true })
+vim.keymap.set('n', '<C-right>', ':bnext<CR>', { desc = 'Goto Next Buffer', silent = true })
 -- vim.keymap.set('n', '<leader>c', ':bprev<CR>:bdelete #<CR>')
 vim.keymap.set('n', '<leader>bd', ':bprev<CR>:bdelete #<CR>', { desc = 'Close Current Buffer' })
 vim.keymap.set('n', '<leader>bD', "<cmd>:%bd<CR>", { desc = 'Close All Buffers' })
@@ -42,10 +44,10 @@ vim.keymap.set('n', '<C-k>', ':wincmd k<CR>', { desc = 'Goto Above Buffer', sile
 vim.keymap.set('n', "<S-q>", '<cmd>:q<CR>', { desc = "Close Without Saving" })
 
 -- Reise splits
-vim.keymap.set('n', '<C-Right>', ':vertical-resize +1<CR>', { silent = true })
-vim.keymap.set('n', '<C-Left>', ':vertical-resize -1<CR>', { silent = true })
-vim.keymap.set('n', '<C-Up>', ':resize -1<CR>', { silent = true })
-vim.keymap.set('n', '<C-Down>', ':resize +1<CR>', { silent = true })
+vim.keymap.set('n', '<leader><Right>', ':vertical-resize +1<CR>', { silent = true })
+vim.keymap.set('n', '<leader><Left>', ':vertical-resize -1<CR>', { silent = true })
+vim.keymap.set('n', '<leader>-<Up>', ':resize -1<CR>', { silent = true })
+vim.keymap.set('n', '<leader><Down>', ':resize +1<CR>', { silent = true })
 
 -- Move current line / block with Alt-j/k a la vscode.
 vim.keymap.set('n', "<M-Down>", ":m .+1<CR>==", { silent = true })
@@ -76,9 +78,7 @@ vim.keymap.set('v', '<leader>fc', '"+y', { desc = "Copy to OS" })
 vim.keymap.set('n', '<leader>fh', '<cmd>:nohls<CR>', { desc = "No HLS" })
 
 vim.keymap.set('n', '<leader>ms', "<cmd>:w<CR>:so<CR>", { desc = "Shout Out" })
--- vim.keymap.set('n', '<leader>c', '"+y<CR>')
--- vim.keymap.set('i', '<leader>c', '"+y<CR>')
--- vim.keymap.set('v', '<leader>c', '"+y<CR>')
--- vim.keymap.set('n', '<leader>v', '"+p<CR>')
--- vim.keymap.set('i', '<leader>v', '"+p<CR>')
--- vim.keymap.set('v', '<leader>v', '"+p<CR>')
+
+-- create new lines in Normal mode
+vim.keymap.set('n', '<leader>o', "o<Esc>^Da<Esc>", { desc = 'Newline Below', silent = true })
+vim.keymap.set('n', '<leader>O', "O<Esc>^Da<Esc>", { desc = 'Newline Above', silent = true })
