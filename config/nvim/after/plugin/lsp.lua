@@ -8,7 +8,6 @@ local lsp = zero.preset('recommended')
 -- 	suggest_lsp_servers = true
 -- })
 
--- local signature = require('lsp_signature')
 -- local navic = require('nvim-navic')
 
 lsp.on_attach(function(client, bufnr)
@@ -23,7 +22,8 @@ lsp.on_attach(function(client, bufnr)
 
 	if client.server_capabilities.signatureHelpProvider then
 		local overloads = require('lsp-overloads')
-		overloads.setup(client, {})
+		overloads.setup(client, {
+		})
 		-- overloads.setup(client, {
 		-- 	keymaps = {
 		-- 		-- next_signature = "<C-j>",
@@ -111,17 +111,18 @@ lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
 lspconfig.omnisharp.setup({})
 
 
+local signature = require('lsp_signature')
 
--- signature.setup {
--- 	bind = true,
--- 	handler_opts = {
--- 		border = 'rounded'
--- 	},
--- 	max_width = 130,
--- 	wrap = true,
--- 	floating_window = true,
--- 	always_trigger = true,
--- }
+signature.setup {
+	bind = true,
+	handler_opts = {
+		border = 'rounded'
+	},
+	max_width = 130,
+	wrap = true,
+	floating_window = false,
+	always_trigger = false,
+}
 
 
 local cmp = require('cmp')

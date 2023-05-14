@@ -1,11 +1,11 @@
 local hop = require('hop')
 local directions = require('hop.hint').HintDirection
 
-hop.setup { keys = 'etovxqpdygfblzhckisuran' }
+hop.setup { keys = 'etovxqpdygfblzhckisuran', case_insensitive = false }
 
 vim.api.nvim_set_keymap("n", "s", ":HopChar2<cr>", { silent = true })
 vim.api.nvim_set_keymap("n", "S", ":HopWord<cr>", { silent = true })
-
+-- char
 vim.keymap.set('', 'f', function()
 	hop.hint_char1({ direction = directions.AFTER_CURSOR, current_line_only = true })
 end, { remap = true })

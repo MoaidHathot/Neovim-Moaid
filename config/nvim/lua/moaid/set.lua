@@ -35,5 +35,7 @@ vim.g.mapleader = " "
 
 -- vim.api.nvim_exec2('set formatoptions-=cro', {})
 vim.opt.formatoptions:remove { 'c', 'r', 'o' }
+-- vim.opt_global.formatoptions:remove { 'c', 'r', 'o' }
+
 
 -- vim.g.OmniSharp_highlighting = 0
