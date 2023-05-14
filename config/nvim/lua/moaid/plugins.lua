@@ -53,8 +53,9 @@ return {
 		version = "*",
 		lazy = true
 	},
+	{ 'rmagatti/goto-preview',               lazy = false },
 	{ "folke/neodev.nvim",                   lazy = true },
-	'ThePrimeagen/harpoon',
+	{ 'ThePrimeagen/harpoon',                lazy = true },
 	{ 'mbbill/undotree',                     lazy = true },
 	{ 'github/copilot.vim',                  lazy = false },
 	{ 'tpope/vim-fugitive',                  lazy = false },
