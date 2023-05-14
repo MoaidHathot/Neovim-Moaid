@@ -1,6 +1,6 @@
 local dap = require('dap')
 
--- local log = require('structlog')
+local log = require('structlog')
 
 local function getHighestVersionDirectory(dir)
 	local command = 'dir /B ' .. dir -- For Windows, use 'dir /B ' .. dir instead
@@ -49,6 +49,10 @@ dap.adapters.coreclr = {
 	args = { '--interpreter=vscode' }
 }
 
+Moaid_config = {
+	debug_dllPath = nil
+}
+
 dap.configurations.cs = {
 	{
 		type = "coreclr",
@@ -63,10 +67,18 @@ dap.configurations.cs = {
 			local project_name = last_dir:sub(1, -1) -- Remove the trailing separator if it exists
 			local version_directory = path .. "\\bin\\Debug"
 			local latest_version = getHighestVersionDirectory(version_directory);
+			-- logger:info('Hieghest version: ' .. latest_version)
 			local executable_path = version_directory .. "\\" .. latest_version .. "\\" .. project_name .. ".dll"
 			-- local tokens = string.gmatch(path, "\\")
 			-- local project_name = tokens[#(tokens) - 1] .. "\\"
-			return vim.fn.input('Path to dll: ', executable_path, 'file')
+			if (Moaid_config.debug_dllPath ~= null) then
+				executable_path = Moaid_config.debug_dllPath
+			end
+
+			local result = vim.fn.input('Path to dll: ', executable_path, 'file')
+			Moaid_config.debug_dllPath = result
+			-- logger:info('Result: ' .. result)
+			return result
 		end,
 	},
 }

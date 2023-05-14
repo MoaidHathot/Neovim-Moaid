@@ -50,8 +50,8 @@ vim.keymap.set('t', '<C-k>', '[[<Cmd>wincmd k<CR>]]', { desc = 'Goto Above Buffe
 vim.keymap.set('n', "<S-q>", '<cmd>:q<CR>', { desc = "Close Without Saving" })
 
 -- Reise splits
-vim.keymap.set({ 'n', 't' }, '<S-Right>', ':vertical-resize +1<CR>', { silent = true })
-vim.keymap.set({ 'n', 't' }, '<S-Left>', ':vertical-resize -1<CR>', { silent = true })
+vim.keymap.set({ 'n', 't' }, '<S-Left>', ':vertical-resize +1<CR>', { silent = true })
+vim.keymap.set({ 'n', 't' }, '<S-Right>', ':vertical-resize -1<CR>', { silent = true })
 vim.keymap.set({ 'n', 't' }, '<C-Up>', ':resize -1<CR>', { silent = true })
 vim.keymap.set({ 'n', 't' }, '<C-Down>', ':resize +1<CR>', { silent = true })
 

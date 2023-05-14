@@ -162,10 +162,10 @@ lsp.set_sign_icons({
 
 lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
 
-
 require('lsp_lines').setup()
 vim.diagnostic.config({
-	virtual_text = false,
+	virtual_lines = false,
+	virtual_text = true,
 })
 
 local function toggleLines()
