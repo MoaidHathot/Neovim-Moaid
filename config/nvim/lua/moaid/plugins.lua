@@ -89,6 +89,7 @@ return {
 		lazy = true
 	},
 	{ 'nvim-telescope/telescope-ui-select.nvim', lazy = true },
+	{ 'stevearc/dressing.nvim',                  lazy = true },
 	{ 'nvim-tree/nvim-tree.lua',                 dependencies = { 'nvim-tree/nvim-web-devicons' }, lazy = true },
 	{ 'lewis6991/gitsigns.nvim',                 lazy = true },
 	{ "folke/which-key.nvim",                    lazy = true },
