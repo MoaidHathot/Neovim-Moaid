@@ -179,7 +179,22 @@ vim.keymap.set('n', '<leader>lu', toggleLines, { desc = "Toggle Underline Diagno
 
 lsp.setup()
 
+
+local luasnip = require('luasnip')
+luasnip.config.set_config({
+	enable_autosnippets = true,
+	history = true
+})
+luasnip.config.setup({
+	enable_autosnippets = true,
+	history = true
+})
+luasnip.setup()
+
+require('luasnip.loaders.from_vscode').lazy_load()
+
 local cmp_action = zero.cmp_action()
+
 cmp.setup {
 	windows = {
 		completion = cmp.config.window.bordered(),
@@ -196,17 +211,15 @@ cmp.setup {
 			fallback()
 		end, { 'i', 'c', 'n' })
 	},
-	sources = {
-		{ name = 'path' },
-		-- { name = 'buffer' },
+	sources = cmp.config.sources({
 		{ name = 'nvim_lsp' },
 		{ name = 'nvim_lua' },
 		{ name = 'luasnip' },
-		-- { name = 'nvim_lsp_signature_help' }
-	},
+		{ name = 'path' },
+		-- 	-- { name = 'nvim_lsp_signature_help' }
+	}),
 	snippet = {
 		expand = function(args)
-			local luasnip = require('luasnip')
 			luasnip.lsp_expand(args.body)
 		end
 	},

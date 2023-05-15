@@ -2,7 +2,7 @@
 
 vim.opt.nu = true
 vim.opt.relativenumber = true
-
+vim.opt.smartcase = true
 vim.opt.tabstop = 4
 vim.opt.softtabstop = 4
 vim.opt.shiftwidth = 4
@@ -34,8 +34,12 @@ vim.opt.updatetime = 50
 vim.g.mapleader = " "
 
 -- vim.api.nvim_exec2('set formatoptions-=cro', {})
-vim.opt.formatoptions:remove { 'c', 'r', 'o' }
 -- vim.opt_global.formatoptions:remove { 'c', 'r', 'o' }
 
 
 -- vim.g.OmniSharp_highlighting = 0
+
+-- vim.opt.ignorecase = true
+-- This is test
+
+vim.opt.formatoptions:remove { 'c', 'r', 'o' }
