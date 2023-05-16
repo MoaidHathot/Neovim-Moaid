@@ -25,6 +25,15 @@ tree.setup {
 	modified = {
 		enable = true,
 	},
+	git = {
+		enable = true,
+		timeout = 700
+	},
+	actions = {
+		open_file = {
+			resize_window = false,
+		}
+	}
 }
 
 vim.keymap.set("n", "<leader>e", vim.cmd.NvimTreeToggle)
