@@ -56,7 +56,7 @@ return {
 	{ 'rmagatti/goto-preview',               lazy = false },
 	{ "folke/neodev.nvim",                   lazy = true },
 	{ 'ThePrimeagen/harpoon',                lazy = true },
-	{ 'mbbill/undotree',                     lazy = true },
+	{ 'mbbill/undotree',                     lazy = false },
 	{ 'github/copilot.vim',                  lazy = false },
 	{ 'tpope/vim-fugitive',                  lazy = false },
 	{ 'tpope/vim-surround',                  lazy = false },
