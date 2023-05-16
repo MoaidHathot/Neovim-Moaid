@@ -203,10 +203,12 @@ function get_namespace()
 	local fname = vim.api.nvim_buf_get_name(0)
 	print('fname: ' .. fname)
 	local util = require('lspconfig.util')
-	local path = util.root_pattern '*.csproj' ('fname') or util.root_pattern '*.sln' (fname)
-	print('path: ' .. path)
+	local path = util.root_pattern '*.csproj' ('fname') or util.root_pattern '*.sln' (fname) or
+		util.root_pattern '*.sln' ('./') or util.root_pattern '*.csproj' ('./')
+	print('path: ', path)
 
 	local result = fname:gsub(path .. '/', ''):gsub(path .. '\\', '')
+	print('temp-result: ' .. result)
 	local no_fname = result:gsub('[\\/]?[a-zA-Z0-9_@]+.cs$', '')
 
 	print('no_fname: ' .. no_fname)
@@ -225,11 +227,16 @@ end
 function get_class_with_namespace()
 	local class_name = get_class_name()
 	local namespace_name = get_namespace()
+	local type = "class"
+
+	if (class_name:sub(1, 1) == "I") then
+		type = "interface"
+	end
 
 	return {
 		namespace_name,
 		[[]],
-		'public class ' .. class_name,
+		'public ' .. type .. ' ' .. class_name,
 		[[{]],
 		[[]],
 		'}'
@@ -254,7 +261,6 @@ luasnip.add_snippets(nil, {
 			},
 			{
 				luasnip.function_node(get_class_with_namespace, {})
-				-- get_class_with_namespace()
 			})
 	}
 })
