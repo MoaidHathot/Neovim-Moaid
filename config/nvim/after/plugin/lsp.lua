@@ -203,7 +203,7 @@ function get_namespace()
 	local fname = vim.api.nvim_buf_get_name(0)
 	print('fname: ' .. fname)
 	local util = require('lspconfig.util')
-	local path = util.root_pattern '*.csproj' ('fname') or util.root_pattern '*.sln' (fname) or
+	local path = util.root_pattern '*.csproj' (fname) or util.root_pattern '*.sln' (fname) or
 		util.root_pattern '*.sln' ('./') or util.root_pattern '*.csproj' ('./')
 	print('path: ', path)
 
