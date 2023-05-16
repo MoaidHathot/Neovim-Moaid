@@ -17,7 +17,7 @@ lsp.on_attach(function(client, bufnr)
 
 	vim.keymap.set({ 'n', 'x' }, '<leader>lf', function()
 		vim.lsp.buf.format({ async = false, timeout_ms = 10000 })
-	end)
+	end, { desc = "Format Buffer", silent = true })
 
 
 	if client.server_capabilities.signatureHelpProvider then
@@ -108,7 +108,12 @@ lspconfig.yamlls.setup {
 }
 
 lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
-lspconfig.omnisharp.setup({})
+lspconfig.omnisharp.setup({
+	settings = {
+		enable_roslyn_analysers = true,
+		enable_import_completion = true,
+	}
+})
 
 
 local signature = require('lsp_signature')
@@ -189,6 +194,94 @@ luasnip.config.setup({
 	enable_autosnippets = true,
 	history = true
 })
+
+function create_namespace_from_path(path)
+	return 'namespace ' .. path:gsub('[a-zA-Z]:[\\/]', ''):gsub('[\\/]', '.') .. ';'
+end
+
+function get_namespace()
+	local fname = vim.api.nvim_buf_get_name(0)
+	print('fname: ' .. fname)
+	local util = require('lspconfig.util')
+	local path = util.root_pattern '*.csproj' ('fname') or util.root_pattern '*.sln' (fname)
+	print('path: ' .. path)
+
+	local result = fname:gsub(path .. '/', ''):gsub(path .. '\\', '')
+	local no_fname = result:gsub('[\\/]?[a-zA-Z0-9_@]+.cs$', '')
+
+	print('no_fname: ' .. no_fname)
+
+	local namespace = create_namespace_from_path(no_fname)
+	return namespace
+end
+
+function get_class_name()
+	local start_index, end_index, file_name = string.find(vim.api.nvim_buf_get_name(0), '([a-zA-Z_@<>0-9]+).cs')
+	local name = file_name:gsub('.cs', ''):gsub('/', ''):gsub('\\', '')
+
+	return name
+end
+
+function get_class_with_namespace()
+	local class_name = get_class_name()
+	local namespace_name = get_namespace()
+
+	return {
+		namespace_name,
+		[[]],
+		'public class ' .. class_name,
+		[[{]],
+		[[]],
+		'}'
+	}
+end
+
+luasnip.add_snippets(nil, {
+	cs = {
+		luasnip.snippet({
+				trig = 'namespace',
+				name = 'add namesapce',
+				dscr = 'Add namespace'
+			},
+			{
+				luasnip.function_node(get_namespace, {})
+			}
+		),
+		luasnip.snippet({
+				trig = 'class',
+				name = 'class with namesapce',
+				dscr = 'class with namesapce'
+			},
+			{
+				luasnip.function_node(get_class_with_namespace, {})
+				-- get_class_with_namespace()
+			})
+	}
+})
+
+
+-- some shorthands...
+-- local s = ls.snippet
+-- local sn = ls.snippet_node
+-- local t = ls.text_node
+-- local i = ls.insert_node
+-- local f = ls.function_node
+-- local c = ls.choice_node
+-- local d = ls.dynamic_node
+-- local r = ls.restore_node
+-- local l = require("luasnip.extras").lambda
+-- local rep = require("luasnip.extras").rep
+-- local p = require("luasnip.extras").partial
+-- local m = require("luasnip.extras").match
+-- local n = require("luasnip.extras").nonempty
+-- local dl = require("luasnip.extras").dynamic_lambda
+-- local fmt = require("luasnip.extras.fmt").fmt
+-- local fmta = require("luasnip.extras.fmt").fmta
+-- local types = require("luasnip.util.types")
+-- local conds = require("luasnip.extras.conditions")
+-- local conds_expand = require("luasnip.extras.conditions.expand")
+
+
 luasnip.setup()
 
 require('luasnip.loaders.from_vscode').lazy_load()

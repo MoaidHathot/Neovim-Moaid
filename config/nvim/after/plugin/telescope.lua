@@ -23,7 +23,7 @@ telescope.setup {
 		},
 		project = {
 			base_dirs = {
-				'S:\\Programming\\Github\\',
+				-- 'S:\\Programming\\Github\\',
 				'S:\\Programming',
 				'S:\\Work',
 				'C:\\temp',
