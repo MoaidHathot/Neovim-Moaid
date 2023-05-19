@@ -16,7 +16,8 @@ tree.setup {
 	},
 	view = {
 		number = true,
-		relativenumber = true
+		relativenumber = true,
+		-- preservce_window_proportions = true,
 	},
 	diagnostics = {
 		enable = true,
@@ -25,6 +26,11 @@ tree.setup {
 	modified = {
 		enable = true,
 	},
+	actions = {
+		open_file = {
+			resize_window = false,
+		},
+	}
 }
 
 vim.keymap.set("n", "<leader>e", vim.cmd.NvimTreeToggle)

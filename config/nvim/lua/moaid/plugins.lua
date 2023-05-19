@@ -56,7 +56,7 @@ return {
 	{ 'rmagatti/goto-preview',               lazy = false },
 	{ "folke/neodev.nvim",                   lazy = true },
 	{ 'ThePrimeagen/harpoon',                lazy = true },
-	{ 'mbbill/undotree',                     lazy = true },
+	{ 'mbbill/undotree',                     lazy = false },
 	{ 'github/copilot.vim',                  lazy = false },
 	{ 'tpope/vim-fugitive',                  lazy = false },
 	{ 'tpope/vim-surround',                  lazy = false },
@@ -88,6 +88,7 @@ return {
 		},
 		lazy = true
 	},
+	-- { 'nvim-telescope/telescope-fzf-native.nvim', build = 'make',                                   lazy = true },
 	{ 'nvim-telescope/telescope-ui-select.nvim', lazy = true },
 	{ 'stevearc/dressing.nvim',                  lazy = true },
 	{ 'nvim-tree/nvim-tree.lua',                 dependencies = { 'nvim-tree/nvim-web-devicons' }, lazy = true },
