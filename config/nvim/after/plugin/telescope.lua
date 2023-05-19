@@ -2,6 +2,9 @@ local builtin = require('telescope.builtin')
 local telescope = require('telescope')
 local theme = require('telescope.themes')
 
+-- builtin.live_grep {
+-- 	additional_args = { '--no-ignore' }
+-- }
 
 telescope.setup {
 	extensions = {
@@ -24,11 +27,11 @@ telescope.setup {
 		project = {
 			base_dirs = {
 				-- 'S:\\Programming\\Github\\',
-				'S:\\Programming',
-				'S:\\Work',
-				'C:\\temp',
-				'C:\\Work',
-				'S:\\',
+				-- 'S:\\Programming',
+				-- 'S:\\Work',
+				-- 'C:\\temp',
+				-- 'C:\\Work',
+				-- 'S:\\',
 			},
 			sync_with_nvim_tree = true,
 		}
@@ -41,7 +44,10 @@ telescope.load_extension('project')
 
 vim.keymap.set('n', '<leader>st', builtin.buffers, { desc = 'Find Buffers' })
 vim.keymap.set('n', '<leader>sf', builtin.find_files, { desc = 'Find Files' })
-vim.keymap.set('n', '<leader>sg', builtin.live_grep, { desc = 'Find Grep' })
+vim.keymap.set('n', '<leader>sg', builtin.live_grep,
+	{ desc = 'Find Grep' })
+vim.keymap.set('n', '<leader>sG', function() builtin.live_grep { additional_args = { '--no-ignore' } } end,
+	{ desc = 'Find Grep Including In .gitignore' })
 vim.keymap.set('n', '<leader>sb', builtin.buffers, { desc = 'Find Buffers' })
 vim.keymap.set('n', '<leader>sh', builtin.help_tags, { desc = 'Find Help' })
 vim.keymap.set('n', '<leader>sc', builtin.current_buffer_fuzzy_find, { desc = 'Find in current buffer' })
