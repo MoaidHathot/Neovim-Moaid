@@ -55,7 +55,8 @@ vim.keymap.set({ 'n', 't' }, '<S-Left>', ':vertical-resize +1<CR>', { silent = t
 vim.keymap.set({ 'n', 't' }, '<S-Right>', ':vertical-resize -1<CR>', { silent = true })
 vim.keymap.set({ 'n', 't' }, '<C-Up>', ':resize -1<CR>', { silent = true })
 vim.keymap.set({ 'n', 't' }, '<C-Down>', ':resize +1<CR>', { silent = true })
-
+vim.keymap.set({ 'n' }, '<S-l>', '10zl', { desc = "Scroll To The Right", silent = true })
+vim.keymap.set({ 'n' }, '<S-h>', '10zh', { desc = "Scroll To The Left", silent = true })
 -- Move current line / block with Alt-j/k a la vscode.
 vim.keymap.set('n', "<M-Down>", ":m .+1<CR>==", { silent = true })
 vim.keymap.set('n', "<M-Up>", ":m .-2<CR>==", { silent = true })
