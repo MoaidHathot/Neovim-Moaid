@@ -89,5 +89,5 @@ vim.keymap.set('x', '<leader>v', "\"_dP")
 vim.keymap.set('n', '<leader>ms', "<cmd>:w<CR>:so<CR>", { desc = "Shout Out" })
 
 -- create new lines in Normal mode
-vim.keymap.set('n', '<leader>o', "o<Esc>^Da<Esc>", { desc = 'Newline Below', silent = true })
-vim.keymap.set('n', '<leader>O', "O<Esc>^Da<Esc>", { desc = 'Newline Above', silent = true })
+vim.keymap.set('n', '<leader>o', "o<Esc>^Da<Esc>k", { desc = 'Newline Below', silent = true })
+vim.keymap.set('n', '<leader>O', "O<Esc>^Da<Esc>j", { desc = 'Newline Above', silent = true })
