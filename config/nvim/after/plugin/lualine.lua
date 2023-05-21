@@ -30,9 +30,9 @@ local function get_lsp_name()
 	-- return language_servers;
 	-- end
 
-	if copilot_active then
-		language_servers = language_servers .. "%#SLCopilot#" .. "" --.. "%*"
-	end
+	-- if copilot_active then
+	-- 	language_servers = language_servers .. "#SLCopilot#" .. "" --.. "%*"
+	-- end
 	--
 	return language_servers
 end
@@ -48,7 +48,10 @@ lualine.setup {
 			{ get_lsp_name },
 			'selectioncount',
 			'filetype'
-		}
+		},
+		-- lualine_c = {
+		-- 	'filetype'
+		-- }
 		-- lualine_b = {
 		-- 'diagnostics'
 		-- 'diff',
