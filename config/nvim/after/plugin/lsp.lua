@@ -169,6 +169,7 @@ lsp.set_sign_icons({
 lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
 
 require('lsp_lines').setup()
+
 vim.diagnostic.config({
 	virtual_lines = false,
 	virtual_text = true,
@@ -217,14 +218,14 @@ function get_namespace()
 	return namespace
 end
 
-function get_class_name()
+local function get_class_name()
 	local start_index, end_index, file_name = string.find(vim.api.nvim_buf_get_name(0), '([a-zA-Z_@<>0-9]+).cs')
 	local name = file_name:gsub('.cs', ''):gsub('/', ''):gsub('\\', '')
 
 	return name
 end
 
-function get_class_with_namespace()
+local function get_class_with_namespace()
 	local class_name = get_class_name()
 	local namespace_name = get_namespace()
 	local type = "class"

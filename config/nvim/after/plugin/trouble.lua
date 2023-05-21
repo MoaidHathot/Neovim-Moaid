@@ -10,16 +10,3 @@ vim.keymap.set('n', '<leader>ld', ":TroubleToggle document_diagnostics<CR>", { d
 vim.keymap.set('n', '<leader>ll', ':TroubleToggle loclist<CR>', { desc = "Toggle Locallist" })
 vim.keymap.set('n', '<leader>lw', ':TroubleToggle workspace_diagnostics<CR>', { desc = "Toggle Workspace Diagnostics" })
 vim.keymap.set('n', '<leader>lr', ':TroubleToggle lsp_references<CR>', { desc = "Toggle LSP References" })
-
-
-local telescope = require('telescope')
--- local actions = require('telescope.actions')
-
-telescope.setup {
-	defaults = {
-		mappings = {
-			i = { ["<c-t>"] = trouble.open_with_trouble },
-			n = { ["<c-t>"] = trouble.open_with_trouble },
-		}
-	}
-}

@@ -110,7 +110,7 @@ return {
 			'nvim-telescope/telescope.nvim',
 			"nvim-tree/nvim-web-devicons",
 		},
-		lazy = true
+		lazy = false
 	},
 	{ 'goolord/alpha-nvim',        dependencies = { 'nvim-tree/nvim-web-devicons' }, lazy = true },
 	{ 'nvim-lualine/lualine.nvim', dependencies = { 'nvim-tree/nvim-web-devicons' }, lazy = true },

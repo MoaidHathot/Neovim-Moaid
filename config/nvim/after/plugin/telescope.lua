@@ -6,7 +6,25 @@ local theme = require('telescope.themes')
 -- 	additional_args = { '--no-ignore' }
 -- }
 
+-- local telescope = require('telescope')
+-- local troubleTelescope = require('trouble.providers.telescope')
+-- local actions = require('telescope.actions')
+
+-- telescope.setup {
+-- 	defaults = {
+-- 		mappings = {
+-- 			i = { ["<C-t>"] = troubleTelescope.open_with_trouble },
+-- 			n = { ["<C-t>"] = troubleTelescope.open_with_trouble },
+-- 		}
+-- 	}
+-- }
 telescope.setup {
+	defaults = {
+		mappings = {
+			i = { ["<C-t>"] = require('trouble.providers.telescope').open_with_trouble },
+			n = { ["<C-t>"] = require('trouble.providers.telescope').open_with_trouble },
+		}
+	},
 	extensions = {
 		["ui-select"] = {
 			theme.get_dropdown {

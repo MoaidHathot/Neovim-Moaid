@@ -95,3 +95,11 @@ vim.keymap.set('n', '<leader>o', "o<Esc>^Da<Esc>k", { desc = 'Newline Below', si
 vim.keymap.set('n', '<leader>O', "O<Esc>^Da<Esc>j", { desc = 'Newline Above', silent = true })
 
 vim.keymap.set('i', '<S-tab>', '<esc><<i')
+
+vim.keymap.set('n', '<S-Home>', 'gg')
+vim.keymap.set('n', '<S-End>', 'G')
+
+vim.keymap.set('n', '<S-Down>', 'j')
+vim.keymap.set('v', '<S-Down>', 'j')
+vim.keymap.set('n', '<S-Up>', 'k')
+vim.keymap.set('v', '<S-Up>', 'k')
