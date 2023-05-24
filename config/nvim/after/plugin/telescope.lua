@@ -48,12 +48,19 @@ telescope.load_extension('ui-select')
 telescope.load_extension('file_browser')
 telescope.load_extension('project')
 
-vim.keymap.set('n', '<leader>st', builtin.buffers, { desc = 'Find Buffers' })
+-- vim.keymap.set('n', '<leader>sF', function() builtin.find_files({ no_ignore = true }) end, { desc = 'Find Files' })
+vim.keymap.set('n', '<leader>sF', "<cmd>Telescope find_files hidden=true no_ignore=true<CR>", { desc = 'Find All Files' })
 vim.keymap.set('n', '<leader>sf', builtin.find_files, { desc = 'Find Files' })
 vim.keymap.set('n', '<leader>sg', builtin.live_grep,
 	{ desc = 'Find Grep' })
-vim.keymap.set('n', '<leader>sG', function() builtin.live_grep { additional_args = { '--no-ignore' } } end,
-	{ desc = 'Find Grep Including In .gitignore' })
+-- vim.keymap.set('n', '<leader>sG', function() builtin.live_grep { additional_args = { '--no-ignore' } } end,	{ desc = 'Find Grep Including In .gitignore' })
+vim.keymap.set('n', '<leader>sG',
+	function()
+		builtin.live_grep { additional_args = function(args)
+			return vim.list_extend(args,
+				{ '--hidden', '--no-ignore' })
+		end }
+	end, { desc = 'Find Grep Everything' })
 vim.keymap.set('n', '<leader>sb', builtin.buffers, { desc = 'Find Buffers' })
 vim.keymap.set('n', '<leader>sh', builtin.help_tags, { desc = 'Find Help' })
 vim.keymap.set('n', '<leader>sc', builtin.current_buffer_fuzzy_find, { desc = 'Find in current buffer' })
@@ -73,3 +80,11 @@ vim.keymap.set('n', '<leader>lQ', builtin.quickfix, { desc = 'Find Quick Fixes' 
 vim.keymap.set('n', '<leader>gi', builtin.lsp_implementations, { desc = 'Find Implementations' })
 vim.keymap.set('n', '<leader>gd', builtin.lsp_definitions, { desc = 'Find Definitions' })
 vim.keymap.set('n', '<leader>gD', builtin.lsp_type_definitions, { desc = 'Find Definitions' })
+
+vim.keymap.set('n', '<leader>gb', builtin.git_branches, { desc = 'Git Branches' })
+vim.keymap.set('n', '<leader>gs', builtin.git_status, { desc = 'Git Status' })
+vim.keymap.set('n', '<leader>gS', builtin.git_stash, { desc = 'Git Stash' })
+
+
+vim.keymap.set('n', '<leader>st', builtin.builtin, { desc = 'Find Telescope Pickers' })
+vim.keymap.set('n', '<leader>sT', builtin.builtin, { desc = 'Find Telescope cached Pickers' })
