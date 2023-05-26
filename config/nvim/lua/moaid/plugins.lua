@@ -140,6 +140,7 @@ return {
 	{ 'nathom/filetype.nvim',            lazy = false },
 	{ 'stevearc/oil.nvim',               lazy = true },
 	{ 'eandrju/cellular-automaton.nvim', lazy = false },
+	{ 'ThePrimeagen/vim-be-good',        lazy = false },
 	--themes
 	{ "catppuccin/nvim",                 lazy = false },
 	{ 'rose-pine/neovim',                lazy = false },
