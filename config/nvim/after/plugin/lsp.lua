@@ -208,6 +208,10 @@ function get_namespace()
 		util.root_pattern '*.sln' ('./') or util.root_pattern '*.csproj' ('./')
 	print('path: ', path)
 
+	if path == nil then
+		path = ''
+	end
+
 	local result = fname:gsub(path .. '/', ''):gsub(path .. '\\', '')
 	print('temp-result: ' .. result)
 	local no_fname = result:gsub('[\\/]?[a-zA-Z0-9_@]+.cs$', '')
