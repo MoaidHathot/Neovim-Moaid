@@ -9,7 +9,7 @@ local lsp = zero.preset('recommended')
 -- })
 
 -- local navic = require('nvim-navic')
-
+--
 lsp.on_attach(function(client, bufnr)
 	lsp.default_keymaps({ buffer = bufnr, preserve_mappings = true })
 	-- lsp.default_keymaps({ buffer = bufnr, preserve_mappings = true })
@@ -24,6 +24,7 @@ lsp.on_attach(function(client, bufnr)
 		local overloads = require('lsp-overloads')
 		overloads.setup(client, {
 		})
+
 		-- overloads.setup(client, {
 		-- 	keymaps = {
 		-- 		-- next_signature = "<C-j>",
@@ -107,7 +108,8 @@ lspconfig.yamlls.setup {
 	},
 }
 
-lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
+-- lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
+
 lspconfig.omnisharp.setup({
 	settings = {
 		enable_roslyn_analysers = true,
