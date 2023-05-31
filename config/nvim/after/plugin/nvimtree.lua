@@ -17,6 +17,7 @@ tree.setup {
 	view = {
 		number = true,
 		relativenumber = true,
+		width = 45,
 		-- preservce_window_proportions = true,
 	},
 	diagnostics = {
