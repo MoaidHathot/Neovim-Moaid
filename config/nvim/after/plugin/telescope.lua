@@ -51,8 +51,7 @@ telescope.load_extension('project')
 -- vim.keymap.set('n', '<leader>sF', function() builtin.find_files({ no_ignore = true }) end, { desc = 'Find Files' })
 vim.keymap.set('n', '<leader>sF', "<cmd>Telescope find_files hidden=true no_ignore=true<CR>", { desc = 'Find All Files' })
 vim.keymap.set('n', '<leader>sf', builtin.find_files, { desc = 'Find Files' })
-vim.keymap.set('n', '<leader>sg', builtin.live_grep,
-	{ desc = 'Find Grep' })
+vim.keymap.set('n', '<leader>sg', builtin.live_grep, { desc = 'Find Grep' })
 -- vim.keymap.set('n', '<leader>sG', function() builtin.live_grep { additional_args = { '--no-ignore' } } end,	{ desc = 'Find Grep Including In .gitignore' })
 vim.keymap.set('n', '<leader>sG',
 	function()
