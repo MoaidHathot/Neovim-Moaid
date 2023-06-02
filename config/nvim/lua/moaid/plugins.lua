@@ -117,7 +117,7 @@ return {
 	{ "akinsho/toggleterm.nvim",   version = '*',                                    lazy = true },
 	{ "folke/todo-comments.nvim",  dependencies = "nvim-lua/plenary.nvim",           lazy = true },
 	{ 'phaazon/hop.nvim',          branch = 'v2',                                    lazy = true },
-	-- { "phaazon/hop.nvim",          branch = 'v2',                                    commit = 'caaccee', lazy = true },
+	{ "ggandor/leap.nvim",         lazy = true },
 	{
 		"utilyre/barbecue.nvim",
 		name = "barbecue",

@@ -1,3 +1,4 @@
+vim.loader.enable()
 -- if vim.g.vscode then
 -- 	vim.cmd [[
 -- 	" source $HOME/.config/nvim/vscode.vim
