@@ -112,8 +112,16 @@ lspconfig.yamlls.setup {
 
 lspconfig.omnisharp.setup({
 	settings = {
+		omnisharp = {
+			enable_roslyn_analysers = true,
+			enable_import_completion = true,
+			organize_imports_on_format = true,
+			filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props' },
+		},
 		enable_roslyn_analysers = true,
 		enable_import_completion = true,
+		organize_imports_on_format = true,
+		filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props' },
 	}
 })
 
