@@ -87,6 +87,8 @@ vim.keymap.set('v', '<leader>fv', '"+p', { desc = "Paste from OS" })
 vim.keymap.set('v', '<leader>fc', '"+y', { desc = "Copy to OS" })
 vim.keymap.set('n', '<leader>fh', '<cmd>:nohls<CR>', { desc = "No HLS" })
 vim.keymap.set('x', '<leader>v', "\"_dP")
+vim.keymap.set('i', '<C-p>', '<Esc>pa')
+
 
 vim.keymap.set('n', '<leader>ms', "<cmd>:w<CR>:so<CR>", { desc = "Shout Out" })
 
@@ -98,6 +100,7 @@ vim.keymap.set('i', '<S-tab>', '<esc><<i')
 
 vim.keymap.set('n', '<S-Home>', 'gg')
 vim.keymap.set('n', '<S-End>', 'G')
+vim.keymap.set('n', '<Home>', '^')
 
 vim.keymap.set('n', '<S-Down>', 'j')
 vim.keymap.set('v', '<S-Down>', 'j')

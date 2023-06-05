@@ -122,7 +122,11 @@ lspconfig.omnisharp.setup({
 		enable_import_completion = true,
 		organize_imports_on_format = true,
 		filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props' },
-	}
+	},
+	enable_roslyn_analysers = true,
+	enable_import_completion = true,
+	organize_imports_on_format = true,
+	filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props' },
 })
 
 
@@ -215,7 +219,7 @@ function get_namespace()
 	print('fname: ' .. fname)
 	local util = require('lspconfig.util')
 	local path = util.root_pattern '*.csproj' (fname) or util.root_pattern '*.sln' (fname) or
-		util.root_pattern '*.sln' ('./') or util.root_pattern '*.csproj' ('./')
+		util.root_pattern '*.sln' ('./') or util.root_pattern '*.csproj' ('./') or util.root_pattern '*.slnx'
 	print('path: ', path)
 
 	if path == nil then
