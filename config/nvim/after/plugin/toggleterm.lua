@@ -60,7 +60,7 @@ function _lazygit_toggle()
 	lazygit:toggle()
 end
 
-vim.keymap.set({ 'n', 't' }, '<C-\\>', '<cmd>:1ToggleTerm direction=float<CR>')
+vim.keymap.set({ 'n', 'i', 't' }, '<C-\\>', '<cmd>:1ToggleTerm direction=float<CR>')
 vim.keymap.set({ 'n', 't' }, '<M-1>', '<cmd>:2ToggleTerm direction=horizontal size=20<CR>')
 vim.keymap.set({ 'n', 't' }, '<M-2>', '<cmd>:3ToggleTerm direction=vertical size=100<CR>')
 vim.keymap.set({ 'n', 't' }, '<M-3>', '<cmd>:4ToggleTerm direction=float<CR>')
