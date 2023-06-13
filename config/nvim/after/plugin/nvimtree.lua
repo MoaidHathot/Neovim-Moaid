@@ -1,6 +1,8 @@
 local tree = require('nvim-tree')
 
 tree.setup {
+	disable_netrw = true,
+	hijack_netrw = true,
 	renderer = {
 		group_empty = true,
 		highlight_git = true,
@@ -12,7 +14,7 @@ tree.setup {
 		enable = true
 	},
 	filters = {
-		dotfiles = true,
+		dotfiles = false,
 	},
 	view = {
 		number = true,
@@ -29,7 +31,7 @@ tree.setup {
 	},
 	git = {
 		enable = true,
-		timeout = 700
+		timeout = 700,
 	},
 	actions = {
 		open_file = {
