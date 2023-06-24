@@ -92,7 +92,7 @@ return {
 	{ 'nvim-telescope/telescope-ui-select.nvim', lazy = true },
 	{ 'stevearc/dressing.nvim',                  lazy = true },
 	{ 'nvim-tree/nvim-tree.lua',                 dependencies = { 'nvim-tree/nvim-web-devicons' }, lazy = true },
-	{ 'lewis6991/gitsigns.nvim',                 lazy = true },
+	{ 'lewis6991/gitsigns.nvim',                 lazy = false },
 	{ "folke/which-key.nvim",                    lazy = true },
 	{
 		'L3MON4D3/LuaSnip',
@@ -143,6 +143,7 @@ return {
 	{ 'eandrju/cellular-automaton.nvim', lazy = false },
 	{ 'ThePrimeagen/vim-be-good',        lazy = false },
 	{ "sindrets/diffview.nvim",          lazy = false },
+	{ "iamcco/markdown-preview.nvim",    lazy = false,       build = function() vim.fn["mkdp#util#install"]() end },
 	--themes
 	{ "catppuccin/nvim",                 lazy = false },
 	{ 'rose-pine/neovim',                lazy = false },

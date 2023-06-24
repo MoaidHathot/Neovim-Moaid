@@ -393,6 +393,7 @@ null.setup({
 		-- null.builtins.formatting.prettier,
 		-- null.builtins.diagnostics.eslint,
 		-- null.builtins.formatting.stylua,
+		null.builtins.code_actions.gitsigns,
 	}
 })
 
