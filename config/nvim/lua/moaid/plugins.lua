@@ -1,6 +1,7 @@
 return {
 
 	{ 'nvim-treesitter/nvim-treesitter', build = { ':TSUpdate' }, lazy = true },
+	{ 'nvim-treesitter/playground',      lazy = false },
 	{
 		'VonHeikemen/lsp-zero.nvim',
 		branch = 'v2.x',
@@ -23,7 +24,7 @@ return {
 		},
 		lazy = false
 	},
-	{ 'jose-elias-alvarez/null-ls.nvim', lazy = true },
+	{ 'jose-elias-alvarez/null-ls.nvim',              lazy = true },
 	{
 		"jay-babu/mason-null-ls.nvim",
 		event = { "BufReadPre", "BufNewFile" },
