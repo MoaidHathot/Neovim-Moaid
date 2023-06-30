@@ -48,6 +48,8 @@ return {
 	-- { "OmniSharp/Omnisharp-vim",                      lazy = false },
 	{ 'mfussenegger/nvim-dap',                        lazy = true },
 	{ "rcarriga/nvim-dap-ui",                         dependencies = { "mfussenegger/nvim-dap" }, lazy = true },
+	{ 'theHamsta/nvim-dap-virtual-text',              lazy = true },
+	{ 'nvim-telescope/telescope-dap.nvim',            lazy = true },
 	{
 		'akinsho/bufferline.nvim',
 		dependencies = { 'nvim-tree/nvim-web-devicons' },
@@ -89,6 +91,7 @@ return {
 		},
 		lazy = true
 	},
+	-- { 'moll/vim-bbye',                           lazy = false },
 	-- { 'nvim-telescope/telescope-fzf-native.nvim', build = 'make',                                   lazy = true },
 	{ 'nvim-telescope/telescope-ui-select.nvim', lazy = true },
 	{ 'stevearc/dressing.nvim',                  lazy = true },

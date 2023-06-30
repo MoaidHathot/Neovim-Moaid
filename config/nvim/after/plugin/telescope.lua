@@ -47,6 +47,7 @@ telescope.setup {
 telescope.load_extension('ui-select')
 telescope.load_extension('file_browser')
 telescope.load_extension('project')
+telescope.load_extension('dap')
 
 -- vim.keymap.set('n', '<leader>sF', function() builtin.find_files({ no_ignore = true }) end, { desc = 'Find Files' })
 vim.keymap.set('n', '<leader>sF', "<cmd>Telescope find_files hidden=true no_ignore=true<CR>", { desc = 'Find All Files' })

@@ -83,6 +83,8 @@ dap.configurations.cs = {
 	},
 }
 
+require('nvim-dap-virtual-text').setup()
+
 local dapui = require('dapui')
 
 dap.listeners.after.event_initialized['dapui_config'] = function()
@@ -107,6 +109,8 @@ vim.keymap.set('n', '<leader>ds', "<cmd>:lua require('dap').continue()<CR>")
 vim.keymap.set('n', '<F5>', "<cmd>:lua require('dap').continue()<CR>")
 vim.keymap.set('n', '<leader>di', "<cmd>:lua require('dap').step_into()<CR>")
 vim.keymap.set('n', '<F11>', "<cmd>:lua require('dap').step_into()<CR>")
+vim.keymap.set('n', '<leader>dO', "<cmd>:lua require('dap').step_out()<CR>")
+vim.keymap.set('n', '<S-F11>', "<cmd>:lua require('dap').step_out()<CR>")
 vim.keymap.set('n', '<leader>do', "<cmd>:lua require('dap').step_over()<CR>")
 vim.keymap.set('n', '<F10>', "<cmd>:lua require('dap').step_over()<CR>")
 vim.keymap.set('n', '<leader>du', "<cmd>:lua require('dapui').toggle()<CR>")
