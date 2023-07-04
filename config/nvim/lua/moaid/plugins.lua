@@ -1,5 +1,4 @@
 return {
-
 	{ 'nvim-treesitter/nvim-treesitter', build = { ':TSUpdate' }, lazy = true },
 	{ 'nvim-treesitter/playground',      lazy = false },
 	{
@@ -66,6 +65,14 @@ return {
 	{ 'tpope/vim-repeat',                    lazy = false },
 	{ "Tastyep/structlog.nvim",              lazy = true },
 	{ 'rcarriga/nvim-notify',                lazy = true },
+	-- {
+	-- 	'folke/noice.nvim',
+	-- 	event = 'VeryLazy',
+	-- 	dependencies = {
+	-- 		'MunifTanjim/nui.nvim',
+	-- 		"rcarriga/nvim-notify"
+	-- 	}
+	-- },
 	{ 'RRethy/vim-illuminate',               lazy = false },
 	{ "lukas-reineke/indent-blankline.nvim", lazy = true },
 	{ 'numToStr/Comment.nvim',               lazy = true },
@@ -148,6 +155,7 @@ return {
 	{ 'ThePrimeagen/vim-be-good',        lazy = false },
 	{ "sindrets/diffview.nvim",          lazy = false },
 	{ "iamcco/markdown-preview.nvim",    lazy = false,       build = function() vim.fn["mkdp#util#install"]() end },
+	{ 'tzachar/highlight-undo.nvim',     lazy = false },
 	--themes
 	{ "catppuccin/nvim",                 lazy = false },
 	{ 'rose-pine/neovim',                lazy = false },
