@@ -154,16 +154,22 @@ return {
 	{ 'eandrju/cellular-automaton.nvim', lazy = false },
 	{ 'ThePrimeagen/vim-be-good',        lazy = false },
 	{ "sindrets/diffview.nvim",          lazy = false },
-	{ "iamcco/markdown-preview.nvim",    lazy = false,       build = function() vim.fn["mkdp#util#install"]() end },
-	{ 'tzachar/highlight-undo.nvim',     lazy = false },
+	{
+		"iamcco/markdown-preview.nvim",
+		lazy = false,
+		build = function()
+			vim.fn["mkdp#util#install"]()
+		end
+	},
+	{ 'tzachar/highlight-undo.nvim', lazy = false },
 	--themes
-	{ "catppuccin/nvim",                 lazy = false },
-	{ 'rose-pine/neovim',                lazy = false },
-	{ 'LunarVim/lunar.nvim',             lazy = false },
-	{ "lunarvim/Onedarker.nvim",         lazy = false },
-	{ "rebelot/kanagawa.nvim",           lazy = false },
-	{ 'folke/tokyonight.nvim',           lazy = false },
-	{ 'Everblush/nvim',                  name = 'everblush', lazy = false },
-	{ 'sainnhe/edge',                    lazy = false },
-	{ 'Mofiqul/vscode.nvim',             priority = 1000,    lazy = false },
+	{ "catppuccin/nvim",             lazy = false },
+	{ 'rose-pine/neovim',            lazy = false },
+	{ 'LunarVim/lunar.nvim',         lazy = false },
+	{ "lunarvim/Onedarker.nvim",     lazy = false },
+	{ "rebelot/kanagawa.nvim",       lazy = false },
+	{ 'folke/tokyonight.nvim',       lazy = false },
+	{ 'Everblush/nvim',              name = 'everblush', lazy = false },
+	{ 'sainnhe/edge',                lazy = false },
+	{ 'Mofiqul/vscode.nvim',         priority = 1000,    lazy = false },
 }

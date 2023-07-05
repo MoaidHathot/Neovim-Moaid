@@ -7,7 +7,6 @@ vim.loader.enable()
 -- else
 vim.g.loaded_netrw = 1
 vim.g.loaded_netrwPlugin = 1
-
 require("moaid")
 
 -- if vim.cmd([[!git rev-parse --is-inside-work-tree > nul]]) then
