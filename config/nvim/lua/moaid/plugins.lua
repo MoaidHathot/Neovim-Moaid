@@ -162,6 +162,8 @@ return {
 		end
 	},
 	{ 'tzachar/highlight-undo.nvim', lazy = false },
+	{ 'zaldih/themery.nvim',         lazy = true },
+	-- { 'folke/flash.nvim',            lazy = false },
 	--themes
 	{ "catppuccin/nvim",             lazy = false },
 	{ 'rose-pine/neovim',            lazy = false },

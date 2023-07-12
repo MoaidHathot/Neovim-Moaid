@@ -47,3 +47,13 @@ vim.g.edge_style = 'neon'
 --
 --
 ColorMyPencils('vscode')
+
+require('themery').setup({
+	themes = { 'vscode', 'rose-pine', 'rose-pine-dawn', 'rose-pine-main', 'rose-pine-moon', 'kanagawa-wave',
+		'kanagawa-dragon', 'kanagawa-lotus', 'tokyonight-night',
+		'tokyonight-storm', 'tokyonight-day', 'lunar', 'OneDarker', 'catppuccin', 'catppuccin-latte',
+		'catppuccin-frappe', 'catppuccin-macchiato', 'catppuccin-mocha', 'everblush', 'edge', 'ron', 'blue', 'delek',
+		'pablo', 'quiet', 'shine', 'slate', 'torte', 'murphy', 'desert', 'elflord', 'default', 'evening', 'habamax',
+		'morning', 'koehler', 'OneDarker-italic', 'lunaperche', 'peachpuff', 'industry', 'zellner', 'darkblue',
+		'evening', 'dark_variant' }
+})
