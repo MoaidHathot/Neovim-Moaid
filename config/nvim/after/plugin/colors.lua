@@ -54,6 +54,6 @@ require('themery').setup({
 		'tokyonight-storm', 'tokyonight-day', 'lunar', 'OneDarker', 'catppuccin', 'catppuccin-latte',
 		'catppuccin-frappe', 'catppuccin-macchiato', 'catppuccin-mocha', 'everblush', 'edge', 'ron', 'blue', 'delek',
 		'pablo', 'quiet', 'shine', 'slate', 'torte', 'murphy', 'desert', 'elflord', 'default', 'evening', 'habamax',
-		'morning', 'koehler', 'OneDarker-italic', 'lunaperche', 'peachpuff', 'industry', 'zellner', 'darkblue',
-		'evening', 'dark_variant' }
+		'morning', 'koehler', 'lunaperche', 'peachpuff', 'industry', 'zellner', 'darkblue',
+		'evening' }
 })
