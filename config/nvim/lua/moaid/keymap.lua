@@ -13,7 +13,7 @@ vim.keymap.set("v", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
 -- vim.keymap.set('n', '<leader>mq', ':wa<CR>', { desc = "Save All Buffers", })
 
 -- Delete text
-vim.keymap.set('i', '<C-Del>', "<Esc>ce")
+vim.keymap.set('i', '<C-Del>', "<Esc>lce")
 vim.keymap.set('i', '<C-backspiace>', "<Esc>cb")
 vim.keymap.set('n', '<C-Del>', "ce")
 vim.keymap.set('n', '<C-backspace>', "cb")
