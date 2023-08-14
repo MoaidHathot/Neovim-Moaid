@@ -6,7 +6,7 @@ return {
 		branch = 'v2.x',
 		dependencies = {
 			-- LSP Support
-			{ 'neovim/nvim-lspconfig',            lazy = true }, -- Required
+			{ 'neovim/nvim-lspconfig',            event = { "BufReadPre", "BufNewFile" }, lazy = true }, -- Required
 			{
 				-- Optional
 				'williamboman/mason.nvim',
