@@ -14,9 +14,11 @@ vim.keymap.set("v", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
 
 -- Delete text
 vim.keymap.set('i', '<C-Del>', "<Esc>lce")
-vim.keymap.set('i', '<C-backspiace>', "<Esc>cb")
 vim.keymap.set('n', '<C-Del>', "ce")
-vim.keymap.set('n', '<C-backspace>', "cb")
+-- vim.keymap.set('i', '<C-BS>', "<Esc>cb")
+-- vim.keymap.set('i', '<C-Backspace>', "<Esc><C-w>")
+-- vim.keymap.set('n', '<C><BS>', "cb<Esc>")
+-- vim.keymap.set('n', '<C-backspace>', "<Esc>cb")
 
 -- vim.keymap.set('n', '<leader>q', ':q!<CR>:q!<CR>:q!<CR>')
 vim.keymap.set({ 'n', 't', 'v' }, '<leader>q', ':qa<CR>:qa<CR>:qa<CR>')

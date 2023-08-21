@@ -76,16 +76,34 @@ vim.keymap.set({ 'n', }, '<leader>ls', function()
 
 -- (Optional) Configure lua language server for neovim
 
-local neodev = require('neodev')
+vim.api.nvim_create_autocmd("LspAttach", {
+	callback = function(ev)
+		local neodev = require('neodev')
 
-neodev.setup({
-	library = {
-		plugins = {
-			'nvim-dap-ui',
-			types = true
+		neodev.setup({
+			library = {
+				plugins = {
+					'nvim-dap-ui',
+					types = true
+				}
+			}
+		})
+
+		local signature = require('lsp_signature')
+
+		signature.setup {
+			bind = true,
+			handler_opts = {
+				border = 'rounded'
+			},
+			max_width = 130,
+			wrap = true,
+			floating_window = false,
+			always_trigger = false,
 		}
-	}
+	end
 })
+
 
 local lspconfig = require('lspconfig')
 
@@ -117,19 +135,7 @@ lspconfig.omnisharp.setup({
 	filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props' },
 })
 
-
-local signature = require('lsp_signature')
-
-signature.setup {
-	bind = true,
-	handler_opts = {
-		border = 'rounded'
-	},
-	max_width = 130,
-	wrap = true,
-	floating_window = false,
-	always_trigger = false,
-}
+lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
 
 
 local cmp = require('cmp')
@@ -168,9 +174,7 @@ lsp.set_sign_icons({
 	info = '»'
 })
 
-lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
 
-require('lsp_lines').setup()
 
 vim.diagnostic.config({
 	virtual_lines = false,
@@ -186,93 +190,6 @@ end
 vim.keymap.set('n', '<leader>lu', toggleLines, { desc = "Toggle Underline Diagnostics", silent = true })
 
 lsp.setup()
-
-
-local luasnip = require('luasnip')
-luasnip.config.set_config({
-	enable_autosnippets = true,
-	history = true
-})
-luasnip.config.setup({
-	enable_autosnippets = true,
-	history = true
-})
-
-function create_namespace_from_path(path)
-	return 'namespace ' .. path:gsub('[a-zA-Z]:[\\/]', ''):gsub('[\\/]', '.') .. ';'
-end
-
-function get_namespace()
-	local fname = vim.api.nvim_buf_get_name(0)
-	print('fname: ' .. fname)
-	local util = require('lspconfig.util')
-	local path = util.root_pattern '*.csproj' (fname) or util.root_pattern '*.sln' (fname) or
-		util.root_pattern '*.sln' ('./') or util.root_pattern '*.csproj' ('./') or util.root_pattern '*.slnx'
-	print('path: ', path)
-
-	if path == nil then
-		path = ''
-	end
-
-	local result = fname:gsub(path .. '/', ''):gsub(path .. '\\', '')
-	print('temp-result: ' .. result)
-	local no_fname = result:gsub('[\\/]?[a-zA-Z0-9_@]+.cs$', '')
-
-	print('no_fname: ' .. no_fname)
-
-	local namespace = create_namespace_from_path(no_fname)
-	return namespace
-end
-
-local function get_class_name()
-	local start_index, end_index, file_name = string.find(vim.api.nvim_buf_get_name(0), '([a-zA-Z_@<>0-9]+).cs')
-	local name = file_name:gsub('.cs', ''):gsub('/', ''):gsub('\\', '')
-
-	return name
-end
-
-local function get_class_with_namespace()
-	local class_name = get_class_name()
-	local namespace_name = get_namespace()
-	local type = "class"
-
-	if (class_name:sub(1, 1) == "I") then
-		type = "interface"
-	end
-
-	return {
-		namespace_name,
-		[[]],
-		'public ' .. type .. ' ' .. class_name,
-		[[{]],
-		[[]],
-		'}'
-	}
-end
-
-luasnip.add_snippets(nil, {
-	cs = {
-		luasnip.snippet({
-				trig = 'namespace',
-				name = 'add namesapce',
-				dscr = 'Add namespace'
-			},
-			{
-				luasnip.function_node(get_namespace, {})
-			}
-		),
-		luasnip.snippet({
-				trig = 'class',
-				name = 'class with namesapce',
-				dscr = 'class with namesapce'
-			},
-			{
-				luasnip.function_node(get_class_with_namespace, {})
-			})
-	}
-})
-
-
 
 -- some shorthands...
 -- local s = ls.snippet
@@ -296,9 +213,100 @@ luasnip.add_snippets(nil, {
 -- local conds_expand = require("luasnip.extras.conditions.expand")
 
 
-luasnip.setup()
+vim.api.nvim_create_autocmd("LspAttach", {
+	callback = function(ev)
+		require('lsp_lines').setup()
 
-require('luasnip.loaders.from_vscode').lazy_load()
+		local luasnip = require('luasnip')
+		luasnip.config.set_config({
+			enable_autosnippets = true,
+			history = true
+		})
+		luasnip.config.setup({
+			enable_autosnippets = true,
+			history = true
+		})
+
+		function create_namespace_from_path(path)
+			return 'namespace ' .. path:gsub('[a-zA-Z]:[\\/]', ''):gsub('[\\/]', '.') .. ';'
+		end
+
+		function get_namespace()
+			local fname = vim.api.nvim_buf_get_name(0)
+			print('fname: ' .. fname)
+			local util = require('lspconfig.util')
+			local path = util.root_pattern '*.csproj' (fname) or util.root_pattern '*.sln' (fname) or
+				util.root_pattern '*.sln' ('./') or util.root_pattern '*.csproj' ('./') or util.root_pattern '*.slnx'
+			print('path: ', path)
+
+			if path == nil then
+				path = ''
+			end
+
+			local result = fname:gsub(path .. '/', ''):gsub(path .. '\\', '')
+			print('temp-result: ' .. result)
+			local no_fname = result:gsub('[\\/]?[a-zA-Z0-9_@]+.cs$', '')
+
+			print('no_fname: ' .. no_fname)
+
+			local namespace = create_namespace_from_path(no_fname)
+			return namespace
+		end
+
+		local function get_class_name()
+			local start_index, end_index, file_name = string.find(vim.api.nvim_buf_get_name(0), '([a-zA-Z_@<>0-9]+).cs')
+			local name = file_name:gsub('.cs', ''):gsub('/', ''):gsub('\\', '')
+
+			return name
+		end
+
+		local function get_class_with_namespace()
+			local class_name = get_class_name()
+			local namespace_name = get_namespace()
+			local type = "class"
+
+			if (class_name:sub(1, 1) == "I") then
+				type = "interface"
+			end
+
+			return {
+				namespace_name,
+				[[]],
+				'public ' .. type .. ' ' .. class_name,
+				[[{]],
+				[[]],
+				'}'
+			}
+		end
+
+		luasnip.add_snippets(nil, {
+			cs = {
+				luasnip.snippet({
+						trig = 'namespace',
+						name = 'add namesapce',
+						dscr = 'Add namespace'
+					},
+					{
+						luasnip.function_node(get_namespace, {})
+					}
+				),
+				luasnip.snippet({
+						trig = 'class',
+						name = 'class with namesapce',
+						dscr = 'class with namesapce'
+					},
+					{
+						luasnip.function_node(get_class_with_namespace, {})
+					})
+			}
+		})
+
+		luasnip.setup()
+
+		require('luasnip.loaders.from_vscode').lazy_load()
+	end,
+})
+
 
 local cmp_action = zero.cmp_action()
 
@@ -382,24 +390,23 @@ vim.api.nvim_create_autocmd("LspAttach", {
 				tokenTypes[i] = toSnakeCase(v)
 			end
 		end
+
+		-- Below are separate from the above
+
+		local null = require('null-ls')
+
+		null.setup({
+			sources = {
+				-- null.builtins.formatting.prettier,
+				-- null.builtins.diagnostics.eslint,
+				-- null.builtins.formatting.stylua,
+				null.builtins.code_actions.gitsigns,
+			}
+		})
+
+		require('mason').setup()
+		require('mason-null-ls').setup({
+			automatic_setup = true,
+		})
 	end,
-})
-
-
-local null = require('null-ls')
-
-null.setup({
-	sources = {
-		-- null.builtins.formatting.prettier,
-		-- null.builtins.diagnostics.eslint,
-		-- null.builtins.formatting.stylua,
-		null.builtins.code_actions.gitsigns,
-	}
-})
-
-
-
-require('mason').setup()
-require('mason-null-ls').setup({
-	automatic_setup = true,
 })
