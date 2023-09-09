@@ -83,6 +83,7 @@ vim.keymap.set("n", "<leader>fs", vim.cmd.wall, { desc = "Save All Buffers", sil
 vim.keymap.set("v", "<leader>fs", vim.cmd.wall, { desc = "Save All Buffers", silent = true })
 vim.keymap.set('n', '<leader>fa', "gg<S-v>G<CR>", { desc = "Select All File" })
 vim.keymap.set('n', '<leader>fC', '<cmd>:%y+<CR>', { desc = { 'Copy All File To OS' } })
+vim.keymap.set('n', '<C-a>', 'ggVG', { desc = "Select All Lines" })
 -- vim.keymap.set('n', '<leader>fV', 'gg<S-v>G<CR><leader>fv')
 vim.keymap.set('n', '<leader>fv', '"+p', { desc = "Paste from OS" })
 vim.keymap.set('v', '<leader>fv', '"+p', { desc = "Paste from OS" })

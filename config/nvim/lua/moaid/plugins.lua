@@ -53,25 +53,25 @@ return {
 		version = "*",
 		lazy = true
 	},
-	{ 'rmagatti/goto-preview',        lazy = false },
-	{ 'aznhe21/actions-preview.nvim', lazy = true },
-	{ "folke/neodev.nvim",            lazy = true },
-	{ 'ThePrimeagen/harpoon',         lazy = true },
-	{ 'mbbill/undotree',              lazy = false },
-	{ 'github/copilot.vim',           lazy = false },
-	{ 'tpope/vim-fugitive',           lazy = false },
-	{ 'tpope/vim-surround',           lazy = false },
-	{ 'tpope/vim-repeat',             lazy = false },
-	{ "Tastyep/structlog.nvim",       lazy = true },
-	{ 'rcarriga/nvim-notify',         lazy = true },
-	{
-		'folke/noice.nvim',
-		event = 'VeryLazy',
-		dependencies = {
-			'MunifTanjim/nui.nvim',
-			"rcarriga/nvim-notify"
-		}
-	},
+	{ 'rmagatti/goto-preview',               lazy = false },
+	{ 'aznhe21/actions-preview.nvim',        lazy = true },
+	{ "folke/neodev.nvim",                   lazy = true },
+	{ 'ThePrimeagen/harpoon',                lazy = true },
+	{ 'mbbill/undotree',                     lazy = false },
+	{ 'github/copilot.vim',                  lazy = false },
+	{ 'tpope/vim-fugitive',                  lazy = false },
+	{ 'tpope/vim-surround',                  lazy = false },
+	{ 'tpope/vim-repeat',                    lazy = false },
+	{ "Tastyep/structlog.nvim",              lazy = true },
+	{ 'rcarriga/nvim-notify',                lazy = true },
+	-- {
+	-- 	'folke/noice.nvim',
+	-- 	event = 'VeryLazy',
+	-- 	dependencies = {
+	-- 		'MunifTanjim/nui.nvim',
+	-- 		"rcarriga/nvim-notify"
+	-- 	}
+	-- },
 	{ 'RRethy/vim-illuminate',               lazy = false },
 	{ "lukas-reineke/indent-blankline.nvim", lazy = true },
 	{ 'numToStr/Comment.nvim',               lazy = true },

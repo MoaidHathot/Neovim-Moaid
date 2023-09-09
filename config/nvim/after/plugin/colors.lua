@@ -46,7 +46,8 @@ vim.g.edge_style = 'neon'
 -- ColorMyPencils('edge')
 --
 --
-ColorMyPencils('vscode')
+-- ColorMyPencils('vscode')
+ColorMyPencils('edge')
 
 require('themery').setup({
 	themes = { 'vscode', 'rose-pine', 'rose-pine-dawn', 'rose-pine-main', 'rose-pine-moon', 'kanagawa-wave',
