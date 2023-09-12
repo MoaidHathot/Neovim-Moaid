@@ -42,7 +42,6 @@ return {
 	{ 'Issafalcon/lsp-overloads.nvim',                lazy = true },
 	{ 'neovim/nvim-lspconfig',                        lazy = true },
 	{ "ray-x/lsp_signature.nvim",                     lazy = true },
-	-- { "OmniSharp/Omnisharp-vim",                      lazy = false },
 	{ 'mfussenegger/nvim-dap',                        lazy = true },
 	{ "rcarriga/nvim-dap-ui",                         dependencies = { "mfussenegger/nvim-dap" }, lazy = true },
 	{ 'theHamsta/nvim-dap-virtual-text',              lazy = true },
