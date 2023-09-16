@@ -52,6 +52,17 @@ return {
 		version = "*",
 		lazy = true
 	},
+	{
+		"nvim-neotest/neotest",
+		dependencies = {
+			"nvim-lua/plenary.nvim",
+			"nvim-treesitter/nvim-treesitter",
+			"antoinemadec/FixCursorHold.nvim",
+			"Issafalcon/neotest-dotnet",
+			"nvim-neotest/neotest-python"
+		},
+		lazy = true
+	},
 	{ 'rmagatti/goto-preview',               lazy = false },
 	{ 'aznhe21/actions-preview.nvim',        lazy = true },
 	{ "folke/neodev.nvim",                   lazy = true },
@@ -172,17 +183,20 @@ return {
 		},
 		lazy = false,
 	},
-	{ 'tzachar/highlight-undo.nvim', lazy = false },
-	{ 'zaldih/themery.nvim',         lazy = true },
+	{ 'tzachar/highlight-undo.nvim',      lazy = false },
+	{ 'zaldih/themery.nvim',              lazy = true },
 	-- { 'folke/flash.nvim',            lazy = false },
 	--themes
-	{ "catppuccin/nvim",             lazy = false },
-	{ 'rose-pine/neovim',            lazy = false },
-	{ 'LunarVim/lunar.nvim',         lazy = false },
-	{ "lunarvim/Onedarker.nvim",     lazy = false },
-	{ "rebelot/kanagawa.nvim",       lazy = false },
-	{ 'folke/tokyonight.nvim',       lazy = false },
-	{ 'Everblush/nvim',              name = 'everblush', lazy = false },
-	{ 'sainnhe/edge',                lazy = false },
-	{ 'Mofiqul/vscode.nvim',         priority = 1000,    lazy = false },
+	{ "catppuccin/nvim",                  lazy = false },
+	{ 'rose-pine/neovim',                 lazy = false },
+	{ 'LunarVim/lunar.nvim',              lazy = false },
+	{ "lunarvim/Onedarker.nvim",          lazy = false },
+	{ "navarasu/onedark.nvim",            lazy = false },
+	{ "rebelot/kanagawa.nvim",            lazy = false },
+	{ 'folke/tokyonight.nvim',            lazy = false },
+	{ 'Everblush/nvim',                   name = 'everblush', lazy = false },
+	{ 'sainnhe/edge',                     lazy = false },
+	{ 'Mofiqul/vscode.nvim',              priority = 1000,    lazy = false },
+	{ 'JoosepAlviste/palenightfall.nvim', lazy = false },
+	{ "EdenEast/nightfox.nvim" }
 }

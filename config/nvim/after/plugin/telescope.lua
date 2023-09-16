@@ -72,7 +72,10 @@ vim.keymap.set('n', '<leader>sP', ":Telescope project<CR>", { desc = "Find Proje
 vim.keymap.set('n', '<leader>sr', builtin.registers, { desc = 'Find Registers' })
 vim.keymap.set('n', '<leader>sR', builtin.resume, { desc = 'Open last picker' })
 vim.keymap.set('n', '<leader>sm', builtin.marks, { desc = 'Find Marks' })
-vim.keymap.set('n', '<leader>sC', builtin.colorscheme, { desc = 'Find Color Scheme' })
+-- vim.keymap.set('n', '<leader>sC', builtin.colorscheme, { desc = 'Find Color Scheme' })
+vim.keymap.set('n', '<leader>sC', function()
+	builtin.colorscheme({ enable_preview = true })
+end, { desc = 'Find Color Scheme' })
 vim.keymap.set('n', '<leader>sj', builtin.jumplist, { desc = 'Find Jump List' })
 vim.keymap.set('n', '<leader>so', builtin.oldfiles, { desc = 'Find Recent Files' })
 
