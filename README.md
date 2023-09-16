@@ -9,8 +9,7 @@ My Neovim Configuration
 * Winget 0.8.3 at least is needed
 
 * Other dependencies
-	* Zig
-		* make sure to use a stable release
+	* Zig - make sure to use a stable release
 	* fd
 	* WinGnu32.Make
 	* ripgrep
