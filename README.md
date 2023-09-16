@@ -9,10 +9,10 @@ My Neovim Configuration
 * Winget 0.8.3 at least is needed
 
 * Other dependencies
-* Zig
-	* make sure to use a stable release
-* fd
-* WinGnu32.Make
-* ripgrep
-* jq (for nvim-rest)
-* html-tidy (for nvim-rest)
+	* Zig
+		* make sure to use a stable release
+	* fd
+	* WinGnu32.Make
+	* ripgrep
+	* jq (for nvim-rest)
+	* html-tidy (for nvim-rest)
