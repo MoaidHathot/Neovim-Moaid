@@ -304,72 +304,71 @@ vim.api.nvim_create_autocmd("LspAttach", {
 		luasnip.setup()
 
 		require('luasnip.loaders.from_vscode').lazy_load()
-	end,
-})
 
+		local cmp_action = zero.cmp_action()
 
-local cmp_action = zero.cmp_action()
-
-cmp.setup {
-	windows = {
-		completion = cmp.config.window.bordered(),
-		documentation = cmp.config.window.bordered(),
-	},
-	mapping = {
-		['<Tab'] = cmp_action.tab_complete(),
-		['<S-Tab>'] = cmp_action.select_prev_or_fallback(),
-		-- check if the below <c-l> is needed. It was added as a test
-		['<C-l>'] = cmp.mapping(function(fallback)
-			if cmp.visible() then
-				return cmp.complete_common_string()
-			end
-			fallback()
-		end, { 'i', 'c', 'n' })
-	},
-	sources = cmp.config.sources({
-		{ name = 'nvim_lsp' },
-		{ name = 'nvim_lua' },
-		{ name = 'luasnip' },
-		{ name = 'path' },
-		-- 	-- { name = 'nvim_lsp_signature_help' }
-	}),
-	snippet = {
-		expand = function(args)
-			luasnip.lsp_expand(args.body)
-		end
-	},
-	formatting = {
-		fields = { 'abbr', 'kind', 'menu' },
-		format = require('lspkind').cmp_format({
-			mode = 'symbol_text',
-			maxwidth = 50,
-			ellipsis_char = '...'
-		})
-	}
-	-- sources = {
-	-- 	name = 'nvim_lsp'
-	-- }
-}
-
-cmp.setup.cmdline('/', {
-	mapping = cmp.mapping.preset.cmdline(),
-	sources = { { name = 'buffer' } }
-})
-
-cmp.setup.cmdline(':', {
-	mapping = cmp.mapping.preset.cmdline(),
-	sources = cmp.config.sources({
-			{ name = 'path' }
-		},
-		{
-			{
-				name = 'cmdline',
-				option = {
-					ignore_cmds = { 'Main', '!' }
-				}
+		cmp.setup {
+			windows = {
+				completion = cmp.config.window.bordered(),
+				documentation = cmp.config.window.bordered(),
+			},
+			mapping = {
+				['<Tab'] = cmp_action.tab_complete(),
+				['<S-Tab>'] = cmp_action.select_prev_or_fallback(),
+				-- check if the below <c-l> is needed. It was added as a test
+				['<C-l>'] = cmp.mapping(function(fallback)
+					if cmp.visible() then
+						return cmp.complete_common_string()
+					end
+					fallback()
+				end, { 'i', 'c', 'n' })
+			},
+			sources = cmp.config.sources({
+				{ name = 'nvim_lsp' },
+				{ name = 'nvim_lua' },
+				{ name = 'luasnip' },
+				{ name = 'path' },
+				-- 	-- { name = 'nvim_lsp_signature_help' }
+			}),
+			snippet = {
+				expand = function(args)
+					luasnip.lsp_expand(args.body)
+				end
+			},
+			formatting = {
+				fields = { 'abbr', 'kind', 'menu' },
+				format = require('lspkind').cmp_format({
+					mode = 'symbol_text',
+					maxwidth = 50,
+					ellipsis_char = '...'
+				})
 			}
+			-- sources = {
+			-- 	name = 'nvim_lsp'
+			-- }
 		}
-	)
+
+		cmp.setup.cmdline('/', {
+			mapping = cmp.mapping.preset.cmdline(),
+			sources = { { name = 'buffer' } }
+		})
+
+		cmp.setup.cmdline(':', {
+			mapping = cmp.mapping.preset.cmdline(),
+			sources = cmp.config.sources({
+					{ name = 'path' }
+				},
+				{
+					{
+						name = 'cmdline',
+						option = {
+							ignore_cmds = { 'Main', '!' }
+						}
+					}
+				}
+			)
+		})
+	end,
 })
 
 

@@ -184,7 +184,7 @@ return {
 		lazy = false,
 	},
 	{ 'tzachar/highlight-undo.nvim',      lazy = false },
-	{ 'zaldih/themery.nvim',              lazy = true },
+	-- { 'zaldih/themery.nvim',              lazy = true },
 	-- { 'folke/flash.nvim',            lazy = false },
 	--themes
 	{ "catppuccin/nvim",                  lazy = false },
