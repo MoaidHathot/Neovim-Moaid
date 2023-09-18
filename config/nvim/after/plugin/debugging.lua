@@ -31,12 +31,14 @@ local function getDotnetCoreDebugger()
 	local found_main = vim.fn.finddir(main, "");
 	if found_main ~= ""
 	then
+		-- print('netcore: ' .. main .. file_name)
 		return main .. file_name
 	end
 
 	local found_secondary = vim.fn.finddir(secondary, "");
 	if found_secondary ~= ""
 	then
+		-- print('netcore: ' .. secondary .. file_name)
 		return secondary .. file_name
 	end
 
