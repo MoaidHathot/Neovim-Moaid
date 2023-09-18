@@ -47,6 +47,7 @@ dap.adapters.coreclr = {
 	type = 'executable',
 	command = getDotnetCoreDebugger(),
 	args = { '--interpreter=vscode' }
+	-- args = { '--interpreter=vscode', '--log=file' }
 }
 
 Moaid_config = {
@@ -71,7 +72,7 @@ dap.configurations.cs = {
 			local executable_path = version_directory .. "\\" .. latest_version .. "\\" .. project_name .. ".dll"
 			-- local tokens = string.gmatch(path, "\\")
 			-- local project_name = tokens[#(tokens) - 1] .. "\\"
-			if (Moaid_config.debug_dllPath ~= null) then
+			if (Moaid_config.debug_dllPath ~= nill) then
 				executable_path = Moaid_config.debug_dllPath
 			end
 
@@ -80,6 +81,8 @@ dap.configurations.cs = {
 			-- logger:info('Result: ' .. result)
 			return result
 		end,
+		-- env = {},
+		-- cwd = ""
 	},
 }
 

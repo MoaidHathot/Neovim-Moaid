@@ -137,7 +137,8 @@ return {
 	{ "akinsho/toggleterm.nvim",   version = '*',                                    lazy = true },
 	{ "folke/todo-comments.nvim",  dependencies = "nvim-lua/plenary.nvim",           lazy = true },
 	{ 'phaazon/hop.nvim',          branch = 'v2',                                    lazy = true },
-	{ "ggandor/leap.nvim",         lazy = true },
+	-- { "ggandor/leap.nvim",         lazy = true },
+	-- { 'folke/flash.nvim',            lazy = false },
 	{
 		"utilyre/barbecue.nvim",
 		name = "barbecue",
@@ -185,7 +186,6 @@ return {
 	},
 	{ 'tzachar/highlight-undo.nvim',      lazy = false },
 	-- { 'zaldih/themery.nvim',              lazy = true },
-	-- { 'folke/flash.nvim',            lazy = false },
 	--themes
 	{ "catppuccin/nvim",                  lazy = false },
 	{ 'rose-pine/neovim',                 lazy = false },
