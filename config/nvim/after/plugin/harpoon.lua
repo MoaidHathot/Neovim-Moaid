@@ -1,3 +1,10 @@
+local harpoon = require('harpoon').setup(
+	{
+		global_settings = {
+			enter_on_sendcmd = true
+		}
+	}
+)
 local mark = require("harpoon.mark")
 local ui = require("harpoon.ui")
 

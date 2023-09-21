@@ -1,5 +1,9 @@
 return {
-	{ 'nvim-treesitter/nvim-treesitter', build = { ':TSUpdate' }, lazy = true },
+	{
+		'nvim-treesitter/nvim-treesitter',
+		build = { ':TSUpdate' },
+		lazy = true
+	},
 	{ 'nvim-treesitter/playground',      lazy = false },
 	{
 		'VonHeikemen/lsp-zero.nvim',
@@ -23,7 +27,7 @@ return {
 		},
 		lazy = false
 	},
-	{ 'jose-elias-alvarez/null-ls.nvim',              lazy = true },
+	{ 'jose-elias-alvarez/null-ls.nvim', lazy = true },
 	{
 		"jay-babu/mason-null-ls.nvim",
 		event = { "BufReadPre", "BufNewFile" },
@@ -32,6 +36,7 @@ return {
 	},
 	-- { 'ErichDonGubler/lsp_lines.nvim',       lazy = true },
 	{ 'https://git.sr.ht/~whynothugo/lsp_lines.nvim', lazy = true },
+	{ 'kosayoda/nvim-lightbulb',                      lazy = true },
 	--
 	{ 'onsails/lspkind.nvim',                         lazy = true },
 	{ 'hrsh7th/cmp-path',                             lazy = false },
@@ -46,6 +51,11 @@ return {
 	{ "rcarriga/nvim-dap-ui",                         dependencies = { "mfussenegger/nvim-dap" }, lazy = true },
 	{ 'theHamsta/nvim-dap-virtual-text',              lazy = true },
 	{ 'nvim-telescope/telescope-dap.nvim',            lazy = true },
+	{
+		'nvim-treesitter/nvim-treesitter-textobjects',
+		dependencies = { 'nvim-treesitter/nvim-treesitter' },
+		lazy = false,
+	},
 	{
 		'akinsho/bufferline.nvim',
 		dependencies = { 'nvim-tree/nvim-web-devicons' },
