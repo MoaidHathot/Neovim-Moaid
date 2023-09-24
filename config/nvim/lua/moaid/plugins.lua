@@ -132,7 +132,7 @@ return {
 	},
 	{ "rafamadriz/friendly-snippets", lazy = true },
 	{ "b0o/schemastore.nvim",         lazy = true },
-	{ 'dstein64/vim-startuptime',     lazy = false },
+	-- { 'dstein64/vim-startuptime',     lazy = false },
 	{ "ellisonleao/glow.nvim",        lazy = true },
 	{
 		"folke/trouble.nvim",

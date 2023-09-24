@@ -100,3 +100,5 @@ vim.opt.formatoptions:remove { 'c', 'r', 'o' }
 -- }
 
 -- nvim_create_augroups(autoCommands)
+
+-- vim.opt.shell = powershell.exe
