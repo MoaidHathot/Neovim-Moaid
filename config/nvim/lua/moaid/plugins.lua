@@ -93,7 +93,7 @@ return {
 	-- 	}
 	-- },
 	{ 'RRethy/vim-illuminate',               lazy = false },
-	{ "lukas-reineke/indent-blankline.nvim", lazy = true },
+	{ "lukas-reineke/indent-blankline.nvim", main = 'ibl',                               Lazy = true },
 	{ 'numToStr/Comment.nvim',               lazy = true },
 	{ "windwp/nvim-autopairs",               lazy = true },
 	{ 'karb94/neoscroll.nvim',               lazy = true },
