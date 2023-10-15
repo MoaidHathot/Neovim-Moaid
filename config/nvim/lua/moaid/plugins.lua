@@ -181,19 +181,19 @@ return {
 			vim.fn["mkdp#util#install"]()
 		end
 	},
-	{
-		"jackMort/ChatGPT.nvim",
-		event = "VeryLazy",
-		config = function()
-			require("chatgpt").setup()
-		end,
-		dependencies = {
-			"MunifTanjim/nui.nvim",
-			"nvim-lua/plenary.nvim",
-			"nvim-telescope/telescope.nvim"
-		},
-		lazy = false,
-	},
+	-- {
+	-- 	"jackMort/ChatGPT.nvim",
+	-- 	event = "VeryLazy",
+	-- 	-- config = function()
+	-- 	-- 	require("chatgpt").setup()
+	-- 	-- end,
+	-- 	dependencies = {
+	-- 		"MunifTanjim/nui.nvim",
+	-- 		"nvim-lua/plenary.nvim",
+	-- 		"nvim-telescope/telescope.nvim"
+	-- 	},
+	-- 	lazy = true,
+	-- },
 	{ 'tzachar/highlight-undo.nvim',      lazy = false },
 	-- { 'zaldih/themery.nvim',              lazy = true },
 	--themes
@@ -206,7 +206,8 @@ return {
 	{ 'folke/tokyonight.nvim',            lazy = false },
 	{ 'Everblush/nvim',                   name = 'everblush', lazy = false },
 	{ 'sainnhe/edge',                     lazy = false },
-	{ 'Mofiqul/vscode.nvim',              priority = 1000,    lazy = false },
+	{ 'Mofiqul/vscode.nvim',              lazy = false },
 	{ 'JoosepAlviste/palenightfall.nvim', lazy = false },
-	{ "EdenEast/nightfox.nvim" }
+	{ 'stevedylandev/flexoki-nvim',       name = 'flexoki',   lazy = false },
+	{ "EdenEast/nightfox.nvim",           priority = 1000,    lazy = false }
 }

@@ -1,6 +1,9 @@
 local indent = require('ibl')
 
 indent.setup({
+	indent = {
+		char = "▏"
+	},
 	exclude = {
 		filetypes = {
 			"help",
