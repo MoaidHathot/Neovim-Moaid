@@ -137,6 +137,16 @@ lspconfig.omnisharp.setup({
 
 lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
 
+lspconfig.powershell_es.setup {
+	-- bundle_path = "S:\\Storage\\Synced\\OneDrive\\OneDrive\\Desktop\\PowerShellEditorServices",
+	-- bundle_path =
+	-- "C:\\Users\\moaid\\AppData\\Local\\nvim-data\\mason\\packages\\powershell-editor-services",
+	bundle_path = "C:\\Users\\moaid\\AppData\\Local\\nvim-apps\\PowerShellEditorServices",
+	init_options = {
+		enableProfileLoading = false,
+	}
+}
+
 
 local cmp = require('cmp')
 local cmp_select = { behavior = cmp.SelectBehavior.Select }
