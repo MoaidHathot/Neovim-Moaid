@@ -13,6 +13,8 @@ My Neovim Configuration
 	* fd
 	* WinGnu32.Make
 	* ripgrep
+ 	* lazygit
+  	* netcoredbg
 	* jq (for nvim-rest)
 	* html-tidy (for nvim-rest)
 	* Powershell_es
