@@ -132,7 +132,7 @@ lspconfig.omnisharp.setup({
 	enable_roslyn_analysers = true,
 	enable_import_completion = true,
 	organize_imports_on_format = true,
-	filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props' },
+	filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx' },
 })
 
 lspconfig.lua_ls.setup(lsp.nvim_lua_ls())

@@ -93,7 +93,7 @@ return {
 	-- 	}
 	-- },
 	{ 'RRethy/vim-illuminate',               lazy = false },
-	{ "lukas-reineke/indent-blankline.nvim", main = 'ibl',                               Lazy = true },
+	{ "lukas-reineke/indent-blankline.nvim", main = 'ibl',                               lazy = true },
 	{ 'numToStr/Comment.nvim',               lazy = true },
 	{ "windwp/nvim-autopairs",               lazy = true },
 	{ 'karb94/neoscroll.nvim',               lazy = true },
@@ -209,5 +209,8 @@ return {
 	{ 'Mofiqul/vscode.nvim',              lazy = false },
 	{ 'JoosepAlviste/palenightfall.nvim', lazy = false },
 	{ 'stevedylandev/flexoki-nvim',       name = 'flexoki',   lazy = false },
+	{ 'samharju/synthweave.nvim', name = 'synthwave-samharju', lazy = false },
+	{ 'maxmx03/fluoromachine.nvim', lazy = false },
+	{ 'artanikin/vim-synthwave84', name = 'synthwave-vim' ,lazy = false },
 	{ "EdenEast/nightfox.nvim",           priority = 1000,    lazy = false }
 }
