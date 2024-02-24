@@ -10,7 +10,7 @@ return {
 		branch = 'v2.x',
 		dependencies = {
 			-- LSP Support
-			{ 'neovim/nvim-lspconfig',            event = { "BufReadPre", "BufNewFile" }, lazy = true }, -- Required
+			{ 'neovim/nvim-lspconfig',            event = { "BufReadPost", "BufNewfile", "BufWritePre" }, lazy = true }, -- Required
 			{
 				-- Optional
 				'williamboman/mason.nvim',
@@ -27,7 +27,7 @@ return {
 		},
 		lazy = false
 	},
-	{ 'jose-elias-alvarez/null-ls.nvim', lazy = true },
+	{ 'nvimtools/none-ls.nvim', lazy = true },
 	{
 		"jay-babu/mason-null-ls.nvim",
 		event = { "BufReadPre", "BufNewFile" },
