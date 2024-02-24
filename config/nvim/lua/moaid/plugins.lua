@@ -4,7 +4,7 @@ return {
 		build = { ':TSUpdate' },
 		lazy = true
 	},
-	{ 'nvim-treesitter/playground',      lazy = false },
+	{ 'nvim-treesitter/playground', lazy = false },
 	{
 		'VonHeikemen/lsp-zero.nvim',
 		branch = 'v2.x',
@@ -27,7 +27,7 @@ return {
 		},
 		lazy = false
 	},
-	{ 'nvimtools/none-ls.nvim', lazy = true },
+	{ 'nvimtools/none-ls.nvim',     lazy = true },
 	{
 		"jay-babu/mason-null-ls.nvim",
 		event = { "BufReadPre", "BufNewFile" },
@@ -204,13 +204,13 @@ return {
 	{ "navarasu/onedark.nvim",            lazy = false },
 	{ "rebelot/kanagawa.nvim",            lazy = false },
 	{ 'folke/tokyonight.nvim',            lazy = false },
-	{ 'Everblush/nvim',                   name = 'everblush', lazy = false },
+	{ 'Everblush/nvim',                   name = 'everblush',          lazy = false },
 	{ 'sainnhe/edge',                     lazy = false },
 	{ 'Mofiqul/vscode.nvim',              lazy = false },
 	{ 'JoosepAlviste/palenightfall.nvim', lazy = false },
-	{ 'stevedylandev/flexoki-nvim',       name = 'flexoki',   lazy = false },
-	{ 'samharju/synthweave.nvim', name = 'synthwave-samharju', lazy = false },
-	{ 'maxmx03/fluoromachine.nvim', lazy = false },
-	{ 'artanikin/vim-synthwave84', name = 'synthwave-vim' ,lazy = false },
-	{ "EdenEast/nightfox.nvim",           priority = 1000,    lazy = false }
+	{ 'stevedylandev/flexoki-nvim',       name = 'flexoki',            lazy = false },
+	{ 'samharju/synthweave.nvim',         name = 'synthwave-samharju', lazy = false },
+	{ 'maxmx03/fluoromachine.nvim',       lazy = false },
+	{ 'artanikin/vim-synthwave84',        name = 'synthwave-vim',      lazy = false },
+	{ "EdenEast/nightfox.nvim",           priority = 1000,             lazy = false }
 }
