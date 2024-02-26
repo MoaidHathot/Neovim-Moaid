@@ -1,6 +1,7 @@
 return {
 	{
 		"catppuccin/nvim",
+		event = "VeryLazy",
 		name = "catppuccin",
 		-- priority = 1000,
 		-- config = function()
@@ -9,10 +10,10 @@ return {
 	},
 	{
 		"EdenEast/nightfox.nvim",
-		priority = 1000,
+		-- priority = 1000,
+		-- event = "VeryLazy",
 		config = function()
 			vim.cmd.colorscheme "nightfox"
 		end
-
 	}
 }

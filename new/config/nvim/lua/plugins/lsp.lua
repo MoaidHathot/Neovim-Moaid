@@ -1,13 +1,15 @@
 return {
 	{
 		"williamboman/mason.nvim",
-		lazy = false,
+		event = "VeryLazy",
+		-- lazy = false,
 		config = function()
 			require('mason').setup()
 		end
 	},
 	{
 		"williamboman/mason-lspconfig.nvim",
+		event = "VeryLazy",
 		dependencies = {
 			"williamboman/mason.nvim"
 		},
@@ -22,7 +24,8 @@ return {
 	},
 	{
 		"neovim/nvim-lspconfig",
-		lazy = false,
+		event = "VeryLazy",
+		-- lazy = false,
 		dependencies = {
 			"williamboman/mason.nvim",
 			"williamboman/mason-lspconfig.nvim",
@@ -50,6 +53,7 @@ return {
 	},
 	{
 		'nvimtools/none-ls.nvim',
+		event = "VeryLazy",
 		config = function()
 			local null_ls = require('null-ls')
 			null_ls.setup({

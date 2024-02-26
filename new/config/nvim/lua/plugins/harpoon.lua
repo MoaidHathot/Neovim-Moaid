@@ -1,5 +1,6 @@
 return {
 	'ThePrimeagen/harpoon',
+	event = "VeryLazy",
 	config = function()
 		local harpoon = require('harpoon').setup(
 			{

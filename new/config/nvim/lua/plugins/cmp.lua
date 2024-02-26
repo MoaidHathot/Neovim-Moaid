@@ -1,12 +1,15 @@
 return {
 	{
-		'hrsh7th/cmp-nvim-lsp'
+		'hrsh7th/cmp-nvim-lsp',
+		event = "VeryLazy",
 	},
 	{
-		'github/copilot.vim'
+		'github/copilot.vim',
+		event = "VeryLazy",
 	},
 	{
 		'L3MON4D3/LuaSnip',
+		event = "VeryLazy",
 		dependencies = {
 			'saadparwaiz1/cmp_luasnip',
 			'rafamadriz/friendly-snippets'
@@ -14,6 +17,7 @@ return {
 	},
 	{
 		'hrsh7th/nvim-cmp',
+		event = "VeryLazy",
 		dependencies = {
 			'hrsh7th/cmp-cmdline',
 			'hrsh7th/cmp-nvim-lsp-signature-help',
@@ -40,13 +44,13 @@ return {
 					['<CR>'] = cmp.mapping.confirm({ select = true }), -- Accept currently selected item. Set `select` to `false` to only confirm explicitly selected items.
 				}),
 				sources = cmp.config.sources({
-					{ name = 'nvim_lsp' },
-					{ name = 'luasnip' }, -- For luasnip users.
-					{ name = 'nvim_lsp_signature_help' }
-				},
-				{
-					{ name = 'buffer' },
-				})
+						{ name = 'nvim_lsp' },
+						{ name = 'luasnip' }, -- For luasnip users.
+						{ name = 'nvim_lsp_signature_help' }
+					},
+					{
+						{ name = 'buffer' },
+					})
 			})
 
 			-- Use buffer source for `/` and `?` (if you enabled `native_menu`, this won't work anymore).

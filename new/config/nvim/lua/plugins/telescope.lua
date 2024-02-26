@@ -1,10 +1,12 @@
 return {
 	{
 		'nvim-telescope/telescope.nvim',
+		event = "VeryLazy",
 		tag = '0.1.5',
 		dependencies = { 'nvim-lua/plenary.nvim' },
 		config = function()
 			local builtin = require('telescope.builtin')
+			vim.keymap.set('n', '<leader>sF', "<cmd>Telescope find_files hidden=true no_ignore=true<CR>", { desc = 'Find All Files' })
 			vim.keymap.set('n', '<leader>sf', builtin.find_files, { desc = 'Find Files' })
 			vim.keymap.set('n', '<C-p>', builtin.find_files, { desc = 'Find Files' })
 			vim.keymap.set('n', '<leader>sg', builtin.live_grep, { desc = 'Find Grep' })
@@ -21,9 +23,9 @@ return {
 			vim.keymap.set('n', '<leader>sd', builtin.diagnostics, { desc = 'Find Diagnostics' })
 			vim.keymap.set('n', '<leader>sk', builtin.keymaps, { desc = 'Find Keymaps' })
 			vim.keymap.set('n', '<leader>sp', builtin.git_files, { desc = 'Find Project git files' })
-			vim.keymap.set('n', '<leader>sB', ":Telescope file_browser path=%:p:h select_buffer=true<CR>",
-				{ desc = "File Browser" })
-			vim.keymap.set('n', '<leader>sP', ":Telescope project<CR>", { desc = "Find Projects" })
+			-- vim.keymap.set('n', '<leader>sB', ":Telescope file_browser path=%:p:h select_buffer=true<CR>",
+				-- { desc = "File Browser" })
+			-- vim.keymap.set('n', '<leader>sP', ":Telescope project<CR>", { desc = "Find Projects" })
 			vim.keymap.set('n', '<leader>sr', builtin.registers, { desc = 'Find Registers' })
 			vim.keymap.set('n', '<leader>sR', builtin.resume, { desc = 'Open last picker' })
 			vim.keymap.set('n', '<leader>sm', builtin.marks, { desc = 'Find Marks' })
@@ -50,15 +52,16 @@ return {
 	},
 	{
 		'nvim-telescope/telescope-ui-select.nvim',
+		event = "VeryLazy",
 		config = function()
 			local telescope = require('telescope')
 			require('telescope').setup({
-				--defaults = {
-					--mappings = {
-						--i = { ["<C-t>"] = require('trouble.providers.telescope').open_with_trouble },
-						--n = { ["<C-t>"] = require('trouble.providers.telescope').open_with_trouble },
-					--}
-				--},
+				defaults = {
+					mappings = {
+						i = { ["<C-t>"] = require('trouble.providers.telescope').open_with_trouble },
+						n = { ["<C-t>"] = require('trouble.providers.telescope').open_with_trouble },
+					}
+				},
 				extensions = {
 					["ui-select"] = {
 						require("telescope.themes").get_dropdown {
