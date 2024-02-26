@@ -43,7 +43,7 @@ return {
 				enable_roslyn_analysers = true,
 				enable_import_completion = true,
 				organize_imports_on_format = true,
-				filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx' }
+				filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx', 'props', 'targets' }
 			})
 
 			vim.keymap.set('n', 'K', vim.lsp.buf.hover, {})
@@ -76,6 +76,7 @@ return {
 		dependencies = {
 			"williamboman/mason.nvim",
 			"nvimtools/none-ls.nvim",
+			"neovim/nvim-lspconfig"
 		},
 		config = function()
 			require('mason-null-ls').setup({
