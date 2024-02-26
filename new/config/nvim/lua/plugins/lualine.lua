@@ -23,25 +23,29 @@ return {
 	event = "VeryLazy",
 	config = function()
 		require('lualine').setup({
-		options = {
-			-- theme = 'dracula',
-			-- theme = 'horizon',
-			icon_enabled = true
-		},
-		sections = {
-			lualine_x = {
-				get_lsp_name,
-				--'selectioncount',
-				--'filetype'
+			options = {
+				-- theme = 'dracula',
+				-- theme = 'horizon',
+				icon_enabled = true
 			},
-			lualine_y = {
-				'filetype',
-				'diagnostics'
-			},
-			lualine_z = {
-				'progress'
+			sections = {
+				lualine_x = {
+					get_lsp_name,
+					--'selectioncount',
+					--'filetype'
+				},
+				lualine_y = {
+					'filetype',
+					'diagnostics'
+				},
+				lualine_z = {
+					'progress'
+				},
+				lualine_c = {
+					-- 'filename',
+					require('auto-session.lib').current_session_name
+				}
 			}
-		}
-	})
+		})
 	end
 }

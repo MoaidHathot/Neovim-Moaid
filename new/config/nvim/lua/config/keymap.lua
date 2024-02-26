@@ -5,11 +5,22 @@ vim.keymap.set("n", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
 vim.keymap.set("i", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
 vim.keymap.set("v", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
 
+-- save all documents
+-- vim.keymap.set("n", "<C-S-s>", vim.cmd.wall, { silent = true })
+-- vim.keymap.set("i", "<cs-s>", vim.cmd.wall, { silent = true })
+-- vim.keymap.set("v", "<cs-R>", vim.cmd.wall, { silent = true })
+
+-- vim.keymap.set('n', '<leader>mq', ':wa<CR>', { desc = "Save All Buffers", })
+
 -- Delete text
 vim.keymap.set('i', '<C-Del>', "<Esc>lce")
 vim.keymap.set('n', '<C-Del>', "ce")
+-- vim.keymap.set('i', '<C-BS>', "<Esc>cb")
+-- vim.keymap.set('i', '<C-Backspace>', "<Esc><C-w>")
+-- vim.keymap.set('n', '<C><BS>', "cb<Esc>")
+-- vim.keymap.set('n', '<C-backspace>', "<Esc>cb")
 
--- quit nvim
+-- vim.keymap.set('n', '<leader>q', ':q!<CR>:q!<CR>:q!<CR>')
 vim.keymap.set({ 'n', 't', 'v' }, '<leader>q', ':qa<CR>:qa<CR>:qa<CR>')
 vim.keymap.set({ 'n', 't', 'v' }, '<leader>Q', ':q!<CR>:q!<CR>:q!<CR>')
 

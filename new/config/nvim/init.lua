@@ -27,10 +27,11 @@ local ops = {
 require("config.options")
 
 require("lazy").setup({
+
 	spec = {
 		{ import = "plugins" },
 	},
-	install = { colorscheme = { "nightfox", "habamax" }},
+	install = { colorscheme = { "nightfox", "habamax" } },
 	change_detection = {
 		notify = false
 	},
@@ -51,4 +52,5 @@ require("lazy").setup({
 	}
 })
 
+require("config.autocmds")
 require("config.keymap")

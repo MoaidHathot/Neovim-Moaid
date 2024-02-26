@@ -1,4 +1,4 @@
 return {
-	"nathom/filetype.nvim",
+	'tpope/vim-repeat',
 	event = "VeryLazy",
 }

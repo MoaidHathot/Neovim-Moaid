@@ -1,18 +1,18 @@
 return {
 	'akinsho/toggleterm.nvim',
-	evnet = "VeryLazy",
+	event = "VeryLazy",
 	version = "*",
 	config = function()
 		require('toggleterm').setup({
 
-		start_in_insert = true,
-		terminal_mappings = true,
-		-- direction = 'float',
-		shell = "pwsh.exe -NoLogo -NoProfile",
-		auto_scroll = true,
-		-- persist_mode = true,
-		persist_size = true,
-		close_on_exit = true,
+			start_in_insert = true,
+			terminal_mappings = true,
+			-- direction = 'float',
+			shell = "pwsh.exe -NoLogo -NoProfile",
+			auto_scroll = true,
+			-- persist_mode = true,
+			persist_size = true,
+			close_on_exit = true,
 		})
 
 		local terminal1 = require('toggleterm.terminal').Terminal
