@@ -71,6 +71,7 @@ return {
 	{
 		'RRethy/vim-illuminate',
 		event = "VeryLazy",
+		enable = false,
 	},
 	{
 		"petertriho/nvim-scrollbar",

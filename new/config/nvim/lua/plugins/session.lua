@@ -1,7 +1,7 @@
 return {
 	{
 		'rmagatti/auto-session',
-		-- event = "VeryLazy",
+		event = "VeryLazy",
 		config = function()
 			require('auto-session').setup({
 				log_level = 'error',
