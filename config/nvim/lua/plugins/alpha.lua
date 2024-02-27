@@ -34,15 +34,15 @@ return {
 		local dashboard = require('alpha.themes.dashboard')
 
 		dashboard.section.buttons.val = {
-			dashboard.button('n', "  New file", ":ene <BAR> startinsert <CR>"),
+			dashboard.button('r', " Restore session", "<cmd>SessionRestore<CR>"),
+			dashboard.button('s', "ﴬ Find session", '<cmd>lua require("auto-session.session-lens").search_session() <CR>'),
 			dashboard.button('f', " Find file", "<cmd>Telescope find_files<CR>"),
 			dashboard.button('t', " Find text", "<cmd>Telescope live_grep<CR>"),
-			dashboard.button('o', " Recently opened files", "<cmd>Telescope oldfiles<CR>"),
-			dashboard.button('r', " Restore session", "<cmd>SessionRestore<CR>"),
 			-- dashboard.button('p', ""),
 			-- dashboard.button('p', ""),
-			dashboard.button('s', "ﴬ Find session", '<cmd>lua require("auto-session.session-lens").search_session() <CR>'),
-			dashboard.button('n', " Update Plugins", "<cmd>Lazy sync<CR>"),
+			dashboard.button('n', "  New file", ":ene <BAR> startinsert <CR>"),
+			dashboard.button('o', " Recently opened files", "<cmd>Telescope oldfiles<CR>"),
+			dashboard.button('u', " Update Plugins", "<cmd>Lazy sync<CR>"),
 			dashboard.button('q', " Quit", ":qa<CR>")
 		}
 
