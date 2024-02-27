@@ -1,20 +1,56 @@
 vim.loader.enable()
--- if vim.g.vscode then
--- 	vim.cmd [[
--- 	" source $HOME/.config/nvim/vscode.vim
--- 	source vscode.vim
--- ]]
--- else
-vim.g.loaded_netrw = 1
-vim.g.loaded_netrwPlugin = 1
-require("moaid")
 
--- if vim.cmd([[!git rev-parse --is-inside-work-tree > nul]]) then
--- 	-- print('inside git repo')
--- 	local a = true
--- else
--- 	-- print('not git repo')
--- 	local b = false
--- end
+-- vim.g.loaded_netrw = 1
+-- vim.g.loaded_netrwPlugin = 1
 
--- end
+local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
+
+if not vim.loop.fs_stat(lazypath) then
+	vim.fn.system({
+		"git",
+		"clone",
+		"--filter=blob:none",
+		"https://github.com/folke/lazy.nvim.git",
+		"--branch=stable", -- latest stable release
+		lazypath,
+	})
+end
+
+vim.opt.rtp:prepend(lazypath)
+
+local ops = {
+	change_detection = {
+		notify = false
+	}
+}
+
+require("config.options")
+
+require("lazy").setup({
+
+	spec = {
+		{ import = "plugins" },
+	},
+	install = { colorscheme = { "nightfox", "habamax" } },
+	change_detection = {
+		notify = false
+	},
+	performance = {
+		rtp = {
+			-- disable some rtp plugins
+			disabled_plugins = {
+				"gzip",
+				-- "matchit",
+				-- "matchparen",
+				"netrwPlugin",
+				"tarPlugin",
+				"tohtml",
+				"tutor",
+				"zipPlugin",
+			},
+		},
+	}
+})
+
+require("config.autocmds")
+require("config.keymap")
