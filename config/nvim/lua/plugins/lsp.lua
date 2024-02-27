@@ -1,15 +1,16 @@
 return {
 	{
 		"williamboman/mason.nvim",
-		event = "VeryLazy",
-		-- lazy = false,
+		-- event = "VeryLazy",
+		lazy = true,
 		config = function()
 			require('mason').setup()
 		end
 	},
 	{
 		"williamboman/mason-lspconfig.nvim",
-		event = "VeryLazy",
+		-- event = "VeryLazy",
+		lazy = true,
 		dependencies = {
 			"williamboman/mason.nvim"
 		},
