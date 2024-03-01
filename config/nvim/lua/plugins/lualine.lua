@@ -41,10 +41,10 @@ return {
 				lualine_z = {
 					'progress'
 				},
-				lualine_c = {
-					-- 'filename',
-					require('auto-session.lib').current_session_name
-				}
+				-- lualine_c = {
+				-- 	-- 'filename',
+				-- 	require('auto-session.lib').current_session_name
+				-- }
 			}
 		})
 	end
