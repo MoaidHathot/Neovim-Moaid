@@ -105,7 +105,7 @@ return {
 		dependencies = {
 			"williamboman/mason.nvim",
 			"nvimtools/none-ls.nvim",
-			"neovim/nvim-lspconfig"
+			-- "neovim/nvim-lspconfig"
 		},
 		config = function()
 			require('mason-null-ls').setup({
