@@ -17,7 +17,3 @@ My Neovim Configuration
   	* netcoredbg
 	* jq (for nvim-rest)
 	* html-tidy (for nvim-rest)
-	* Powershell_es
-
-lsp.lua assumes that the path "C:\\Users\\moaid\\AppData\\Local\\nvim-apps\\PowerShellEditorServices" exist and contain the `PowerShellEditorServices` root directory
-
