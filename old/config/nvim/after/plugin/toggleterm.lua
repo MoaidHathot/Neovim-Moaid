@@ -34,7 +34,7 @@ terminal1:new {
 	auto_scroll = true,
 }
 
-function _toggleTerminal1()
+local function _toggleTerminal1()
 	terminal1:toggle()
 end
 
@@ -49,14 +49,14 @@ terminal2:new {
 	hiddern = true
 }
 
-function _lazygitToggle()
+local function _lazygitToggle()
 	terminal2:toggle()
 end
 
 local Terminal = require('toggleterm.terminal').Terminal
 local lazygit = Terminal:new({ cmd = 'lazygit', hidden = true, direction = 'float' })
 
-function _lazygit_toggle()
+local function _lazygit_toggle()
 	lazygit:toggle()
 end
 
