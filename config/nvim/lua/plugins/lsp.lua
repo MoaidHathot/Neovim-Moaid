@@ -25,8 +25,9 @@ return {
 	},
 	{
 		"neovim/nvim-lspconfig",
-		event = "VeryLazy",
-		-- lazy = false,
+		-- event = { "BufReadPre", "BufNewFile" },
+		-- event = "VeryLazy",
+		lazy = true,
 		dependencies = {
 			"williamboman/mason.nvim",
 			"williamboman/mason-lspconfig.nvim",
@@ -44,7 +45,18 @@ return {
 				enable_roslyn_analysers = true,
 				enable_import_completion = true,
 				organize_imports_on_format = true,
+				enable_decompilation_support = true,
 				filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx', 'props', 'targets' }
+			})
+
+			lspconfig.powershell_es.setup({
+				capabilities = capabilities,
+				-- bundle_path = "C:\\Users\\moaid\\AppData\\Local\\nvim-apps\\PowerShellEditorServices",
+				bundle_path = vim.fn.stdpath("data") .. "/mason/packages/powershell-editor-services",
+				init_options = {
+					enableProfileLoading = false,
+				}
+
 			})
 
 			vim.keymap.set('n', 'K', vim.lsp.buf.hover, {})
@@ -54,7 +66,9 @@ return {
 	},
 	{
 		'nvimtools/none-ls.nvim',
-		event = "VeryLazy",
+		-- event = { "BufReadPre", "BufNewFile" },
+		lazy = true,
+		-- event = "VeryLazy",
 		config = function()
 			local null_ls = require('null-ls')
 			null_ls.setup({
@@ -71,6 +85,7 @@ return {
 			vim.keymap.set('n', '<leader>lr', vim.lsp.buf.rename, { desc = "Rename symbol" })
 			vim.keymap.set({ 'n', 'i' }, '<f2>', vim.lsp.buf.rename, { desc = "toggle lsp References" })
 			vim.keymap.set({ 'n', 'i' }, '<f12>', vim.lsp.buf.definition, { desc = "Go to Definition" })
+			vim.keymap.set({ 'n' }, '<leader>ld', vim.lsp.buf.definition, { desc = "Go to Definition" })
 			vim.keymap.set('n', '<leader>li', vim.lsp.buf.implementation, { desc = "Go to Implementation" })
 			vim.keymap.set('n', '<leader>lh', vim.lsp.buf.signature_help, { desc = "Signature Help" })
 			vim.keymap.set('n', '<leader>lsI', ':TroubleToggle lsp_implementations<CR>',
@@ -85,6 +100,8 @@ return {
 	{
 		"jay-babu/mason-null-ls.nvim",
 		event = { "BufReadPre", "BufNewFile" },
+		-- event = { 'VeryLazy' },
+		-- enabled = false,
 		dependencies = {
 			"williamboman/mason.nvim",
 			"nvimtools/none-ls.nvim",
