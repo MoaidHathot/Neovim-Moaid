@@ -11,18 +11,24 @@ return {
 	{
 		"EdenEast/nightfox.nvim",
 		-- priority = 1000,
-		-- event = "VeryLazy",
-		config = function()
-			vim.cmd.colorscheme "nightfox"
-		end
+		event = "VeryLazy",
+		-- config = function()
+		-- 	vim.cmd.colorscheme "nightfox"
+		-- end
 	},
 	{
 		'rose-pine/neovim',
-		event = "VeryLazy"
+		event = "VeryLazy",
+		-- config = function()
+		-- 	vim.cmd.colorscheme "rose-pine-moon"
+		-- end
 	},
 	{
 		'LunarVim/lunar.nvim',
-		event = "VeryLazy"
+		-- event = "VeryLazy",
+		config = function()
+			vim.cmd.colorscheme "lunar"
+		end
 	},
 	{
 		"lunarvim/Onedarker.nvim",

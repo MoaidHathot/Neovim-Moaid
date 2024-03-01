@@ -1,25 +1,17 @@
 return {
 	'ThePrimeagen/harpoon',
-	event = "VeryLazy",
-	config = function()
-		local harpoon = require('harpoon').setup(
-			{
-				global_settings = {
-					enter_on_sendcmd = true
-				}
-			}
-		)
-		local mark = require("harpoon.mark")
-		local ui = require("harpoon.ui")
-
-
-		vim.keymap.set("n", "<leader>a", mark.add_file)
-		vim.keymap.set("n", "<leader>h", ui.toggle_quick_menu)
-
-
-		vim.keymap.set("n", "<leader>1", function() ui.nav_file(1) end)
-		vim.keymap.set("n", "<leader>2", function() ui.nav_file(2) end)
-		vim.keymap.set("n", "<leader>3", function() ui.nav_file(3) end)
-		vim.keymap.set("n", "<leader>4", function() ui.nav_file(4) end)
-	end
+	-- event = "VeryLazy",
+	keys = {
+		{ "<leader>a", function() require("harpoon.mark").add_file() end },
+		{ "<leader>h", function() require("harpoon.ui").toggle_quick_menu() end },
+		{ "<leader>1", function() require("harpoon.ui").nav_file(1) end },
+		{ "<leader>2", function() require("harpoon.ui").nav_file(2) end },
+		{ "<leader>3", function() require("harpoon.ui").nav_file(3) end },
+		{ "<leader>4", function() require("harpoon.ui").nav_file(4) end },
+	},
+	opts = {
+		global_settings = {
+			enter_on_sendcmd = true
+		}
+	}
 }

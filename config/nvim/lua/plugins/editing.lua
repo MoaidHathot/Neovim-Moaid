@@ -58,7 +58,8 @@ return {
 	},
 	{
 		'HiPhish/nvim-ts-rainbow2',
-		event = "VeryLazy",
+		event = { "BufReadPre", "BufNewFile" },
+		-- event = "VeryLazy",
 		config = function()
 			require('nvim-treesitter.configs').setup({
 				rainbow = {

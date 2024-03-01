@@ -1,6 +1,9 @@
 return {
-	'numToStr/Comment.nvim',
-	event = "VeryLazy",
+	'numtostr/comment.nvim',
+	-- event = "verylazy",
+	keys = {
+		{ '<leader>/', mode = { 'n', 'v' } }
+	},
 	opts = {
 		toggler = {
 			line = '<leader>/',
