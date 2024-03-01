@@ -26,7 +26,7 @@ local name = {
 return {
 	'goolord/alpha-nvim',
 	-- event = "VeryLazy",
-	-- lazy = false,
+	-- lazy = true,
 	dependencies = { 'nvim-tree/nvim-web-devicons' },
 	config = function()
 		local alpha = require('alpha')
