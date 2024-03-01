@@ -69,9 +69,13 @@ return {
 		end
 	},
 	{
-		'RRethy/vim-illuminate',
+		"tzachar/local-highlight.nvim",
 		event = "VeryLazy",
-		enable = false,
+		config = function()
+			require('local-highlight').setup({
+				insert_mode = true,
+			})
+		end
 	},
 	{
 		"petertriho/nvim-scrollbar",
