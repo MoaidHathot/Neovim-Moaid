@@ -77,5 +77,9 @@ return {
 	{
 		'artanikin/vim-synthwave84',
 		event = "VeryLazy"
+	},
+	{
+		'loctvl842/monokai-pro.nvim',
+		event = "VeryLazy"
 	}
 }

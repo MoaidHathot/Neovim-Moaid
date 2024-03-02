@@ -56,10 +56,11 @@ return {
 	},
 	{
 		'nvim-telescope/telescope-ui-select.nvim',
-		event = "VeryLazy",
+		-- event = "VeryLazy"
+		cmd = "Telescope",
 		config = function()
 			local telescope = require('telescope')
-			require('telescope').setup({
+			telescope.setup({
 				defaults = {
 					mappings = {
 						i = { ["<C-t>"] = require('trouble.providers.telescope').open_with_trouble },
