@@ -77,7 +77,7 @@ return {
 			local null_ls = require('null-ls')
 			null_ls.setup({
 				sources = {
-					null_ls.builtins.formatting.stylua,
+					-- null_ls.builtins.formatting.stylua,
 					null_ls.builtins.formatting.csharpier,
 					null_ls.builtins.formatting.yamlfmt,
 					null_ls.builtins.formatting.black,
@@ -92,13 +92,11 @@ return {
 			vim.keymap.set({ 'n' }, '<leader>ld', vim.lsp.buf.definition, { desc = "Go to Definition" })
 			vim.keymap.set('n', '<leader>li', vim.lsp.buf.implementation, { desc = "Go to Implementation" })
 			vim.keymap.set('n', '<leader>lh', vim.lsp.buf.signature_help, { desc = "Signature Help" })
+			vim.keymap.set({ 'n' }, '<leader>lsD', ":TroubleToggle document_diagnostics<CR>",
+				{ desc = "Toggle Document Diagnostics" })
 			vim.keymap.set('n', '<leader>lsI', ':TroubleToggle lsp_implementations<CR>',
 				{ desc = "Toggle LSP References" })
-			vim.keymap.set('n', '<leader>lsD', ":TroubleToggle lsp_definitions<CR>", { desc = "Toggle LSP Definitions" })
-			vim.keymap.set('n', '<leader>lsq', ":TroubleToggle document_diagnostics<CR>",
-				{ desc = "Toggle Document Diagnostics" })
-			vim.keymap.set('n', '<leader>lsd', ":TroubleToggle document_diagnostics<CR>",
-				{ desc = "Toggle Document Diagnostics" })
+			vim.keymap.set('n', '<leader>lsd', ":TroubleToggle lsp_definitions<CR>", { desc = "Toggle LSP Definitions" })
 		end
 	},
 	{

@@ -4,5 +4,5 @@ return {
 	dependencies = { "nvim-tree/nvim-web-devicons" },
 	opts = {
 		auto_preview = true
-	},
+	}
 }
