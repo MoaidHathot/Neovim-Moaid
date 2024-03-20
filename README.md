@@ -10,10 +10,18 @@ My Neovim Configuration
 
 * Other dependencies
 	* Zig - make sure to use a stable release
+   		- `winget install zig.zig` (__slow to install__)
 	* fd
-	* WinGnu32.Make
+   		- `winget install sharkdp.fd`
+	* WinGnu32.Make or Kitware.CMake
+   		- `winget install Kitware.CMake`
 	* ripgrep
+   		- `winget install BurntSushi.ripgrep.MSVC`
  	* lazygit
+		- `JesseDuffield.lazygit`
   	* netcoredbg
+  	  	- https://github.com/Samsung/netcoredbg
 	* jq (for nvim-rest)
+   		- `winget install jqlang.jq`
 	* html-tidy (for nvim-rest)
+   		- https://github.com/htacg/tidy-html5
