@@ -19,7 +19,7 @@ return {
 		},
 		config = function()
 			require('mason-lspconfig').setup({
-				ensure_installed = { "lua_ls", "omnisharp", "glow" }
+				ensure_installed = { "lua_ls", "omnisharp" }
 			})
 		end
 	},
