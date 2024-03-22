@@ -44,4 +44,5 @@ config/github-copilot
 config/nvim/plugin/packer_compiled.lua
 config/lazygit
 config/nvim/lazy-lock.json
+config/gh
 
