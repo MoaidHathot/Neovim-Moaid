@@ -1,0 +1,76 @@
+# yaml-language-server: $schema=https://aka.ms/configuration-dsc-schema/0.2
+properties:
+  configurationVersion: "0.2.0"
+  assertions:
+    - resource: Microsoft.Windows.Developer/OsVersion
+      directives:
+        description: Verify min OS version requirement
+        allowPrerelease: true
+      settings:
+        MinVersion: '10.0.22000'
+  resources:
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: Neovim
+      directives:
+        description: Install Neovim
+        allowPrerelease: true
+      settings:
+        id: Neovim.Neovim
+        source: winget
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: Zig
+      directives:
+        description: Install Zig
+        allowPrerelease: true 
+      settings:
+        id: zig.zig
+        source: winget
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: FD
+      directives:
+        description: Install fd
+        allowPrerelease: true
+      settings:
+        id: sharkdp.fd
+        source: winget
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: Ripgrep
+      directives:
+        description: Install Ripgrep
+        allowPrerelease: true
+      settings:
+        id: BurntSushi.ripgrep.MSVC
+        source: winget
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: LazyGit
+      directives:
+        description: Install LazyGit
+        allowPrerelease: true
+      settings:
+        id: JesseDuffield.lazygit
+        source: winget
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: JQ
+      directives:
+        description: Install JQ
+        allowPrerelease: true
+      settings:
+        id: jqlang.jq
+        source: winget
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: CMake
+      directives:
+        description: Install Cmake
+        allowPrerelease: true
+      settings:
+        id: Kitware.CMake
+        source: winget
+    - resource: PSDscResources/Environment
+      id: XDG_CONFIG_HOME
+      directives:
+        description: Setting XDG_CONFIG_HOME to Repo
+        allowPrerelease: false
+      settings:
+        name: XDG_CONFIG_HOME
+        value: '${WinGetConfigRoot}/../config/'
+
