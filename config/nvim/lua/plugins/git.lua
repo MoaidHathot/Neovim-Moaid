@@ -7,8 +7,8 @@ return {
 		'lewis6991/gitsigns.nvim',
 		-- event = "VeryLazy",
 		cmd = "Gitsigns",
-		-- config = function()
-		-- 	require('gitsigns').setup()
-		-- end
+		config = function()
+			require('gitsigns').setup()
+		end
 	}
 }

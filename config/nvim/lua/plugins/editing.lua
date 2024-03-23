@@ -40,15 +40,15 @@ return {
 		'tpope/vim-surround',
 		event = "VeryLazy"
 	},
-	{
-		'kosayoda/nvim-lightbulb',
-		event = "VeryLazy",
-		config = function()
-			require('nvim-lightbulb').setup({
-				autocmd = { enabled = true }
-			})
-		end
-	},
+	-- {
+	-- 	'kosayoda/nvim-lightbulb',
+	-- 	event = "VeryLazy",
+	-- 	config = function()
+	-- 		require('nvim-lightbulb').setup({
+	-- 			autocmd = { enabled = true }
+	-- 		})
+	-- 	end
+	-- },
 	{
 		'chentoast/marks.nvim',
 		event = "VeryLazy",
