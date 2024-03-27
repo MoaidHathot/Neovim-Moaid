@@ -34,3 +34,4 @@ My Neovim Configuration
 * You can install most of the above automatically using `Winget` as follow
     - `winget configure -f configurations/configuration.dsc.yaml`
     - The only thing missing is `netcoredbg` and `html-tidy` since they are not available in Winget.
+    - **note** - this process may take a *lot* of time to finish due to Zig. Zig's binaries are highly compressed and it take an unwordly amount of time to uncompress them. This doesn't relate to winget or to the configuration file, you'll encounter the same experience when running the installer manually.
