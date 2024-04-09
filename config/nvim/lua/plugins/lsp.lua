@@ -51,7 +51,6 @@ return {
 
 			lspconfig.powershell_es.setup({
 				capabilities = capabilities,
-				-- bundle_path = "C:\\Users\\moaid\\AppData\\Local\\nvim-apps\\PowerShellEditorServices",
 				bundle_path = vim.fn.stdpath("data") .. "/mason/packages/powershell-editor-services",
 				init_options = {
 					enableProfileLoading = false,
