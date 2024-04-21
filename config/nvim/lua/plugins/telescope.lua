@@ -12,7 +12,7 @@ return {
 			vim.keymap.set('n', '<leader>sF', "<cmd>Telescope find_files hidden=true no_ignore=true<CR>",
 				{ desc = 'Find All Files' })
 			vim.keymap.set('n', '<leader>sf', builtin.find_files, { desc = 'Find Files' })
-			vim.keymap.set('n', '<C-p>', builtin.find_files, { desc = 'Find Files' })
+			-- vim.keymap.set('n', '<C-p>', builtin.find_files, { desc = 'Find Files' })
 			vim.keymap.set('n', '<leader>sg', builtin.live_grep, { desc = 'Find Grep' })
 			vim.keymap.set('n', '<leader>sG',
 				function()

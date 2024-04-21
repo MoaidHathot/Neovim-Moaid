@@ -34,6 +34,14 @@ properties:
         id: sharkdp.fd
         source: winget
     - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: FZF
+      directives:
+        description: Install fzf
+        allowPrerelease: true
+      settings:
+        id: junegunn.fzf
+        source: winget
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: Ripgrep
       directives:
         description: Install Ripgrep

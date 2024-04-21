@@ -93,6 +93,8 @@ vim.keymap.set('v', '<leader>p', "\"_dP")
 vim.keymap.set('i', '<C-p>', '<Esc>pa')
 
 vim.keymap.set('n', '<leader>ms', "<cmd>:w<CR>:so<CR>", { desc = "Shout Out" })
+vim.keymap.set('n', '<leader>mm', "<cmd>:messages<CR>", { desc = "Show messages" })
+vim.keymap.set('n', '<leader>mc', "<cmd>:messages clear<CR>", { desc = "Show messages" })
 
 -- create new lines in Normal mode
 vim.keymap.set('n', '<leader>o', "o<Esc>^Da<Esc>k", { desc = 'Newline Below', silent = true })

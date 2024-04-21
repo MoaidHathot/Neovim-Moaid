@@ -65,7 +65,6 @@ vim.g.markdown_recommended_style = 0
 -- vim.api.nvim_exec2('set formatoptions-=cro', {})
 -- vim.opt_global.formatoptions:remove { 'c', 'r', 'o' }
 
-
 -- vim.g.OmniSharp_highlighting = 0
 
 -- vim.opt.ignorecase = true

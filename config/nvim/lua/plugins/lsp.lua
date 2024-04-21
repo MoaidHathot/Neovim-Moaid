@@ -46,7 +46,7 @@ return {
 				enable_import_completion = true,
 				organize_imports_on_format = true,
 				enable_decompilation_support = true,
-				filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx', 'props', 'targets' }
+				filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx', 'targets' }
 			})
 
 			lspconfig.powershell_es.setup({
