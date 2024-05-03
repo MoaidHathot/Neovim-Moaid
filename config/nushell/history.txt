@@ -1,0 +1,82 @@
+cls
+ls
+ls | where 
+ls | where --help
+ls
+C:\Playground\temp\
+ls
+dotnet new console -n ComplexObjectStripping
+cd ComplexObjectStripping\
+moaid
+nvim
+cls
+cd ../
+ls
+dotnet new console -n TestCredScanner
+cd TestCredScanner\
+moaid
+nvim
+http
+http get moaid.codes
+http get https://moaid.codes
+http get https://api.github.com/repos/nushell/nushell
+| get license
+http get https://api.github.com/repos/nushell/nushell | get license
+http get https://api.github.com/repos/nushell/nushell | json
+z adp
+cd adp
+cd .././.
+ls
+exit
+cls
+ls
+cat deploy\
+cd deploy\
+ls
+fd environment.json
+fzf environment.json
+fzf
+cd ../
+ls
+lazygit
+git status
+git
+status
+fd.exe 
+fd environment.json
+fd
+fd | fzf
+fzf
+exit
+wignet search fzf
+exit
+winget search fzf
+exit
+fd | fzf
+fzf
+fd | fzf
+cat src\DataIngestion\Activity\Reducer\Reducer.Application\appsettings.Development.json
+json
+cat src\DataIngestion\Activity\Reducer\Reducer.Application\appsettings.Development.json | tojson
+cat src\DataIngestion\Activity\Reducer\Reducer.Application\appsettings.Development.json | to json
+cat src\DataIngestion\Activity\Reducer\Reducer.Application\appsettings.Development.json | jq .
+cat src\DataIngestion\Activity\Reducer\Reducer.Application\appsettings.Development.json | jq '.'
+cat src\DataIngestion\Activity\Reducer\Reducer.Application\appsettings.Development.json
+cat src\DataIngestion\Activity\Reducer\Reducer.Application\appsettings.Development.json | sed
+http get https://api.github.com/repos/nushell/nushell | to json
+http get https://api.github.com/repos/nushell/nushell | get organization
+http get https://api.github.com/repos/nushell/nushell | get organization.login
+http get https://api.github.com/repos/nushell/nushell | to json | jq
+http get https://api.github.com/repos/nushell/nushell | to json | jq '.organization'
+http get https://api.github.com/repos/nushell/nushell | to json | jq '.organization.login'
+http get https://api.github.com/repos/nushell/nushell
+http get https://api.github.com/repos/nushell/nushell | get custom_properties
+http get https://api.github.com/repos/nushell/nushell | get keys_url
+http get https://api.github.com/repos/nushell/nushell | get topics
+ls
+ls readme*
+exit
+http get https://azuresearch-ussc.nuget.org/query?q=Dumpify
+http get https://azuresearch-ussc.nuget.org/query?q=Dumpify | to json | jq '.'
+ls
+exit
