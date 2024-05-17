@@ -47,4 +47,4 @@ config/nvim/lazy-lock.json
 config/gh
 config/gh-copilot
 
-config/nushell/
+config/nushell
