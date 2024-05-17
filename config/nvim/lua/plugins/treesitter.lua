@@ -35,11 +35,16 @@ return {
 					keymaps = {
 						["af"] = "@function.outer",
 						["if"] = "@function.inner",
+						["am"] = "@function.outer",
+						["im"] = "@function.inner",
 						["ac"] = "@class.outer",
 						["ic"] = { query = "@class.inner", desc = "Select inner part of a class region" },
+						["ib"] = "@block.inner",
+						["ab"] = "@block.outer",
+						["iP"] = "@parameter.inner",
+						["aP"] = "@parameter.outer",
 					}
 				}
-
 			}
 		})
 	end
