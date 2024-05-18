@@ -1,6 +1,9 @@
 return {
 	{
 		'MoaidHathot/dotnet.nvim',
-		cmd = "DotnetUI"
+		cmd = "DotnetUI",
+		config = function()
+			require('dotnet').setup()
+		end
 	}
 }
