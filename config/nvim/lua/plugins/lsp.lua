@@ -55,7 +55,6 @@ return {
 				init_options = {
 					enableProfileLoading = false,
 				}
-
 			})
 
 			lspconfig.pylsp.setup({
