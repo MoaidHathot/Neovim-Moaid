@@ -72,7 +72,12 @@ return {
 	},
 	{
 		'HiPhish/rainbow-delimiters.nvim',
+		enabled = false,
 		event = { "BufReadPre", "BufNewFile" },
+		-- config = function()
+		-- 	require('rainbow-delimiters.setup').setup {
+		-- 	}
+		-- end
 	},
 	{
 		"tzachar/local-highlight.nvim",
