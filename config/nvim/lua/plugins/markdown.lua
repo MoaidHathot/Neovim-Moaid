@@ -16,10 +16,5 @@ return {
 		opts = {
 			style = "dark",
 		},
-		-- config = function()
-		-- 	require("glow").setup({
-		-- 		style = "dark",
-		-- 	})
-		-- end
 	}
 }
