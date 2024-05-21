@@ -1,7 +1,8 @@
 return {
 	{
 		"catppuccin/nvim",
-		event = "VeryLazy",
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 		name = "catppuccin",
 		-- priority = 1000,
 		-- config = function()
@@ -11,14 +12,16 @@ return {
 	{
 		"EdenEast/nightfox.nvim",
 		-- priority = 1000,
-		event = "VeryLazy",
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 		-- config = function()
 		-- 	vim.cmd.colorscheme "nightfox"
 		-- end
 	},
 	{
 		'rose-pine/neovim',
-		event = "VeryLazy",
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 		-- config = function()
 		-- 	vim.cmd.colorscheme "rose-pine-moon"
 		-- end
@@ -28,58 +31,72 @@ return {
 		-- event = "VeryLazy",
 		config = function()
 			vim.cmd.colorscheme "lunar"
+			-- vim.api.nvim_create_user_command( 'LoadColors', function(opts) end, {})
 		end
 	},
 	{
 		"lunarvim/Onedarker.nvim",
-		event = "VeryLazy"
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 	},
 	{
 		"navarasu/onedark.nvim",
-		event = "VeryLazy"
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 	},
 	{
 		"rebelot/kanagawa.nvim",
-		event = "VeryLazy"
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 	},
 	{
 		'folke/tokyonight.nvim',
-		event = "VeryLazy"
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 	},
 	{
 		'Everblush/nvim',
-		event = "VeryLazy"
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 	},
 	{
 		'sainnhe/edge',
-		event = "VeryLazy"
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 	},
 	{
 		'Mofiqul/vscode.nvim',
-		event = "VeryLazy"
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 	},
 	{
 		'JoosepAlviste/palenightfall.nvim',
-		event = "VeryLazy"
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 	},
 	{
 		'stevedylandev/flexoki-nvim',
-		event = "VeryLazy"
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 	},
 	{
 		'samharju/synthweave.nvim',
-		event = "VeryLazy"
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 	},
 	{
 		'maxmx03/fluoromachine.nvim',
-		event = "VeryLazy"
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 	},
 	{
 		'artanikin/vim-synthwave84',
-		event = "VeryLazy"
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 	},
 	{
 		'loctvl842/monokai-pro.nvim',
-		event = "VeryLazy"
+		-- event = "VeryLazy",
+		cmd = "LoadColors",
 	}
 }
