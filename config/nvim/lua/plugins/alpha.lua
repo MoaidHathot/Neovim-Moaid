@@ -49,6 +49,7 @@ return {
 
 		alpha.setup(dashboard.opts)
 
+
 		vim.keymap.set('n', '<leader>;', ":Alpha<CR>", { desc = "Toggle Alpha", silent = true })
 	end
 }
