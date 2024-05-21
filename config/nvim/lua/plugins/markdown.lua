@@ -1,7 +1,7 @@
 return {
 	{
 		"iamcco/markdown-preview.nvim",
-		event = "VeryLazy",
+		-- event = "VeryLazy",
 		cmd = { "MarkdownPreviewToggle", "MarkdownPreview", "MarkdownPreviewStop" },
 		ft = { "markdown", "md" },
 		build = function()
