@@ -1,6 +1,0 @@
--- local flash = require('flash')
---
--- flash.treesitter({})
--- flash.toggle(true)
--- flash.treesitter_search({})
--- flash.jump({})
