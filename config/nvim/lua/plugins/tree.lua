@@ -24,7 +24,7 @@ return {
 		lazy = false,
 		enabled = false,
 		dependencies = {
-			"kyazdani42/nvim-web-devicons"
+			"nvim-tree/nvim-web-devicons"
 		},
 		keys = {
 			{ '<leader>e',  vim.cmd.NvimTreeToggle },
