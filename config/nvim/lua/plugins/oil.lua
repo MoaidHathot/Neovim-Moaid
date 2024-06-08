@@ -1,5 +1,4 @@
 return {
-
 	'stevearc/oil.nvim',
 	keys = {
 		{ '<leader>mF', "<CMD>Oil<CR>", { desc = "Open Oil file manager" } }

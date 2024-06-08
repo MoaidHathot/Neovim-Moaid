@@ -1,7 +1,8 @@
 return {
 	{
 		'MoaidHathot/dotnet.nvim',
-		-- cmd = "DotnetUI",
+		-- enabled = false,
+		cmd = "DotnetUI",
 	keys = {
 		{ '<leader>/', mode = { 'n', 'v' } },
 		{ '<leader>na', "<cmd>:DotnetUI new_item<CR>", { desc = '.NET new item', silent = true} },

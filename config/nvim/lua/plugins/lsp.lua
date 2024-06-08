@@ -107,11 +107,11 @@ return {
 			vim.keymap.set('n', '<leader>li', vim.lsp.buf.implementation, { desc = "Go to Implementation" })
 			vim.keymap.set('n', '<leader>lh', vim.lsp.buf.signature_help, { desc = "Signature Help" })
 			vim.keymap.set('n', '<leader>lsR', vim.lsp.buf.references, { desc = "To to References" })
-			vim.keymap.set({ 'n' }, '<leader>lsD', ":TroubleToggle document_diagnostics<CR>",
-				{ desc = "Toggle Document Diagnostics" })
-			vim.keymap.set('n', '<leader>lsI', ':TroubleToggle lsp_implementations<CR>',
+			-- vim.keymap.set({ 'n' }, '<leader>lsD', ":Trouble document_diagnostics<CR>", { desc = "Toggle Document Diagnostics" })
+			vim.keymap.set({ 'n' }, '<leader>lsD', ":Trouble diagnostics<CR>", { desc = "Toggle Document Diagnostics" })
+			vim.keymap.set('n', '<leader>lsI', ':Trouble lsp_implementations<CR>',
 				{ desc = "Toggle LSP References" })
-			vim.keymap.set('n', '<leader>lsd', ":TroubleToggle lsp_definitions<CR>", { desc = "Toggle LSP Definitions" })
+			vim.keymap.set('n', '<leader>lsd', ":Trouble lsp_definitions<CR>", { desc = "Toggle LSP Definitions" })
 		end
 	},
 	{
@@ -149,5 +149,5 @@ return {
 
 			vim.keymap.set('n', '<leader>lu', toggleLines, { desc = "Toggle Underline Diagnostics", silent = true })
 		end
-	}
+	},
 }
