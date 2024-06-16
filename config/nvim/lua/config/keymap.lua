@@ -107,3 +107,34 @@ vim.keymap.set('n', '<S-Down>', 'j')
 vim.keymap.set('v', '<S-Down>', 'j')
 vim.keymap.set('n', '<S-Up>', 'k')
 vim.keymap.set('v', '<S-Up>', 'k')
+
+local function toggle_highlight()
+    local line_num = vim.fn.line('.')
+    local highlight_group = 'LineHighlight'
+
+    -- Get all matches
+    local matches = vim.fn.getmatches()
+    local match_id = nil
+
+    -- Check if there's already a match for the current line
+    for _, match in ipairs(matches) do
+        if match.group == highlight_group and match.pattern == '\\%' .. line_num .. 'l' then
+            match_id = match.id
+            break
+        end
+    end
+
+    if match_id then
+        -- Remove the existing match
+        vim.fn.matchdelete(match_id)
+        print('Line highlight removed')
+    else
+        -- Add a new highlight
+        vim.cmd('highlight LineHighlight ctermbg=gray guibg=gray')
+        vim.fn.matchadd('LineHighlight', '\\%' .. line_num .. 'l')
+        print('Line highlighted')
+    end
+end
+-- Set the key mapping
+vim.keymap.set('n', '<leader>ha', toggle_highlight, { desc = 'Toggle Highlight Line' })
+vim.keymap.set('n', '<leader>hr', "<cmd>call clearmatches()<CR>", { desc = 'Toggle Highlight Line' })
