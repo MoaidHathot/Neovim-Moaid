@@ -80,21 +80,21 @@ bar:
 
 workspaces:
   - name: "1"
-    display_name: "Code"
-  - name: "2"
-    display_name: "Second Monitor"
-  - name: "3"
     display_name: "Firefox"
-  - name: "4"
+  - name: "2"
     display_name: "Edge"
+  - name: "3"
+    display_name: "Code"
+  - name: "4"
   - name: "5"
   - name: "6"
   - name: "7"
   - name: "8"
-  - name: "9"
     display_name: "Teams"
-  - name: "0"
+  - name: "9"
     display_name: "Outlook"
+  - name: "0"
+    display_name: "Second Monitor"
 
 window_rules:
   # Task Manager requires admin privileges to manage and should be ignored unless running
