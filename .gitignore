@@ -48,3 +48,4 @@ config/gh
 config/gh-copilot
 
 config/nushell
+config/k9s
