@@ -190,6 +190,15 @@ properties:
         source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: Spotify
+      directives:
+        description: Install Spotify
+        allowPrerelease: true
+      settings:
+        id: Spotify.Spotify
+        source: winget
+
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: Visual_Studio_2022
       directives:
         description: Install Visual Studio
