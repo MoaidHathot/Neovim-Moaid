@@ -26,7 +26,7 @@ properties:
            RestartExplorer: true
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
-      id: PowerShell Core
+      id: PowerShell_Core
       directives:
         description: Install PowerShell
         allowPrerelease: true
@@ -73,7 +73,7 @@ properties:
         ConfigLocation: "Global"        
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
-      id: Windows Terminal Preview
+      id: Windows_Terminal_Preview
       directives:
         description: Install Windows Terminal Preview
         allowPrerelease: true
@@ -82,7 +82,7 @@ properties:
         source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
-      id: Ditto Clipboard Manager
+      id: Ditto_Clipboard_Manager
       directives:
         description: Install Ditto
         allowPrerelease: true
@@ -91,7 +91,7 @@ properties:
         source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
-      id: LinqPad 8
+      id: LinqPad_8
       directives:
         description: Install LinqPad 8
         allowPrerelease: true
@@ -109,7 +109,7 @@ properties:
         source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
-      id: Visual Studio Code
+      id: Visual_Studio_Code
       directives:
         description: Install Visual Studio Code
         allowPrerelease: true
@@ -145,7 +145,7 @@ properties:
         source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
-      id: Glaze Window Tiling Manager
+      id: Glaze_Window_Tiling_Manager
       directives:
         description: Install GlazeWM
         allowPrerelease: true
@@ -154,7 +154,7 @@ properties:
         source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
-      id: Elgato WaveLink
+      id: Elgato_WaveLink
       directives:
         description: Install Elgato WaveLink
         allowPrerelease: true
@@ -163,7 +163,7 @@ properties:
         source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
-      id: Elgato StreamDeck
+      id: Elgato_StreamDeck
       directives:
         description: Install Elgato StreamDeck
         allowPrerelease: true
@@ -172,7 +172,7 @@ properties:
         source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
-      id: Elgato Control Center
+      id: Elgato_Control_Center
       directives:
         description: Install Elgato Control Center
         allowPrerelease: true
@@ -190,10 +190,20 @@ properties:
         source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
-      id: Visual Studio
+      id: Visual_Studio_2022
       directives:
         description: Install Visual Studio
         allowPrerelease: true
       settings:
         id: Microsoft.VisualStudio.2022.Enterprise
         source: winget
+
+    - resource: PSDscResources/Script
+      id: Update_PowerShell_Profile
+      directives:
+        description: Update PowerShells' Profile
+      settings:
+        SetScript: |
+          '. ${WinGetConfigRoot}/../config/powershell/profile.ps1' > "$([System.Environment]::GetFolderPath('MyDocuments'))/PowerShell/Microsoft.PowerShell_profile.ps1"
+        GetScript: return $false
+        TestScript: return $false
