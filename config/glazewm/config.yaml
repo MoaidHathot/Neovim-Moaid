@@ -21,6 +21,7 @@ general:
   # *Strongly* recommended to set to 'false'. Whether to globally enable/disable
   # window transition animations (on minimize, close, etc). Set to 'unchanged'
   # to make no setting changes.
+  # window_animations: "unchanged"
   window_animations: "unchanged"
 
 gaps:
@@ -36,6 +37,7 @@ focus_borders:
   active:
     enabled: true
     color: "#0000ff"
+    # color: "#bd93f9"
 
   inactive:
     enabled: false
@@ -51,14 +53,23 @@ bar:
   font_family: "Segoe UI"
   font_size: "13px"
   padding: "4px 6px"
-  offset_x: "0"
-  offset_y: "0"
-  border_radius: "0"
+  offset_x: "3"
+  offset_y: "3"
+  border_radius: "10"
   components_left:
     - type: "workspaces"
-      focused_workspace_background: "#ffffff33"
+      # focused_workspace_background: "#ffffff33"
       displayed_workspace_background: "#00000033"
       default_workspace_background: "transparent"
+
+      focused_workspace_background: "transparent"
+      # displayed_workspace_background: "transparent"
+      # default_workspace_background: "transparent"
+      # focused_workspace_border_color: "transparent"
+      # default_workspace_border_color: "transparent"
+      # focused_workspace_foreground: "#bd93f9"
+      focused_workspace_foreground: "#CE93D8"
+      # focused_workspace_foreground: "#94539E"
   components_center:
     - type: "window title"
   components_right:
@@ -90,7 +101,7 @@ workspaces:
   - name: "6"
   - name: "7"
   - name: "8"
-    display_name: "Teams"
+    display_name: "Chat"
   - name: "9"
     display_name: "Outlook"
   - name: "0"
