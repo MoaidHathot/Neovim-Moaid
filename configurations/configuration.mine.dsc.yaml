@@ -100,6 +100,15 @@ properties:
         source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: ILSpy
+      directives:
+        description: Install ILSpy
+        allowPrerelease: true
+      settings:
+        id: icsharpcode.ILSpy
+        source: winget
+
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: PowerToys
       directives:
         description: Install PowerToys
@@ -206,6 +215,15 @@ properties:
       settings:
         id: Microsoft.VisualStudio.2022.Enterprise
         source: winget
+
+    - resource: PSDscResources/Environment
+      id: Moaid_Config_Path
+      directives:
+        description: Setting Moaid_Config_Path to Repo
+        allowPrerelease: false
+      settings:
+        name: Moaid_Config_Path
+        value: '${WinGetConfigRoot}/../'
 
     - resource: PSDscResources/Script
       id: Update_PowerShell_Profile

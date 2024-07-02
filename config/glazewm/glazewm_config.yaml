@@ -59,19 +59,26 @@ bar:
   components_left:
     - type: "workspaces"
       # focused_workspace_background: "#ffffff33"
-      displayed_workspace_background: "#00000033"
+      # displayed_workspace_background: "#00000033"
+      displayed_workspace_background: "transparent"
       default_workspace_background: "transparent"
 
       focused_workspace_background: "transparent"
       # displayed_workspace_background: "transparent"
       # default_workspace_background: "transparent"
-      # focused_workspace_border_color: "transparent"
-      # default_workspace_border_color: "transparent"
+      
+      focused_workspace_border_color: "transparent"
+      default_workspace_border_color: "transparent"
+
       # focused_workspace_foreground: "#bd93f9"
-      focused_workspace_foreground: "#CE93D8"
+      # focused_workspace_foreground: "#CE93D8"
+      # focused_workspace_foreground: "#9370DB"
+      focused_workspace_foreground: "#1dfb8d"
       # focused_workspace_foreground: "#94539E"
   components_center:
     - type: "window title"
+      # foreground: "#CE93D8"
+      foreground: "#1dfb8d"
   components_right:
     - type: "system tray"
     - type: "tiling direction"
@@ -95,7 +102,7 @@ workspaces:
   - name: "2"
     display_name: "Edge"
   - name: "3"
-    display_name: "Code"
+    display_name: "Terminal"
   - name: "4"
   - name: "5"
   - name: "6"
