@@ -2,12 +2,6 @@ Set-Alias moaid nvim
 Set-Alias lg lazygit
 Set-Alias .. cd..
 
-function Test-Config-Path
-{
-	$repoPath = "$env:Moaid_Config_Path/config/glazewm/glazewm_config.yaml"
-	Write-Host "$repoPath"
-}
-
 function Start-Glaze
 {
 	$repoPath = "$env:Moaid_Config_Path/config/glazewm/glazewm_config.yaml"
