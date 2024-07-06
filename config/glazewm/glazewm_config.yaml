@@ -60,6 +60,7 @@ bar:
     - type: "workspaces"
       # focused_workspace_background: "#ffffff33"
       # displayed_workspace_background: "#00000033"
+      displayed_workspace_foreground: "#bd93f9"
       displayed_workspace_background: "transparent"
       default_workspace_background: "transparent"
 
