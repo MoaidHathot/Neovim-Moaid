@@ -108,6 +108,7 @@ workspaces:
   - name: "5"
   - name: "6"
   - name: "7"
+    display_name: "Notes"
   - name: "8"
     display_name: "Chat"
   - name: "9"

@@ -44,4 +44,9 @@ function fzfc
 	fzf --preview 'bat --style=numbers --color=always {}' --preview-window '~3'
 }
 
+function New-Notification($title, $descritpion)
+{
+	New-BurntToastNotification -Text $title, $descritpion
+}
+
 # Invoke-Expression (&starship init powershell)
