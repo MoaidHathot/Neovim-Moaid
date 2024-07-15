@@ -159,7 +159,7 @@ properties:
         description: Install GlazeWM
         allowPrerelease: true
       settings:
-        id: GlazeWM
+        id: glzr-io.glazewm
         source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
