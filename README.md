@@ -2,7 +2,6 @@
 My Neovim Configuration
 
 # Installation for Windows
-* Install Lazy.vim (Read [documentation](https://github.com/folke/lazy.nvim) for updated steps)
 	
 * Update `XDG_CONFIG_HOME` if needed
     - Should point to the `config/` folder in this repo.
