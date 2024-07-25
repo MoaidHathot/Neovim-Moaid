@@ -49,4 +49,25 @@ function New-Notification($title, $descritpion)
 	New-BurntToastNotification -Text $title, $descritpion
 }
 
+function Copy-Location
+{
+	Get-Location | Set-Clipboard
+}
+
+function Show-IL
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(ValueFromPipeline)]
+		$path
+	)
+
+	if ($path)
+	{
+		IlSpycmd $path | Bat --language C#
+		return
+	}
+}
+
+
 # Invoke-Expression (&starship init powershell)
