@@ -2,6 +2,11 @@ Set-Alias moaid nvim
 Set-Alias lg lazygit
 Set-Alias .. cd..
 
+function Get-LocalAppData
+{
+	return ([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData))
+}
+
 function Start-Glaze
 {
 	$repoPath = "$env:Moaid_Config_Path/config/glazewm/glazewm_config.yaml"

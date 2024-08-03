@@ -132,6 +132,12 @@ window_rules:
     match_title: "[Pp]icture.in.[Pp]icture"
     match_class_name: "Chrome_WidgetWin_1|MozillaDialogClass"
 
+  - command: "ignore"
+    match_title: "/[Pp]ower[Pp]oint [Ss]lide [Ss]how.*/"
+
+  - command: "move to workspace 0"
+    match_title: "/.+[Pp]ower[Pp]oint [Pp]resenter [Vv]iew/"
+
   # Some applications (eg. Steam) have borders that extend past the normal border size.
   - command: "resize borders 0px -7px -7px -7px"
     match_process_name: "steam"
