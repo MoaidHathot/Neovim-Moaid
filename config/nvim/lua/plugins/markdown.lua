@@ -16,5 +16,11 @@ return {
 		opts = {
 			style = "dark",
 		},
+	},
+	{
+		"OXY2DEV/markview.nvim",
+		lazy = false,
+		ft = { "markdown", "md" },
+		cmd = "Markview",
 	}
 }
