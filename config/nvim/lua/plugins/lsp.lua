@@ -81,9 +81,9 @@ return {
 				capabilities = capabilities
 			})
 
-			lspconfig.codeql.setup({
-				capabilities = capabilities
-			})
+			-- lspconfig.codeql.setup({
+			-- 	capabilities = capabilities
+			-- })
 
 
 			vim.keymap.set('n', 'K', vim.lsp.buf.hover, {})

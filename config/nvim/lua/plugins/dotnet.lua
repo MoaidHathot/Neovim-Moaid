@@ -10,7 +10,7 @@ return {
 		{ '<leader>nra', "<cmd>:DotnetUI project reference add<CR>", { desc = '.NET add project reference', silent = true} },
 		{ '<leader>nrr', "<cmd>:DotnetUI project reference remove<CR>", { desc = '.NET remove project reference', silent = true} },
 		{ '<leader>npa', "<cmd>:DotnetUI project package add<CR>", { desc = '.NET ada project package', silent = true} },
-		{ '<leader>npj', "<cmd>:DotnetUI project package remove<CR>", { desc = '.NET remove project package', silent = true} },
+		{ '<leader>npr', "<cmd>:DotnetUI project package remove<CR>", { desc = '.NET remove project package', silent = true} },
 	},
 	opts = {},
 	}
