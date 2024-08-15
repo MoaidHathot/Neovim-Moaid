@@ -1,6 +1,20 @@
 Set-Alias moaid nvim
 Set-Alias lg lazygit
-Set-Alias .. cd..
+# Set-Alias .. cd..
+
+function ..
+{
+	[CmdletBinding()]
+	param
+	( 
+		[int]$times = 1
+	)
+
+	for ($i = 0; $i -lt $times; $i++)
+	{
+		Set-Location ..
+	}
+}
 
 function Get-LocalAppData
 {
@@ -74,5 +88,12 @@ function Show-IL
 	}
 }
 
+function Remove-Shada
+{
+	$localData  = Get-LocalAppData
+	$shadaPath = "$localData/nvim-data/shada/"
+	Remove-Item $shadaPath -Recurse
+}
 
 # Invoke-Expression (&starship init powershell)
+
