@@ -24,7 +24,17 @@ function Get-LocalAppData
 function Start-Glaze
 {
 	$repoPath = "$env:Moaid_Config_Path/config/glazewm/glazewm_config.yaml"
-	glazewm --config="$repoPath"
+	write-host $repoPath
+	glazewm start --config="$repoPath"
+}
+
+function Start-Zebar
+{
+	# & "$env:USERPROFILE/.glzr\zebar\start_zebar.ps1"
+	$monitors = zebar monitors
+	foreach ($monitor in $monitors) {
+	 Start-Process -WindowStyle Hidden -FilePath "zebar" -ArgumentList "open bar --args $monitor"
+	};
 }
 
 function Update-Path
