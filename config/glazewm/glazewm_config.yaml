@@ -25,7 +25,7 @@ gaps:
 
   # Gap between windows and the screen edge.
   outer_gap:
-    top: '40px'
+    top: '44px'
     right: '4px'
     bottom: '4px'
     left: '4px'
@@ -45,7 +45,6 @@ window_effects:
     border:
       enabled: true
       color: '#a1a1a1'
-      # color: '#a1a1a1'
 
 window_behavior:
   # New windows are created in this state whenever possible.
@@ -74,26 +73,35 @@ window_behavior:
 workspaces:
   - name: '1'
     display_name: 'Firefox'
+    bind_to_monitor: 0
   - name: '2'
     display_name: 'Edge'
+    bind_to_monitor: 0
   - name: '3'
     display_name: 'Code'
+    bind_to_monitor: 0
   - name: '4'
   - name: '5'
   - name: '6'
   - name: '7'
     display_name: 'Notes'
+    bind_to_monitor: 0
   - name: '8'
     display_name: 'Chat'
+    bind_to_monitor: 0
   - name: '9'
     display_name: 'Mail'
+    bind_to_monitor: 0
   - name: '0'
     display_name: 'Second Monitor'
-    bind_to_monitor: 0
+    bind_to_monitor: 1
   - name: '-'
     display_name: 'Extra'
   - name: '='
-    display_name: 'Present'
+    display_name: 'Slides'
+  - name: '\'
+    display_name: 'System'
+    bind_to_monitor: 1
 
 window_rules:
   - commands: ['ignore']
@@ -237,6 +245,8 @@ keybindings:
     bindings: ['alt+y']
 
   # Change focus to a workspace defined in `workspaces` config.
+  - commands: ['focus --workspace =']
+    bindings: ['alt+=']
   - commands: ['focus --workspace 1']
     bindings: ['alt+1']
   - commands: ['focus --workspace 2']
@@ -259,8 +269,8 @@ keybindings:
     bindings: ['alt+0']
   - commands: ['focus --workspace -']
     bindings: ['alt+-']
-  - commands: ['focus --workspace =']
-    bindings: ['alt+=']
+  - commands: ['focus --workspace \']
+    bindings: ['alt+\']
 
   # Move the focused window's parent workspace to a monitor in a given
   # direction.
@@ -298,3 +308,5 @@ keybindings:
     bindings: ['alt+shift+-']
   - commands: ['move --workspace =', 'focus --workspace =']
     bindings: ['alt+shift+=']
+  - commands: ['move --workspace \', 'focus --workspace \']
+    bindings: ['alt+shift+\']
