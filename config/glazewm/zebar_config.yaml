@@ -38,9 +38,12 @@ window/bar:
     color: rgb(255 255 255 / 90%);
     font-family: ui-monospace, monospace;
     font-size: 12px;
-    padding: 4px 24px;
-    border-bottom: 1px solid rgb(255 255 255 / 5%);;
-    background: linear-gradient(rgb(0 0 0 / 90%), rgb(5 2 20 / 85%));
+    padding: 0px 24px;
+    border-bottom: 1px solid rgb(255 255 255 / 5%);
+    # background: linear-gradient(rgb(0 0 0 / 40%), rgb(5 2 20 / 70%));
+    background: transparent;
+    border-radius: 15px;
+    margin: 3px;
 
     i {
       color: rgb(115 130 175 / 95%);
@@ -62,23 +65,56 @@ window/bar:
       styles: |
         display: flex;
         align-items: center;
+        # background: linear-gradient(rgb(0 0 0 / 60%), rgb(5 2 20 / 80%));
+        # border-radius: 15px;
 
         .workspace {
-          background: rgb(255 255 255 / 5%);
+          # background: rgb(255 255 255 / 5%);
+          # background: transparent;
           margin-right: 4px;
           padding: 4px 8px;
-          color: rgb(255 255 255 / 90%);
-          border: none;
-          border-radius: 2px;
+          # color: rgb(255 255 255 / 90%);
+          # border: none;
+          border-radius: 10px;
           cursor: pointer;
 
+          display: inline-block;
+          # padding: 10px 20px;
+          # border: 3px solid #3b82f6;
+          # border-radius: 50px; /* Creates the ellipse shape */
+          background: linear-gradient(135deg, #6a11cb, #2575fc); /* Vibrant gradient */
+          color: #fff;
+          transition: all 0.3s ease;
+          # font-weight: bold;
+          text-align: center;
+          border-radius: 50px; /* Creates the ellipse shape */
+
           &.displayed {
-            background: rgb(255 255 255 / 15%);
+            # background: rgb(255 255 255 / 15%);
+            # background: transparent;
+            display: inline-block;
+            padding: 10px 20px;
+            # background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%);
+            color: white;
+            # transition: all 0.3s ease;
+            font-weight: bold;
+            text-align: center;
+            border: 1px solid #1dfb8d;
           }
 
           &.focused,
           &:hover {
-            background: rgb(75 115 255 / 50%);
+            # background: rgb(75 115 255 / 50%);
+            # color: #1dfb8d;
+            display: inline-block;
+            # padding: 10px 20px;
+            # border-radius: 50px; /* Creates the ellipse shape */
+            # background: linear-gradient(135deg, #6a11cb, #2575fc); /* Vibrant gradient */
+            color: #1dfb8d;
+            # border: 3px solid #3b82f6;
+            # transition: all 0.3s ease;
+            font-weight: bold;
+            text-align: center;
           }
         }
       providers: ['glazewm']
@@ -103,28 +139,17 @@ window/bar:
     template/focused_window_title:
       providers: ['glazewm']
       template: |
-        @for (child of glazewm.focusedWorkspace.children) {
-          @if (child?.hasFocus) {
-            <span class="current-process">
-              {{ child.processName.toLowerCase() }}
-            </span>
-          }
-        }
+        {{glazewm.focusedContainer.title}}
 
   group/right:
     styles: |
-      justify-self: end;
-      display: flex T;
+      justify-self: right;
+      align-items: right;
+      display: flex;
 
       .template {
         margin-left: 20px;
       }
-
-    template/clock:
-      providers: ['date']
-      # Available date tokens: https://moment.github.io/luxon/#/formatting?id=table-of-tokens
-      template: |
-        {{ date.toFormat(date.now, 'EEE	dd MMM T') }}
 
     template/glazewm_other:
       providers: ['glazewm']
@@ -150,6 +175,14 @@ window/bar:
         } @else {
           <i class="tiling-direction nf nf-md-swap_vertical"></i>
         }
+
+    template/clock:
+      providers: ['date']
+      # Available date tokens: https://moment.github.io/luxon/#/formatting?id=table-of-tokens
+      template: |
+        {{ date.toFormat(date.now, 'EEE dd MMM T') }}
+
+
 
     # template/network:
     #   providers: ['network']
@@ -232,4 +265,3 @@ window/bar:
     #       @case ('thunder_night') {<i class="nf nf-weather-night_alt_lightning"></i>}
     #     }
     #     {{ weather.celsiusTemp }}°
-
