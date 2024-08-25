@@ -6,6 +6,7 @@ general:
   # Whether to automatically focus windows underneath the cursor.
   focus_follows_cursor: false
 
+  window_animation: false
   # Whether to switch back and forth between the previously focused
   # workspace when focusing the current workspace.
   toggle_workspace_on_refocus: true
