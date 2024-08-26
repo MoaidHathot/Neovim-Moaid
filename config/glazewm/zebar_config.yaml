@@ -48,6 +48,12 @@ window/bar:
     #   rgba(35, 21, 64, 0.6)
     #
     # );
+     background: linear-gradient(
+        145deg,
+        rgba(103, 58, 175, 0.6),
+        rgba(35, 21, 64, 0.6)
+    );
+
     border-radius: 15px;
     margin: 2px 8px 0px 8px;
 
@@ -72,11 +78,11 @@ window/bar:
         display: flex;
         align-items: center;
         border-radius: 50px; /* Creates the ellipse shape */
-        background: linear-gradient(
-          135deg,
-          rgba(103, 58, 175, 0.6),
-          rgba(35, 21, 64, 0.6)
-        );
+        # background: linear-gradient(
+        #   145deg,
+        #   rgba(103, 58, 175, 0.6),
+        #   rgba(35, 21, 64, 0.6)
+        # );
 
 
         .workspace {
@@ -94,7 +100,7 @@ window/bar:
 
           &.displayed {
             transition: all 0.3s ease;
-            
+            color: #8dbcff;
             # font-weight: bold;
             # box-shadow: 0 0 15px rgba(53, 236, 131, 0.7); /* Slight glow effect */
           }
@@ -105,6 +111,7 @@ window/bar:
             
             # box-shadow: 0 0 15px rgba(242, 141, 255, 0.7); /* Slight glow effect */
             color: #1dfb8d; /* Change the text color */
+            # color: #8dbcff; /* Change the text color */
             # background: linear-gradient(135deg, #9ece6a, #1dfb8d); /* Vibrant Alpenglow-inspired gradient */
         }
       providers: ['glazewm']
@@ -127,18 +134,18 @@ window/bar:
       justify-self: center;
       border-radius: 50px; /* Creates the ellipse shape */
       font-family: ui-monospace, monospace;
-      font-size: 16px;
+      font-size: 14px;
       padding: 8px 8px;
       white-space: nowrap; /* Prevent text from wrapping to the next line */
       overflow: hidden; /* Hide the overflowed content */
       text-overflow: ellipsis; /* Add the ellipsis (...) */
       # color: #1dfb8d;
       color: white;
-      background: linear-gradient(
-        135deg,
-        rgba(103, 58, 175, 0.6),
-        rgba(35, 21, 64, 0.6)
-      );
+      # background: linear-gradient(
+      #   135deg,
+      #   rgba(103, 58, 175, 0.6),
+      #   rgba(35, 21, 64, 0.6)
+      # );
 
     template/focused_window_title:
       providers: ['glazewm']
@@ -152,17 +159,17 @@ window/bar:
       justify-self: right;
       align-items: right;
       font-family: ui-monospace, monospace;
-      font-size: 16px;
+      font-size: 14px;
       display: flex;
       # color: #1dfb8d;
       color: white;
       padding: 8px 8px;
       border-radius: 50px; /* Creates the ellipse shape */
-      background: linear-gradient(
-        135deg,
-        rgba(103, 58, 175, 0.6),
-        rgba(35, 21, 64, 0.6)
-      );
+      # background: linear-gradient(
+      #   135deg,
+      #   rgba(103, 58, 175, 0.6),
+      #   rgba(35, 21, 64, 0.6)
+      # );
 
       .template {
         margin-left: 20px;
@@ -201,6 +208,8 @@ window/bar:
           timezone: 'israel'
           # locale: 'he'
       # Available date tokens: https://moment.github.io/luxon/#/formatting?id=table-of-tokens
+      styles: |
+        margin-right: 4px;
       template: |
         {{ date.toFormat(date.now, 'EEE dd MMM T') }}
 

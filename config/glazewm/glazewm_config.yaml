@@ -40,6 +40,7 @@ window_effects:
       enabled: true
       # color: '##0000ff'
       color: '#8dbcff'
+      # color: '#1dfb8d'
 
   # Visual effects to apply to non-focused windows.
   other_windows:
