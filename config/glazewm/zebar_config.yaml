@@ -10,7 +10,7 @@ window/bar:
   # Width of the window in physical pixels.
   width: '{{ self.args.MONITOR_WIDTH }}'
   # Height of the window in physical pixels.
-  height: '40'
+  height: '30'
   # X-position of the window in physical pixels.
   position_x: '{{ self.args.MONITOR_X }}'
   # Y-position of the window in physical pixels.
@@ -131,11 +131,12 @@ window/bar:
 
   group/center:
     styles: |
+      display: flex;
       justify-self: center;
       border-radius: 50px; /* Creates the ellipse shape */
       font-family: ui-monospace, monospace;
       font-size: 14px;
-      padding: 8px 8px;
+      # padding: 6px 6px;
       white-space: nowrap; /* Prevent text from wrapping to the next line */
       overflow: hidden; /* Hide the overflowed content */
       text-overflow: ellipsis; /* Add the ellipsis (...) */
@@ -164,7 +165,7 @@ window/bar:
       # color: #1dfb8d;
       color: white;
       # padding: 8px 8px;
-      padding: 10px 10px 0px 0px;
+      padding: 6px 10px 0px 0px;
       border-radius: 50px; /* Creates the ellipse shape */
       # background: linear-gradient(
       #   135deg,

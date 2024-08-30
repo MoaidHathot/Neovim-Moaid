@@ -6,7 +6,7 @@ general:
   # Whether to automatically focus windows underneath the cursor.
   focus_follows_cursor: false
 
-  window_animation: false
+  window_animations: false
   # Whether to switch back and forth between the previously focused
   # workspace when focusing the current workspace.
   toggle_workspace_on_refocus: true
@@ -26,7 +26,7 @@ gaps:
 
   # Gap between windows and the screen edge.
   outer_gap:
-    top: '44px'
+    top: '31px'
     right: '4px'
     bottom: '4px'
     left: '4px'
