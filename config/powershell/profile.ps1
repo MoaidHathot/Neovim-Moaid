@@ -96,6 +96,12 @@ function fzfc
 	fzf --preview 'bat --style=numbers --color=always {}' --preview-window '~3'
 }
 
+function Open-FileSearch
+{
+	$selectedFile = fzfc
+	moaid $selectedFile
+} 
+
 function New-Notification($title, $descritpion)
 {
 	New-BurntToastNotification -Text $title, $descritpion
