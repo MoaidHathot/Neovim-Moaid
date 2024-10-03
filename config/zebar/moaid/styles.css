@@ -11,8 +11,8 @@ i {
 
 body {
   color: rgb(255 255 255 / 90%);
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
+  /* font-family: ui-monospace, monospace; */
+  font-size: 14px;
 }
 
 html,
@@ -28,7 +28,7 @@ body,
 
 .app {
   display: flex;
-  grid-template-columns: 1fr 1fr 1fr;
+  /* grid-template-columns: 1fr 1fr 1fr; */
   /* align-items: center; */
   justify-content: space-between;
   height: 100%;
