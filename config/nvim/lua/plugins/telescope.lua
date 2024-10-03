@@ -9,7 +9,7 @@ return {
 		opts = {
 			defaults = {
 				mappings = {
-					i = { ["<C-t>"] = function() require('trouble.sources.telescope').open() end },
+					i = { ["<C-t>"] = function() require("trouble.sources.telescope").open() end },
 					n = { ["<C-t>"] = function() require('trouble.sources.telescope').open() end },
 				},
 				path_display = { 'filename_first'}

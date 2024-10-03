@@ -30,10 +30,8 @@ function Start-Glaze
 
 function Start-Zebar
 {
-	$monitors = zebar monitors
-	foreach ($monitor in $monitors) {
-	 Start-Process -WindowStyle Hidden -FilePath "zebar" -ArgumentList "open bar --args $monitor"
-	};
+	$zebarConfigPath="$env:Moaid_Config_Path/config/zebar"
+	zebar startup --config-dir="$zebarConfigPath"
 }
 
 function Stop-Zebar
@@ -43,21 +41,8 @@ function Stop-Zebar
 
 function Restart-Zebar($overrideConfigs = $true)
 {
-	if ($overrideConfigs)
-	{
-		Update-Zebar-Config
-	}
-
 	Stop-Zebar
 	Start-Zebar
-}
-
-function Update-Zebar-Config
-{
-	$zebarConfigPath = "$env:Moaid_Config_Path/config/glazewm/zebar_config.yaml"
-	$zebarDefaultConfigPath = "$env:USERPROFILE/.glzr/zebar/config.yaml"
-
-	Copy-Item -Path $zebarConfigPath -Destination $zebarDefaultConfigPath -Force
 }
 
 function Update-Path

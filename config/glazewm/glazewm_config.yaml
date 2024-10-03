@@ -6,7 +6,8 @@ general:
   # Whether to automatically focus windows underneath the cursor.
   focus_follows_cursor: false
 
-  window_animations: false
+  # This is changed via the system tray context menue of GlazeWM.
+  # window_animations: false
   # Whether to switch back and forth between the previously focused
   # workspace when focusing the current workspace.
   toggle_workspace_on_refocus: true
@@ -22,7 +23,7 @@ general:
 
 gaps:
   # Gap between adjacent windows.
-  inner_gap: '10px'
+  inner_gap: '6px'
 
   # Gap between windows and the screen edge.
   outer_gap:
@@ -102,6 +103,11 @@ workspaces:
   - name: '='
     display_name: 'Slides'
   - name: '\'
+    display_name: 'AI'
+    bind_to_monitor: 0
+  - name: '`'
+    display_name: 'Special'
+  - name: ''''
     display_name: 'System'
     bind_to_monitor: 1
 
@@ -273,6 +279,10 @@ keybindings:
     bindings: ['alt+-']
   - commands: ['focus --workspace \']
     bindings: ['alt+\']
+  - commands: ['focus --workspace `']
+    bindings: ['alt+`']
+  - commands: ['focus --workspace ''']
+    bindings: ['alt+''']
 
   # Move the focused window's parent workspace to a monitor in a given
   # direction.
@@ -312,3 +322,7 @@ keybindings:
     bindings: ['alt+shift+=']
   - commands: ['move --workspace \', 'focus --workspace \']
     bindings: ['alt+shift+\']
+  - commands: ['move --workspace `', 'focus --workspace `']
+    bindings: ['alt+shift+`']
+  - commands: ['move --workspace ''', 'focus --workspace ''']
+    bindings: ['alt+shift+''']

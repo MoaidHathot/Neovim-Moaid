@@ -1,0 +1,107 @@
+/**
+ * Import the Nerdfonts icon font.
+ * Ref https://www.nerdfonts.com/cheat-sheet for a cheatsheet of available Nerdfonts icons.
+ */
+@import 'https://www.nerdfonts.com/assets/css/webfont.css';
+
+i {
+  color: rgb(115 130 175 / 95%);
+  margin-right: 7px;
+}
+
+body {
+  color: rgb(255 255 255 / 90%);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+#root {
+  border-bottom: 1px solid rgb(255 255 255 / 5%);
+  background: linear-gradient(rgb(0 0 0 / 90%), rgb(5 2 20 / 85%));
+}
+
+.app {
+  display: flex;
+  grid-template-columns: 1fr 1fr 1fr;
+  /* align-items: center; */
+  justify-content: space-between;
+  height: 100%;
+  padding: 4px 1.5vw;
+}
+
+.left,
+.center,
+.right {
+  display: flex;
+  align-items: center;
+}
+
+.center {
+  justify-self: center;
+}
+
+.right {
+  justify-self: end;
+  justify-content: flex-end;
+  align-items: flex-end;
+  /* background: red; */
+}
+
+.binding-mode,
+.tiling-direction
+{
+  margin-right: 10px;
+  margin-left: 10px;
+}
+
+.workspaces {
+  display: flex;
+  align-items: center;
+}
+
+.workspace {
+  background: rgb(255 255 255 / 5%);
+  margin-right: 4px;
+  padding: 4px 8px;
+  color: rgb(255 255 255 / 90%);
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  border: transparent;
+  background: transparent;
+
+  &.displayed {
+    /* background: rgb(255 255 255 / 15%); */
+	              /* transition: all 0.3s ease; */
+            color: #8dbcff;
+
+  }
+
+  &.focused,
+  &:hover {
+    /* background: rgb(75 115 255 / 50%); */
+	  	/* background: purple; */
+            color: #1dfb8d; /* Change the text color */
+  }
+}
+
+.binding-mode,
+.tiling-direction {
+  background: rgb(255 255 255 / 15%);
+  color: rgb(255 255 255 / 90%);
+  border-radius: 2px;
+  line-height: 1;
+  padding: 4px 8px;
+  border: 0;
+  cursor: pointer;
+}
+
+.binding-mode {
+  margin-right: 4px;
+}
