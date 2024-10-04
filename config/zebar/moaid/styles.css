@@ -23,7 +23,9 @@ body,
 
 #root {
   border-bottom: 1px solid rgb(255 255 255 / 5%);
-  background: linear-gradient(rgb(0 0 0 / 90%), rgb(5 2 20 / 85%));
+  /* background: linear-gradient(rgb(0 0 0 / 90%), rgb(5 2 20 / 85%)); */
+  /* linear grandiant purple and blue */
+  background: linear-gradient(to right, #2c3e50, #34495e);;
 }
 
 .app {
@@ -63,6 +65,18 @@ body,
 .workspaces {
   display: flex;
   align-items: center;
+}
+
+.main-accent-color {
+  color: #1dfb8d;
+}
+
+.secondary-accent-color {
+  color: #8dbcff;
+}
+
+.non-important {
+  color: rgb(255 255 255 / 50%);
 }
 
 .workspace {

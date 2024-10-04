@@ -76,7 +76,7 @@
 			</div>
 
 			<div className="right">
-			  <span>{output.dateLocal?.formatted}</span>
+			  <span className="non-important">{output.dateIL?.formatted}</span>
               {output.glazewm && (
                 <>
                   {output.glazewm.bindingModes.map(bindingMode => (
@@ -96,7 +96,7 @@
                   ></button>
                 </>
               )}
-			  <span>{output.dateIL?.formatted}</span>
+			  <span className="secondary-accent-color">{output.dateLocal?.formatted}</span>
             </div>
 	  </div>
         );
