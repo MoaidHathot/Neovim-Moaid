@@ -19,7 +19,7 @@ return {
 	},
 	{
 		"OXY2DEV/markview.nvim",
-		-- lazy = true,
+		lazy = true,
 		ft = { "markdown", "md" },
 		cmd = "Markview",
 	}

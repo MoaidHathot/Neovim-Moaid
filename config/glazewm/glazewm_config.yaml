@@ -1,7 +1,7 @@
 general:
   # Commands to run when the WM has started (e.g. to run a script or launch
   # another application). Here we are running a batch script to start Zebar.
-  startup_commands: ['shell-exec zebar startup']
+  startup_commands: ['shell-exec zebar startup --config-dir="../zebar"']
 
   # Whether to automatically focus windows underneath the cursor.
   focus_follows_cursor: false
@@ -109,6 +109,9 @@ workspaces:
     display_name: 'Special'
   - name: ''''
     display_name: 'System'
+    bind_to_monitor: 1
+  - name: ';'
+    display_name: 'Archive'
     bind_to_monitor: 1
 
 window_rules:
@@ -283,6 +286,8 @@ keybindings:
     bindings: ['alt+`']
   - commands: ['focus --workspace ''']
     bindings: ['alt+''']
+  - commands: ['focus --workspace ;']
+    bindings: ['alt+;']
 
   # Move the focused window's parent workspace to a monitor in a given
   # direction.
@@ -326,3 +331,5 @@ keybindings:
     bindings: ['alt+shift+`']
   - commands: ['move --workspace ''', 'focus --workspace ''']
     bindings: ['alt+shift+''']
+  - commands: ['move --workspace ;', 'focus --workspace ;']
+    bindings: ['alt+shift+;']
