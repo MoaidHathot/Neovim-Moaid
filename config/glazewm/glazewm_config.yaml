@@ -1,7 +1,8 @@
 general:
   # Commands to run when the WM has started (e.g. to run a script or launch
   # another application). Here we are running a batch script to start Zebar.
-  startup_commands: ['shell-exec zebar startup --config-dir="../zebar"']
+  #startup_commands: ['shell-exec zebar startup --config-dir="../zebar"']
+  startup_commands: ['shell-exec pwsh -Command Restart-Zebar']
 
   # Whether to automatically focus windows underneath the cursor.
   focus_follows_cursor: false
