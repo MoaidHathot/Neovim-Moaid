@@ -88,7 +88,7 @@ workspaces:
   - name: '5'
   - name: '6'
   - name: '7'
-    display_name: 'Notes'
+    display_name: '7'
     bind_to_monitor: 0
   - name: '8'
     display_name: 'Chat'
@@ -100,7 +100,7 @@ workspaces:
     display_name: 'Second Monitor'
     bind_to_monitor: 1
   - name: '-'
-    display_name: 'Extra'
+    display_name: 'Notes'
   - name: '='
     display_name: 'Slides'
   - name: '\'
