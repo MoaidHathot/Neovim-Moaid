@@ -28,7 +28,7 @@ gaps:
 
   # Gap between windows and the screen edge.
   outer_gap:
-    top: '27px'
+    top: '26px'
     right: '4px'
     bottom: '4px'
     left: '4px'
@@ -40,7 +40,7 @@ window_effects:
     # ** Exclusive to Windows 11 due to API limitations.
     border:
       enabled: true
-      # color: '##0000ff'
+      # color: '#0000ff'
       color: '#8dbcff'
       # color: '#1dfb8d'
 
@@ -91,20 +91,19 @@ workspaces:
     display_name: '7'
     bind_to_monitor: 0
   - name: '8'
-    display_name: 'Chat'
-    bind_to_monitor: 0
-  - name: '9'
-    display_name: 'Mail'
     bind_to_monitor: 0
   - name: '0'
     display_name: 'Second Monitor'
     bind_to_monitor: 1
   - name: '-'
-    display_name: 'Notes'
-  - name: '='
-    display_name: 'Slides'
+    display_name: 'Chat'
   - name: '\'
     display_name: 'AI'
+    bind_to_monitor: 0
+  - name: '='
+    display_name: 'Notes'
+  - name: '9'
+    display_name: 'Mail'
     bind_to_monitor: 0
   - name: '`'
     display_name: 'Special'
@@ -209,12 +208,13 @@ keybindings:
     # bindings: ['alt+space']
 
   # Change the focused window to be floating.
-  - commands: ['toggle-floating --centered']
-    bindings: ['alt+shift+enter']
+  # - commands: ['toggle-floating --centered']
+  - commands: ['toggle-floating']
+    bindings: ['alt+shift+n']
 
   # Change the focused window to be tiling.
-  - commands: ['toggle-tiling']
-    bindings: ['alt+t']
+  # - commands: ['toggle-tiling']
+    # bindings: ['alt+shift+m']
 
   # Change the focused window to be fullscreen.
   - commands: ['toggle-fullscreen']

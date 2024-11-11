@@ -46,6 +46,9 @@ body,
 
 .center {
   justify-self: center;
+  white-space: nowrap;        /* Prevents the text from breaking to the next line */
+  overflow: hidden;           /* Ensures the overflowed content is hidden */
+  text-overflow: ellipsis;    /* Displays '...' for overflowed text */
 }
 
 .right {
