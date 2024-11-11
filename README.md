@@ -23,7 +23,7 @@ My Neovim Configuration :)
     - `winget install Kitware.CMake`
 
 5. Install `fd`
-    - Using Windows Windows via `Winget`
+    - Using Windows via `Winget`
         - `winget install sharkdp.fd`
     - Using Linux via apt
         - `sudo apt install fd-find`
@@ -47,11 +47,10 @@ My Neovim Configuration :)
         - `sudo apt install jq`
 
 8. Install html-tidy (for `nvim-rest`)
-    - Using Windows via `Winget`
-   		- https://github.com/htacg/tidy-html5
+    - https://github.com/htacg/tidy-html5
 
 #### Automatic Installation
-- For Windows, you can install most of the above automatically using `Winget` as follow
+- For Windows, you can install most of the above automatically using `Winget`:
     - `winget configure -f configurations/configuration.dsc.yaml`
     - The only thing missing is `netcoredbg` and `html-tidy` since they are not available via `Winget`
     - **note** - this process may take a *lot* of time to finish due to `Zig`. `Zig`'s binaries are highly compressed and it take an unwordly amount of time to uncompress them. This doesn't relate to `Winget` or to the configuration file, you'll encounter the same experience when running the installer manually.
