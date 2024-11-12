@@ -1,9 +1,9 @@
 # Neovim-Moaid
-My Neovim Configuration :)
+My Neovim Configuration for Windows and Linux :)
 
 # Installation
 
-#### Manual Installation
+#### Manual Installation for Windows & Linux
 	
 1. Update `XDG_CONFIG_HOME` if needed
     - Should point to the `config/` folder in this repo.
@@ -49,7 +49,7 @@ My Neovim Configuration :)
 8. Install html-tidy (for `nvim-rest`)
     - https://github.com/htacg/tidy-html5
 
-#### Automatic Installation
+#### Automatic Installation for Windows
 - For Windows, you can install most of the above automatically using `Winget`:
     - `winget configure -f configurations/configuration.dsc.yaml`
     - The only thing missing is `netcoredbg` and `html-tidy` since they are not available via `Winget`
