@@ -29,6 +29,7 @@ gaps:
   # Gap between windows and the screen edge.
   outer_gap:
     top: '26px'
+    # top: '4px'
     right: '4px'
     bottom: '4px'
     left: '4px'
@@ -92,6 +93,7 @@ workspaces:
     bind_to_monitor: 0
   - name: '8'
     bind_to_monitor: 0
+  - name: '9'
   - name: '0'
     display_name: 'Second Monitor'
     bind_to_monitor: 1
@@ -102,7 +104,7 @@ workspaces:
     bind_to_monitor: 0
   - name: '='
     display_name: 'Notes'
-  - name: '9'
+  - name: ']'
     display_name: 'Mail'
     bind_to_monitor: 0
   - name: '`'
@@ -289,6 +291,8 @@ keybindings:
     bindings: ['alt+''']
   - commands: ['focus --workspace ;']
     bindings: ['alt+;']
+  - commands: ['focus --workspace ]']
+    bindings: ['alt+]']
 
   # Move the focused window's parent workspace to a monitor in a given
   # direction.
@@ -296,6 +300,10 @@ keybindings:
     bindings: ['alt+a']
   - commands: ['move-workspace --direction right']
     bindings: ['alt+f']
+  - commands: ['move-workspace --direction up']
+    bindings: ['alt+d']
+  - commands: ['move-workspace --direction down']
+    bindings: ['alt+s']
   # - commands: ['move-workspace --direction up']
     # bindings: ['alt+shift+d']
   # - commands: ['move-workspace --direction down']
@@ -334,3 +342,5 @@ keybindings:
     bindings: ['alt+shift+''']
   - commands: ['move --workspace ;', 'focus --workspace ;']
     bindings: ['alt+shift+;']
+  - commands: ['move --workspace ]', 'focus --workspace ]']
+    bindings: ['alt+shift+]']
