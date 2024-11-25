@@ -95,8 +95,7 @@ workspaces:
     bind_to_monitor: 0
   - name: '9'
   - name: '0'
-    display_name: 'Second Monitor'
-    bind_to_monitor: 1
+    bind_to_monitor: 0
   - name: '-'
     display_name: 'Chat'
   - name: '\'
@@ -109,12 +108,18 @@ workspaces:
     bind_to_monitor: 0
   - name: '`'
     display_name: 'Special'
+  - name: '/'
+    display_name: 'Second Monitor'
+    bind_to_monitor: 1
   - name: ''''
     display_name: 'System'
     bind_to_monitor: 1
   - name: ';'
     display_name: 'Archive'
     bind_to_monitor: 1
+  - name: '['
+    display_name: 'Recording'
+    bind_to_monitor: 2
 
 window_rules:
   - commands: ['ignore']
@@ -293,6 +298,10 @@ keybindings:
     bindings: ['alt+;']
   - commands: ['focus --workspace ]']
     bindings: ['alt+]']
+  - commands: ['focus --workspace [']
+    bindings: ['alt+[']
+  - commands: ['focus --workspace /']
+    bindings: ['alt+/']
 
   # Move the focused window's parent workspace to a monitor in a given
   # direction.
@@ -344,3 +353,7 @@ keybindings:
     bindings: ['alt+shift+;']
   - commands: ['move --workspace ]', 'focus --workspace ]']
     bindings: ['alt+shift+]']
+  - commands: ['move --workspace [', 'focus --workspace [']
+    bindings: ['alt+shift+[']
+  - commands: ['move --workspace /', 'focus --workspace /']
+    bindings: ['alt+shift+/']

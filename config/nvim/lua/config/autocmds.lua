@@ -71,3 +71,11 @@ vim.api.nvim_create_autocmd("FileType", {
 		vim.opt_local.spell = true
 	end,
 })
+
+-- Set 'writebackup' to false for d2 filetype because the D2 CLI can't handle nvim's backup files
+vim.api.nvim_create_autocmd("FileType", {
+    pattern = "d2",
+    callback = function()
+        vim.api.nvim_buf_set_option(0, 'writebackup', false)
+    end,
+})

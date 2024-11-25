@@ -65,7 +65,7 @@ return {
 				capabilities = capabilities
 			})
 
-			lspconfig.bufls.setup({
+			lspconfig.buf_ls.setup({
 				capabilities = capabilities
 			})
 

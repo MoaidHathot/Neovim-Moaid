@@ -22,5 +22,11 @@ return {
 		lazy = true,
 		-- ft = { "markdown", "md" },
 		cmd = "Markview",
+	},
+	{
+		"terrastruct/d2-vim",
+		enabled = true,
+		lazy = true,
+		ft = { "d2" },
 	}
 }
