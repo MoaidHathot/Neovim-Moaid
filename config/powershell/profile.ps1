@@ -112,6 +112,70 @@ function Show-IL
 	}
 }
 
+function Get-ProjectDll {
+
+	$path = Get-Location
+
+	$projectName = Split-Path -Leaf $Path
+	$binPath = Join-Path -Path $Path -ChildPath "bin"
+
+	if (-not (Test-Path -Path $binPath -PathType Container)) {
+		return
+	}
+
+	$debugPath = Join-Path -Path $binPath -ChildPath "Debug"
+	$releasePath = Join-Path -Path $binPath -ChildPath "Release"
+
+	if (Test-Path -Path $debugPath -PathType Container) {
+		return Get-ChildItem -Path $debugPath -Recurse -Include "$projectName.dll"
+	}
+
+	if (Test-Path -Path $releasePath -PathType Container) {
+		return Get-ChildItem -Path $releasePath -Recurse -Include "$projectName.dll"
+	}
+}
+
+set-alias ilspyprev "C:\Users\moaid\Downloads\ILSpy_binaries_9.0.0.7833-preview3-x64\ILSpy.exe"
+
+function Decompile {
+    param (
+        [Parameter(ValueFromPipeline = $true)]
+        [string]$Path,
+		[string]$langVer = $null
+    )
+
+	if (-not (Test-Path -Path $Path)) {
+		$path = Get-ProjectDll
+	}
+
+	Write-Host "Language version: $langVer" -ForegroundColor Green
+
+	if ((Test-Path -Path $path) -and (Test-Path -Path $Path -PathType Leaf) -and ($Path -match '\.(dll|exe)$')) {
+		if($null -eq $langVer -or $langVer -lt 1) {
+			IlSpycmd $Path | Bat --language C#
+			return
+		}
+
+		Write-Host "Decompiling $Path with language version $langVer" -ForegroundColor Green
+		(IlSpycmd $Path -lv $langVer) | Bat --language C#
+		return
+	}
+}
+
+function Show-ILSpy {
+    param (
+        [Parameter(ValueFromPipeline = $true)]
+        [string]$Path
+    )
+
+	if (-not (Test-Path -Path $Path)) {
+		$path = Get-ProjectDll
+	}
+
+	# ILSpy (Get-ProjectDll)
+	& ILSpyPrev (Get-ProjectDll)
+}
+
 function Remove-Shada
 {
 	$localData  = Get-LocalAppData
