@@ -21,8 +21,8 @@ vim.keymap.set('n', '<C-Del>', "ce")
 -- vim.keymap.set('n', '<C-backspace>', "<Esc>cb")
 
 -- vim.keymap.set('n', '<leader>q', ':q!<CR>:q!<CR>:q!<CR>')
-vim.keymap.set({ 'n', 't', 'v' }, '<leader>q', ':qa<CR>:qa<CR>:qa<CR>')
-vim.keymap.set({ 'n', 't', 'v' }, '<leader>Q', ':q!<CR>:q!<CR>:q!<CR>')
+vim.keymap.set({ 'n', 't', 'v' }, '<leader>q', ':qa<CR>:qa<CR>:qa<CR>', { desc = 'Quit nvim' })
+vim.keymap.set({ 'n', 't', 'v' }, '<leader>Q', ':q!<CR>:q!<CR>:q!<CR>', { desc = 'Quit nvim with Force' })
 
 -- Split navigation and management
 vim.keymap.set('n', '<leader>bb', ':bprev<CR>', { desc = 'Goto Previous Buffer', silent = true })

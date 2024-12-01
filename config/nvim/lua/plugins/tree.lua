@@ -5,11 +5,11 @@ return {
 		-- event = "VeryLazy",
 		branch = "v3.x",
 		keys = {
-			{ '<leader>e', ':Neotree reveal toggle<CR>' },
+			{ '<leader>e', ':Neotree reveal toggle<CR>', desc = "Toggle Neotree" },
 			{ '<leader>tf', function()
 				local currBuffer = vim.api.nvim_buf_get_name(0)
 				vim.cmd("Neotree reveal_file=" .. currBuffer)
-			end }
+			end, desc = "Find file in Neotree" }
 		},
 		dependencies = {
 			"nvim-lua/plenary.nvim",

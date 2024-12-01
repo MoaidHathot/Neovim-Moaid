@@ -144,8 +144,9 @@ function Decompile {
 		[string]$langVer = $null
     )
 
-	if (-not (Test-Path -Path $Path)) {
+	if (-not $path -or -not (Test-Path -Path $Path)) {
 		$path = Get-ProjectDll
+		Write-Host "Extracted path: $path" -ForegroundColor Green
 	}
 
 	Write-Host "Language version: $langVer" -ForegroundColor Green
