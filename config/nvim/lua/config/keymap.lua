@@ -72,7 +72,7 @@ vim.keymap.set('v', '<', "<gv")
 
 vim.keymap.set('i', "<C-k>", 'k')
 
-vim.keymap.set('n', '<leader>ps', "<cmd>:w<CR>:so<CR>:Lazy sync<CR>")
+vim.keymap.set('n', '<leader>ps', "<cmd>:w<CR>:so<CR>:Lazy sync<CR>", { desc = "Lazy Sync"})
 -- vim.keymap.set('n', '<leader>ms', "<cmd>:w<CR>:so<CR>")
 vim.keymap.set('i', '<C-c>', '<Esc>')
 
@@ -86,7 +86,7 @@ vim.keymap.set('n', '<leader>fv', '"+p', { desc = "Paste from OS" })
 vim.keymap.set('v', '<leader>fv', '"+p', { desc = "Paste from OS" })
 vim.keymap.set('v', '<leader>fc', '"+y', { desc = "Copy to OS" })
 vim.keymap.set('n', '<leader>fh', '<cmd>:nohls<CR>', { desc = "No HLS" })
-vim.keymap.set('v', '<leader>p', "\"_dP")
+vim.keymap.set('v', '<leader>p', "\"_dP", { desc = "Paste without register" })
 vim.keymap.set('i', '<C-p>', '<Esc>pa')
 
 vim.keymap.set('n', '<leader>ms', "<cmd>:w<CR>:so<CR>", { desc = "Shout Out" })
@@ -97,7 +97,7 @@ vim.keymap.set('n', '<leader>mc', "<cmd>:messages clear<CR>", { desc = "Show mes
 vim.keymap.set('n', '<leader>o', "o<Esc>^Da<Esc>k", { desc = 'Newline Below', silent = true })
 vim.keymap.set('n', '<leader>O', "O<Esc>^Da<Esc>j", { desc = 'Newline Above', silent = true })
 
-vim.keymap.set('i', '<S-tab>', '<esc><<i')
+vim.keymap.set('i', '<S-tab>', '<esc><<i', { desc = 'Indent Left' })
 
 vim.keymap.set('n', '<S-Home>', 'gg')
 vim.keymap.set('n', '<S-End>', 'G')
