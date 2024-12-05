@@ -13,6 +13,8 @@ general:
   # workspace when focusing the current workspace.
   toggle_workspace_on_refocus: true
 
+  # hide_method: 'hide'
+
   cursor_jump:
     # Whether to automatically move the cursor on the specified trigger.
     enabled: true
