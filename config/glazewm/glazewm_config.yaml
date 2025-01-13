@@ -109,7 +109,7 @@ workspaces:
     display_name: 'Mail'
     bind_to_monitor: 0
   - name: '`'
-    display_name: 'Special'
+    display_name: 'Save'
   - name: '/'
     display_name: 'Second Monitor'
     bind_to_monitor: 1
@@ -117,7 +117,7 @@ workspaces:
     display_name: 'System'
     bind_to_monitor: 1
   - name: ';'
-    display_name: 'Archive'
+    display_name: 'Quick'
     bind_to_monitor: 1
   - name: '['
     display_name: 'Recording'
