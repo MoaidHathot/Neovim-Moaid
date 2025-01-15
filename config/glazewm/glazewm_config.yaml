@@ -12,7 +12,7 @@ general:
   # Whether to switch back and forth between the previously focused
   # workspace when focusing the current workspace.
   toggle_workspace_on_refocus: true
-
+  show_all_in_taskbar: true
   # hide_method: 'hide'
 
   cursor_jump:
@@ -205,6 +205,8 @@ keybindings:
 
   # Disables all keybindings until alt+shift+p is pressed again.
   - commands: ['wm-enable-binding-mode --name pause']
+  # Disables window management and all other keybindings until alt+shift+p is pressed again.
+  # - commands: ['wm-toggle-pause']
     bindings: ['alt+shift+p']
 
   # Change tiling direction. This determines where new tiling windows will
