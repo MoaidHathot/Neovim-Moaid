@@ -108,17 +108,18 @@ workspaces:
   - name: ']'
     display_name: 'Mail'
     bind_to_monitor: 0
-  - name: '`'
-    display_name: 'Save'
   - name: '/'
     display_name: 'Second Monitor'
     bind_to_monitor: 1
-  - name: ''''
+  - name: '`'
     display_name: 'System'
     bind_to_monitor: 1
+  - name: ''''
+    display_name: 'Presentation'
+    bind_to_monitor: 0
   - name: ';'
     display_name: 'Quick'
-    bind_to_monitor: 1
+    bind_to_monitor: 0
   - name: '['
     display_name: 'Recording'
     bind_to_monitor: 2
