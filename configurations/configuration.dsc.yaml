@@ -73,6 +73,14 @@ properties:
       settings:
         id: Kitware.CMake
         source: winget
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: D2 Diagram scription engine
+      directives:
+        description: Install D2
+        allowPrerelease: true
+      settings:
+        id: Terrastruct.D2
+        source: winget
     - resource: PSDscResources/Environment
       id: XDG_CONFIG_HOME
       directives:

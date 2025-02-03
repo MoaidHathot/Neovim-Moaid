@@ -225,6 +225,15 @@ properties:
         name: Moaid_Config_Path
         value: '${WinGetConfigRoot}/../'
 
+    - resource: PSDscResources/Environment
+      id: YAZI_CONFIG_HOME
+      directives:
+        description: Setting Yazi's config to point to the config in the repo
+        allowPrerelease: false
+      settings:
+        name: YAZI_CONFIG_HOME
+        value: '${WinGetConfigRoot}/../config/yazi'
+
     - resource: PSDscResources/Script
       id: Update_PowerShell_Profile
       directives:

@@ -79,3 +79,10 @@ vim.api.nvim_create_autocmd("FileType", {
         vim.api.nvim_buf_set_option(0, 'writebackup', false)
     end,
 })
+
+vim.api.nvim_create_autocmd("TermOpen", {
+	group = vim.api.nvim_create_augroup("custom-terminal-group", { clear = true }),
+	callback = function()
+		vim.keymap.set("t", "<esc>", "<C-\\><C-n>", { silent = true })
+	end,
+})
