@@ -49,6 +49,12 @@ My Neovim Configuration for Windows and Linux :)
 8. Install html-tidy (for `nvim-rest`)
     - https://github.com/htacg/tidy-html5
 
+9. Install `D2` (optional)
+    - Using Windows via `Winget`
+        - `winget install Terrastruct.D2`
+    - Using Linux via `curl`
+        - `curl -fsSL https://d2lang.com/install.sh | sh -s --`
+
 #### Automatic Installation for Windows
 - For Windows, you can install most of the above automatically using `Winget`:
     - `winget configure -f configurations/configuration.dsc.yaml`
