@@ -1,9 +1,9 @@
 vim.g.mapleader = " "
 
 -- save document
-vim.keymap.set("n", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
-vim.keymap.set("i", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
-vim.keymap.set("v", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
+vim.keymap.set({'n', 'i', 'v'}, "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
+-- vim.keymap.set("i", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
+-- vim.keymap.set("v", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
 
 -- save all documents
 -- vim.keymap.set("n", "<C-S-s>", vim.cmd.wall, { silent = true })
@@ -36,16 +36,15 @@ vim.keymap.set('n', '<leader>bC', "<cmd>%bd|e#|bd#<CR>", { desc = 'Close All Buf
 vim.keymap.set('n', '<leader>br', "<cmd>:e!<CR>", { desc = 'Reload Buffer' })
 
 -- Move between splits
-vim.keymap.set({ 'n', }, '<C-h>', ':wincmd h<CR>', { desc = 'Goto Left Buffer', silent = true })
-vim.keymap.set({ 'n', }, '<C-l>', ':wincmd l<CR>', { desc = 'Goto Right Buffer', silent = true })
-vim.keymap.set({ 'n', }, '<C-j>', ':wincmd j<CR>', { desc = 'Goto Below Buffer', silent = true })
-vim.keymap.set({ 'n', }, '<C-k>', ':wincmd k<CR>', { desc = 'Goto Above Buffer', silent = true })
+-- vim.keymap.set({ 'n', }, '<C-h>', ':wincmd h<CR>', { desc = 'Goto Left Buffer', silent = true })
+-- vim.keymap.set({ 'n', }, '<C-l>', ':wincmd l<CR>', { desc = 'Goto Right Buffer', silent = true })
+-- vim.keymap.set({ 'n', }, '<C-j>', ':wincmd j<CR>', { desc = 'Goto Below Buffer', silent = true })
+-- vim.keymap.set({ 'n', }, '<C-k>', ':wincmd k<CR>', { desc = 'Goto Above Buffer', silent = true })
 
-vim.keymap.set('t', '<C-h>', '[[<Cmd>wincmd h<CR>]]', { desc = 'Goto Left Buffer', silent = true, buffer = 0 })
-vim.keymap.set('t', '<C-l>', '[[<Cmd>wincmd l<CR>]]', { desc = 'Goto Right Buffer', silent = true, buffer = 0 })
-vim.keymap.set('t', '<C-j>', '[[<Cmd>wincmd j<CR>]]', { desc = 'Goto Below Buffer', silent = true, buffer = 0 })
-vim.keymap.set('t', '<C-k>', '[[<Cmd>wincmd k<CR>]]', { desc = 'Goto Above Buffer', silent = true, buffer = 0 })
-
+-- vim.keymap.set('t', '<C-h>', '[[<Cmd>wincmd h<CR>]]', { desc = 'Goto Left Buffer', silent = true, buffer = 0 })
+-- vim.keymap.set('t', '<C-l>', '[[<Cmd>wincmd l<CR>]]', { desc = 'Goto Right Buffer', silent = true, buffer = 0 })
+-- vim.keymap.set('t', '<C-j>', '[[<Cmd>wincmd j<CR>]]', { desc = 'Goto Below Buffer', silent = true, buffer = 0 })
+-- vim.keymap.set('t', '<C-k>', '[[<Cmd>wincmd k<CR>]]', { desc = 'Goto Above Buffer', silent = true, buffer = 0 })
 
 vim.keymap.set('n', "<S-q>", '<cmd>:q<CR>', { desc = "Close Without Saving" })
 
@@ -70,7 +69,7 @@ vim.keymap.set('n', "<M-Up>", ":m .-2<CR>==", { silent = true })
 vim.keymap.set('v', '>', ">gv")
 vim.keymap.set('v', '<', "<gv")
 
-vim.keymap.set('i', "<C-k>", 'k')
+-- vim.keymap.set('i', "<C-k>", 'k')
 
 vim.keymap.set('n', '<leader>ps', "<cmd>:w<CR>:so<CR>:Lazy sync<CR>", { desc = "Lazy Sync"})
 -- vim.keymap.set('n', '<leader>ms', "<cmd>:w<CR>:so<CR>")
@@ -97,7 +96,7 @@ vim.keymap.set('n', '<leader>mc', "<cmd>:messages clear<CR>", { desc = "Show mes
 vim.keymap.set('n', '<leader>o', "o<Esc>^Da<Esc>k", { desc = 'Newline Below', silent = true })
 vim.keymap.set('n', '<leader>O', "O<Esc>^Da<Esc>j", { desc = 'Newline Above', silent = true })
 
-vim.keymap.set('i', '<S-tab>', '<esc><<i', { desc = 'Indent Left' })
+-- vim.keymap.set('i', '<S-tab>', '<esc><<i', { desc = 'Indent Left' })
 
 vim.keymap.set('n', '<S-Home>', 'gg')
 vim.keymap.set('n', '<S-End>', 'G')

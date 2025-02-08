@@ -30,7 +30,8 @@ return {
 		'LunarVim/lunar.nvim',
 		-- event = "VeryLazy",
 		config = function()
-			vim.cmd.colorscheme "lunar"
+			-- vim.cmd.colorscheme "lunar"
+			vim.cmd.colorscheme "retrobox"
 			-- vim.api.nvim_create_user_command( 'LoadColors', function(opts) end, {})
 		end
 	},
