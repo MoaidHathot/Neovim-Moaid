@@ -7,7 +7,12 @@ return {
 				char = {
 					enabled = false,
 				}
-			}
+			},
+			label = {
+				rainbow = {
+					enabled = true,
+				}
+			},
 		},
 		-- stylua: ignore
 		keys = {
