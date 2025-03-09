@@ -79,6 +79,7 @@ return {
 	},
 	{
 		"tzachar/local-highlight.nvim",
+		enabled = false,
 		event = "VeryLazy",
 		config = function()
 			require('local-highlight').setup({
@@ -92,5 +93,18 @@ return {
 		config = function()
 			require('scrollbar').setup({})
 		end
-	}
+	},
+	{
+		"azabiong/vim-highlighter",
+		event = { "BufReadPre", "BufNewFile" },
+		init = function()
+			 vim.cmd([[
+			   let HiSet   = 'f<CR>'
+			   let HiErase = 'f<BS>'
+			   let HiClear = 'f<C-L>'
+			   let HiFind  = 'f<Tab>'
+			   let HiSetSL = 't<CR>'
+			 ]])
+		end
+	},
 }

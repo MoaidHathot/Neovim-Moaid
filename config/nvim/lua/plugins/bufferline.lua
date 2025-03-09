@@ -1,7 +1,7 @@
 return
 {
 	{
-		enabled = true,
+		enabled = false,
 		'akinsho/bufferline.nvim',
 		-- enabled = false,
 		-- event = "VeryLazy",
@@ -36,12 +36,12 @@ return
 						delay = 200,
 						reveal = { 'close' }
 					},
-					diagnostics = "nvim_lsp",
-					diagnostics_indicator = function(count, level, diagnostics_dict, context)
-						-- return "("..count..")"
-						local icon = level:match("error") and " " or " "
-						return " " .. icon .. count
-					end,
+					-- diagnostics = "nvim_lsp",
+					-- diagnostics_indicator = function(count, level, diagnostics_dict, context)
+					-- 	-- return "("..count..")"
+					-- 	local icon = level:match("error") and " " or " "
+					-- 	return " " .. icon .. count
+					-- end,
 					sort_by = 'insert_at_end',
 				}
 		},
@@ -86,7 +86,7 @@ return
 	},
 	{
 		'romgrk/barbar.nvim',
-		enabled = false,
+		enabled = true,
 		dependencies = {
 			'lewis6991/gitsigns.nvim', -- OPTIONAL: for git status
 			'nvim-tree/nvim-web-devicons', -- OPTIONAL: for file icons

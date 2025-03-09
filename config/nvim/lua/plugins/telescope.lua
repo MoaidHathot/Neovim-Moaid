@@ -72,7 +72,6 @@ local smart_grep = function(opts)
 			local args = { "rg" }
 
 			local extracted = extract_args(prompt, opts)
-			print("Extracted", vim.inspect(extracted))
 
 			if not extracted then
 				return nil
@@ -196,8 +195,8 @@ return {
 			},
 			extensions = {
 				["ui-select"] = {
-					require("telescope.themes").get_dropdown {
-					},
+					-- require("telescope.themes").get_dropdown {
+					-- },
 					file_browser = {
 						theme = 'ivy',
 						--hijack_newtrw = true
@@ -258,7 +257,7 @@ return {
 	},
 	{
 		'nvim-telescope/telescope-ui-select.nvim',
-		'nvim-telescope/telescope-fzf-native.nvim',
+		-- 'nvim-telescope/telescope-fzf-native.nvim',
 		-- enables = false,
 		-- event = "VeryLazy"
 		cmd = "Telescope",
