@@ -49,3 +49,9 @@ config/gh-copilot
 
 config/nushell
 config/k9s
+
+tags
+test.sh
+.luarc.json
+
+spell/
