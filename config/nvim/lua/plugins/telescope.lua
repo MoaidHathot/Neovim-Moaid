@@ -172,7 +172,6 @@ local smart_fd = function(opts)
 	}):find()
 end
 
-
 return {
 	{
 		'nvim-telescope/telescope.nvim',
@@ -180,10 +179,10 @@ return {
 		-- tag = '0.1.5',
 		dependencies = {
 			'nvim-lua/plenary.nvim',
-			{
-				'nvim-telescope/telescope-fzf-native.nvim',
-				build = 'make'
-			}
+			-- {
+			-- 	'nvim-telescope/telescope-fzf-native.nvim',
+			-- 	build = 'make'
+			-- }
 		},
 		opts = {
 			defaults = {
@@ -247,7 +246,6 @@ return {
 			{ '<leader>gb', function() require('telescope.builtin').git_branches() end,                         { desc = 'Git Branches' } },
 			{ '<leader>gs', function() require('telescope.builtin').git_status() end,                           { desc = 'Git Status' } },
 			{ '<leader>gS', function() require('telescope.builtin').git_stash() end,                            { desc = 'Git Stash' } },
-
 
 			{ '<leader>st', function() require('telescope.builtin').builtin() end,                              { desc = 'Find Telescope Pickers' } },
 			{ '<leader>sT', function() require('telescope.builtin').builtin() end,                              { desc = 'Find Telescope cached Pickers' } },

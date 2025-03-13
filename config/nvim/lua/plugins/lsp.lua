@@ -100,10 +100,10 @@ return {
 			null_ls.setup({
 				sources = {
 					-- null_ls.builtins.formatting.stylua,
-					null_ls.builtins.formatting.csharpier,
-					null_ls.builtins.formatting.yamlfmt,
-					null_ls.builtins.formatting.black,
-					null_ls.builtins.formatting.isort,
+					-- null_ls.builtins.formatting.csharpier,
+					-- null_ls.builtins.formatting.yamlfmt,
+					-- null_ls.builtins.formatting.black,
+					-- null_ls.builtins.formatting.isort,
 				}
 			})
 			vim.keymap.set('n', '<leader>lff', function() vim.lsp.buf.format({ async = true }) end,
