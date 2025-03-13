@@ -184,5 +184,18 @@ function Remove-Shada
 	Remove-Item $shadaPath -Recurse
 }
 
+function Remove-nvimdata
+{
+	$localData  = Get-LocalAppData
+	$nvimDataPath = "$localData/nvim-data/"
+	Remove-Item $nvimDataPath -Recurse
+}
+
+function moaid2 {
+    $env:XDG_CONFIG_HOME = "P:\Github\Neovim-Moaid\configurations/../config2/"
+    nvim @args
+    $env:XDG_CONFIG_HOME = "P:\Github\Neovim-Moaid\configurations/../config/"
+}
+
 # Invoke-Expression (&starship init powershell)
 
