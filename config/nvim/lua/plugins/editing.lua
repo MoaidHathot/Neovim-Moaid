@@ -97,6 +97,7 @@ return {
 	{
 		"azabiong/vim-highlighter",
 		event = { "BufReadPre", "BufNewFile" },
+		enabled = true,
 		init = function()
 			 vim.cmd([[
 			   let HiSet   = 'f<CR>'
