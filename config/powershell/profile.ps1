@@ -177,6 +177,18 @@ function Show-ILSpy {
 	& ILSpyPrev (Get-ProjectDll)
 }
 
+function Demo {
+	param (
+        [Parameter(ValueFromPipeline = $true)]
+        [string]$filePath,
+		[Parameter(ValueFromRemainingArguments=$true)]
+		[string[]]$Extras
+	)
+
+	$project = (Join-Path (Get-Location) "Host.csproj")
+	dotnet-exec $filePath --project $project -- $Extras
+}
+
 function Remove-Shada
 {
 	$localData  = Get-LocalAppData
@@ -184,7 +196,7 @@ function Remove-Shada
 	Remove-Item $shadaPath -Recurse
 }
 
-function Remove-nvimdata
+function Remove-NvimData
 {
 	$localData  = Get-LocalAppData
 	$nvimDataPath = "$localData/nvim-data/"
