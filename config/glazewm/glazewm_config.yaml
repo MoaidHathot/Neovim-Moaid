@@ -139,6 +139,7 @@ window_rules:
       - window_process: { equals: 'Lively' }
         window_class: { regex: 'HwndWrapper*' }
       - window_title: { regex: "/[Pp]ower[Pp]oint [Ss]lide [Ss]how.*/" }
+      - window_title: { regex: "Command Palette" }
   - commands: ['move --workspace 0', 'focus --workspace 0']
     match:
       - window_title: { regex: "/.+[Pp]ower[Pp]oint [Pp]resenter [Vv]iew/" }
