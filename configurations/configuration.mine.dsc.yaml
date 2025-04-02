@@ -69,8 +69,8 @@ properties:
       dependsOn:
        - Git
       settings:
-        UserEmail: "5457010+acangialosi@users.noreply.github.com"
-        ConfigLocation: "Global"        
+        UserEmail: "MoaidHathot@users.noreply.github.com"
+        ConfigLocation: "Global"
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: Windows_Terminal_Preview
