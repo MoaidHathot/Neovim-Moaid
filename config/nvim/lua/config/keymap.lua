@@ -71,7 +71,7 @@ vim.keymap.set('v', '<', "<gv")
 
 -- vim.keymap.set('i', "<C-k>", 'k')
 
-vim.keymap.set('n', '<leader>ps', "<cmd>:w<CR>:so<CR>:Lazy sync<CR>", { desc = "Lazy Sync"})
+-- vim.keymap.set('n', '<leader>ps', "<cmd>:w<CR>:so<CR>:Lazy sync<CR>", { desc = "Lazy Sync"})
 -- vim.keymap.set('n', '<leader>ms', "<cmd>:w<CR>:so<CR>")
 vim.keymap.set('i', '<C-c>', '<Esc>')
 
