@@ -106,8 +106,7 @@ return {
 					-- null_ls.builtins.formatting.isort,
 				}
 			})
-			vim.keymap.set('n', '<leader>lff', function() vim.lsp.buf.format({ async = true }) end,
-				{ desc = "Format document" })
+			vim.keymap.set('n', '<leader>lff', function() vim.lsp.buf.format({ async = true }) end, { desc = "Format document" })
 			vim.keymap.set('n', '<leader>lr', vim.lsp.buf.rename, { desc = "Rename Symbol" })
 			vim.keymap.set({ 'n', 'i' }, '<f2>', vim.lsp.buf.rename, { desc = "Rename Symbol" })
 			vim.keymap.set({ 'n', 'i' }, '<f12>', vim.lsp.buf.definition, { desc = "Go to Definition" })
@@ -117,8 +116,7 @@ return {
 			vim.keymap.set('n', '<leader>lsR', vim.lsp.buf.references, { desc = "To to References" })
 			-- vim.keymap.set({ 'n' }, '<leader>lsD', ":Trouble document_diagnostics<CR>", { desc = "Toggle Document Diagnostics" })
 			vim.keymap.set({ 'n' }, '<leader>lsD', ":Trouble diagnostics<CR>", { desc = "Toggle Document Diagnostics" })
-			vim.keymap.set('n', '<leader>lsI', ':Trouble lsp_implementations<CR>',
-				{ desc = "Toggle LSP References" })
+			vim.keymap.set('n', '<leader>lsI', ':Trouble lsp_implementations<CR>', { desc = "Toggle LSP References" })
 			vim.keymap.set('n', '<leader>lsd', ":Trouble lsp_definitions<CR>", { desc = "Toggle LSP Definitions" })
 		end
 	},
