@@ -216,6 +216,15 @@ properties:
         id: Microsoft.VisualStudio.2022.Enterprise
         source: winget
 
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: Carapace
+      directives:
+        description: Install Visual Studio
+        allowPrerelease: true
+      settings:
+        id: rsteube.Carapace
+        source: winget
+
     - resource: PSDscResources/Environment
       id: Moaid_Config_Path
       directives:

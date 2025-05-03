@@ -57,6 +57,10 @@ if ($host.Name -eq 'ConsoleHost')
 	Set-PSReadLineOption -EditMode Windows
 	Set-PSReadLineOption -PredictionViewStyle ListView
 	Set-PSReadLineOption -PredictionSource HistoryAndPlugin
+
+	Set-PSReadLineOption -Colors @{ "Selection" = "`e[7m" }
+	Set-PSReadlineKeyHandler -Key Tab -Function MenuComplete
+	carapace _carapace | Out-String | Invoke-Expression
 }
 
 function Show-Jwt($jwt)
