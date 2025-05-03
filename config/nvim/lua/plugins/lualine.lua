@@ -5,6 +5,7 @@ local function get_lsp_name()
 		if type(msg) == "boolean" or #msg == 0 then
 			return "LS Inactive"
 		end
+		return msg
 	end
 	local buf_client_names = {}
 
@@ -21,31 +22,57 @@ end
 return {
 	'nvim-lualine/lualine.nvim',
 	event = "VeryLazy",
-	config = function()
-		require('lualine').setup({
-			options = {
-				-- theme = 'dracula',
-				-- theme = 'horizon',
-				icon_enabled = true
+	enabled = true,
+	opts = {
+		options = {
+			-- theme = 'dracula',
+			-- theme = 'horizon',
+			icon_enabled = true
+		},
+		sections = {
+			lualine_x = {
+				get_lsp_name,
+				--'selectioncount',
+				--'filetype'
 			},
-			sections = {
-				lualine_x = {
-					get_lsp_name,
-					--'selectioncount',
-					--'filetype'
-				},
-				lualine_y = {
-					'filetype',
-					'diagnostics'
-				},
-				lualine_z = {
-					'progress'
-				},
-				-- lualine_c = {
-					-- 'filename',
-					-- require('auto-session.lib').current_session_name
-				-- }
-			}
-		})
-	end
+			lualine_y = {
+				'filetype',
+				'diagnostics'
+			},
+			lualine_z = {
+				'progress'
+			},
+			-- lualine_c = {
+			-- 'filename',
+			-- require('auto-session.lib').current_session_name
+			-- }
+		}
+	}
+	-- config = function()
+	-- 	require('lualine').setup({
+	-- 		options = {
+	-- 			-- theme = 'dracula',
+	-- 			-- theme = 'horizon',
+	-- 			icon_enabled = true
+	-- 		},
+	-- 		sections = {
+	-- 			lualine_x = {
+	-- 				get_lsp_name,
+	-- 				--'selectioncount',
+	-- 				--'filetype'
+	-- 			},
+	-- 			lualine_y = {
+	-- 				'filetype',
+	-- 				'diagnostics'
+	-- 			},
+	-- 			lualine_z = {
+	-- 				'progress'
+	-- 			},
+	-- 			-- lualine_c = {
+	-- 				-- 'filename',
+	-- 				-- require('auto-session.lib').current_session_name
+	-- 			-- }
+	-- 		}
+	-- 	})
+	-- end
 }
