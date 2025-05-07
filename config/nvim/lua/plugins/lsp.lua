@@ -98,7 +98,18 @@ return {
 		"neovim/nvim-lspconfig",
 		event = { "BufReadPre", "BufNewFile" },
 		config = function()
-			local capabilities = require('cmp_nvim_lsp').default_capabilities()
+			-- local capabilities = require('cmp_nvim_lsp').default_capabilities()
+			local function get_default_capabilities()
+				return vim.lsp.protocol.make_client_capabilities()
+			end
+			local capabilities = nil
+			local get_capabilities = function()
+				if capabilities == nil then
+					capabilities = get_default_capabilities()
+				end
+
+				return capabilities
+			end
 			local lspconfig = require('lspconfig')
 
 			-- Lazy load only when opening relevant filetypes
@@ -113,9 +124,8 @@ return {
 				})
 			end
 
-			setup("lua_ls", { capabilities = capabilities, filetypes = { "lua" } })
 			setup("omnisharp", {
-				capabilities = capabilities,
+				capabilities = get_capabilities(),
 				filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx', 'targets', 'tproj', 'slngen', 'fproj' },
 				enable_roslyn_analysers = true,
 				enable_import_completion = true,
@@ -123,17 +133,17 @@ return {
 				enable_decompilation_support = true,
 			})
 			setup("powershell_es", {
-				capabilities = capabilities,
+				capabilities = get_capabilities(),
 				filetypes = { "ps1" },
 				bundle_path = vim.fn.stdpath("data") .. "/mason/packages/powershell-editor-services",
 				init_options = {
 					enableProfileLoading = false,
 				}
 			})
-			setup("pylsp", { capabilities = capabilities, filetypes = { "py" } })
-			setup("bicep", { capabilities = capabilities, filetypes = { "bicep" } })
-			setup("buf_ls", { capabilities = capabilities, filetypes = { "proto" } })
-			setup("yamlls", { capabilities = capabilities, filetypes = { "yaml", "yml" } })
+			setup("pylsp", { capabilities = get_capabilities(), filetypes = { "py" } })
+			setup("bicep", { capabilities = get_capabilities(), filetypes = { "bicep" } })
+			setup("buf_ls", { capabilities = get_capabilities(), filetypes = { "proto" } })
+			setup("yamlls", { capabilities = get_capabilities(), filetypes = { "yaml", "yml" } })
 		end
 	},
 	{
@@ -153,8 +163,7 @@ return {
 					-- null_ls.builtins.formatting.isort,
 				}
 			})
-			vim.keymap.set('n', '<leader>lff', function() vim.lsp.buf.format({ async = true }) end,
-				{ desc = "Format document" })
+			vim.keymap.set('n', '<leader>lff', function() vim.lsp.buf.format({ async = true }) end, { desc = "Format document" })
 			vim.keymap.set('n', '<leader>lr', vim.lsp.buf.rename, { desc = "Rename Symbol" })
 			vim.keymap.set({ 'n', 'i' }, '<f2>', vim.lsp.buf.rename, { desc = "Rename Symbol" })
 			vim.keymap.set({ 'n', 'i' }, '<f12>', vim.lsp.buf.definition, { desc = "Go to Definition" })
