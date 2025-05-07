@@ -20,59 +20,62 @@ local function get_lsp_name()
 end
 
 return {
-	'nvim-lualine/lualine.nvim',
-	event = "VeryLazy",
-	enabled = true,
-	opts = {
-		options = {
-			-- theme = 'dracula',
-			-- theme = 'horizon',
-			icon_enabled = true
-		},
-		sections = {
-			lualine_x = {
-				get_lsp_name,
-				--'selectioncount',
-				--'filetype'
+	{
+		'nvim-lualine/lualine.nvim',
+		event = "VeryLazy",
+		-- event = "UIEnter",
+		enabled = false,
+		opts = {
+			options = {
+				-- theme = 'dracula',
+				-- theme = 'horizon',
+				icon_enabled = true
 			},
-			lualine_y = {
-				'filetype',
-				'diagnostics'
-			},
-			lualine_z = {
-				'progress'
-			},
-			-- lualine_c = {
-			-- 'filename',
-			-- require('auto-session.lib').current_session_name
-			-- }
+			sections = {
+				lualine_x = {
+					get_lsp_name,
+					--'selectioncount',
+					--'filetype'
+				},
+				lualine_y = {
+					'filetype',
+					'diagnostics'
+				},
+				lualine_z = {
+					'progress'
+				},
+				-- lualine_c = {
+				-- 'filename',
+				-- require('auto-session.lib').current_session_name
+				-- }
+			}
 		}
-	}
-	-- config = function()
-	-- 	require('lualine').setup({
-	-- 		options = {
-	-- 			-- theme = 'dracula',
-	-- 			-- theme = 'horizon',
-	-- 			icon_enabled = true
-	-- 		},
-	-- 		sections = {
-	-- 			lualine_x = {
-	-- 				get_lsp_name,
-	-- 				--'selectioncount',
-	-- 				--'filetype'
-	-- 			},
-	-- 			lualine_y = {
-	-- 				'filetype',
-	-- 				'diagnostics'
-	-- 			},
-	-- 			lualine_z = {
-	-- 				'progress'
-	-- 			},
-	-- 			-- lualine_c = {
-	-- 				-- 'filename',
-	-- 				-- require('auto-session.lib').current_session_name
-	-- 			-- }
-	-- 		}
-	-- 	})
-	-- end
+		-- config = function()
+		-- 	require('lualine').setup({
+		-- 		options = {
+		-- 			-- theme = 'dracula',
+		-- 			-- theme = 'horizon',
+		-- 			icon_enabled = true
+		-- 		},
+		-- 		sections = {
+		-- 			lualine_x = {
+		-- 				get_lsp_name,
+		-- 				--'selectioncount',
+		-- 				--'filetype'
+		-- 			},
+		-- 			lualine_y = {
+		-- 				'filetype',
+		-- 				'diagnostics'
+		-- 			},
+		-- 			lualine_z = {
+		-- 				'progress'
+		-- 			},
+		-- 			-- lualine_c = {
+		-- 				-- 'filename',
+		-- 				-- require('auto-session.lib').current_session_name
+		-- 			-- }
+		-- 		}
+		-- 	})
+		-- end
+	},
 }
