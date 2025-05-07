@@ -131,6 +131,8 @@ return {
 				enable_import_completion = true,
 				organize_imports_on_format = true,
 				enable_decompilation_support = true,
+				cmd = { "omnisharp", "--languageserver", "--hostPID", tostring(vim.fn.getpid()) },
+				root_dir = lspconfig.util.root_pattern("*.csproj", "*.sln"),
 			})
 			setup("powershell_es", {
 				capabilities = get_capabilities(),
