@@ -24,7 +24,7 @@ return {
 		'nvim-lualine/lualine.nvim',
 		event = "VeryLazy",
 		-- event = "UIEnter",
-		enabled = false,
+		enabled = true,
 		opts = {
 			options = {
 				-- theme = 'dracula',
