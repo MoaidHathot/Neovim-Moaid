@@ -1,8 +1,8 @@
 return {
 	"aznhe21/actions-preview.nvim",
-	event = "VeryLazy",
+	-- event = "VeryLazy",
 	-- lazy = false,
-	config = function()
-		vim.keymap.set({ "v", "n" }, "<leader>la", require("actions-preview").code_actions)
-	end,
+	keys = {
+		{ "<leader>la", "<cmd>lua require('actions-preview').code_actions()<CR>", desc = "Code Actions" },
+	}
 }

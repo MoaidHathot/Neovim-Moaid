@@ -2,6 +2,7 @@ return {
 	{
 		'rmagatti/auto-session',
 		-- event = "VeryLazy",
+		-- event = "VimEnter",
 		-- keys = {
 		-- 	{ '<leader>ss', function() require("auto-session.session-lens").search_session() end, { desc = "Search Session" } },
 		-- },

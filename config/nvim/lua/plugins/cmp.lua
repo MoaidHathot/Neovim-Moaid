@@ -1,7 +1,8 @@
 return {
 	{
 		'hrsh7th/cmp-nvim-lsp',
-		event = { "BufReadPre", "BufNewFile" },
+		-- event = { "BufReadPre", "BufNewFile" },
+		event = "BufReadPost",
 		-- event = "VeryLazy",
 	},
 	{
@@ -29,7 +30,8 @@ return {
 	},
 	{
 		'hrsh7th/nvim-cmp',
-		event = { "BufReadPre", "BufNewFile" },
+		-- event = { "BufReadPre", "BufNewFile" },
+		event = "BufReadPost",
 		-- event = "VeryLazy",
 		dependencies = {
 			'hrsh7th/cmp-cmdline',
