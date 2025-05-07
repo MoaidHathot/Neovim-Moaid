@@ -9,10 +9,10 @@ return {
 		'github/copilot.vim',
 		event = { "BufReadPre", "BufNewFile" },
 		keys = {
-			{ "<C-l>", "<Plug>(copilot-next)", mode = "i" },
-			{ "<C-h>", "<Plug>(copilot-previous)", mode = "i" },
-			{ "<C-c>", "<Plug>(copilot-suggest)", mode = "i" },
-			{ "<C-d>", "<Plug>(copilot-dismiss)", mode = "i" },
+			{ "<C-l>", "<Plug>(copilot-next)",        mode = "i" },
+			{ "<C-h>", "<Plug>(copilot-previous)",    mode = "i" },
+			{ "<C-c>", "<Plug>(copilot-suggest)",     mode = "i" },
+			{ "<C-d>", "<Plug>(copilot-dismiss)",     mode = "i" },
 			{ "<C-f>", "<Plug>(copilot-accept-word)", mode = "i" },
 			{ "<C-g>", "<Plug>(copilot-accept-line)", mode = "i" },
 		},
@@ -31,15 +31,22 @@ return {
 	{
 		'hrsh7th/nvim-cmp',
 		-- event = { "BufReadPre", "BufNewFile" },
-		event = "BufReadPost",
+		-- event = "BufReadPost",
+		event = "InsertEnter",
 		-- event = "VeryLazy",
 		dependencies = {
-			'hrsh7th/cmp-cmdline',
+			-- 'hrsh7th/cmp-cmdline',
 			'hrsh7th/cmp-nvim-lsp-signature-help',
 		},
 		config = function()
 			local cmp = require 'cmp'
-			require("luasnip.loaders.from_vscode").lazy_load()
+			vim.api.nvim_create_autocmd("InsertEnter", {
+				callback = function()
+					require("luasnip.loaders.from_vscode").lazy_load()
+				end,
+				once = true,
+			})
+			-- require("luasnip.loaders.from_vscode").lazy_load()
 			cmp.setup({
 				snippet = {
 					expand = function(args)
@@ -68,6 +75,30 @@ return {
 			})
 
 			-- Use buffer source for `/` and `?` (if you enabled `native_menu`, this won't work anymore).
+			--cmp.setup.cmdline({ '/', '?' }, {
+			--	mapping = cmp.mapping.preset.cmdline(),
+			--	sources = {
+			--		{ name = 'buffer' }
+			--	}
+			--})
+
+			-- Use cmdline & path source for ':' (if you enabled `native_menu`, this won't work anymore).
+			--cmp.setup.cmdline(':', {
+			--	mapping = cmp.mapping.preset.cmdline(),
+			--	sources = cmp.config.sources({
+			--		{ name = 'path' }
+			--	}, {
+			--		{ name = 'cmdline' }
+			--	})
+			--})
+		end
+	},
+	{
+		"hrsh7th/cmp-cmdline",
+		dependencies = { "hrsh7th/nvim-cmp" },
+		event = "CmdlineEnter",
+		config = function()
+			local cmp = require("cmp")
 			cmp.setup.cmdline({ '/', '?' }, {
 				mapping = cmp.mapping.preset.cmdline(),
 				sources = {
@@ -75,7 +106,6 @@ return {
 				}
 			})
 
-			-- Use cmdline & path source for ':' (if you enabled `native_menu`, this won't work anymore).
 			cmp.setup.cmdline(':', {
 				mapping = cmp.mapping.preset.cmdline(),
 				sources = cmp.config.sources({

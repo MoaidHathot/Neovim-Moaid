@@ -2,7 +2,9 @@ return {
 	{
 		"williamboman/mason.nvim",
 		-- event = "VeryLazy",
-		lazy = true,
+		-- lazy = true,
+		-- event = { "BufReadPre", "BufNewFile" },
+		cmd = { "Mason", "MasonUpdate" },
 		config = function()
 			require('mason').setup()
 		end
@@ -10,90 +12,134 @@ return {
 	{
 		"williamboman/mason-lspconfig.nvim",
 		-- event = "VeryLazy",
-		lazy = true,
+		-- lazy = true,
+		event = { "BufReadPre", "BufNewFile" },
 		dependencies = {
 			"williamboman/mason.nvim"
 		},
 		opts = {
-			auto_install = true,
+			auto_install = false,
 		},
 		config = function()
 			require('mason-lspconfig').setup({
-				ensure_installed = { "lua_ls", "omnisharp", "bicep" }
+				-- ensure_installed = { "lua_ls", "omnisharp", "bicep" }
 			})
 		end
 	},
+	-- {
+	-- 	"neovim/nvim-lspconfig",
+	-- 	event = { "BufReadPre", "BufNewFile" },
+	-- 	-- event = "VeryLazy",
+	-- 	-- lazy = true,
+	-- 	dependencies = {
+	-- 		"williamboman/mason.nvim",
+	-- 		"williamboman/mason-lspconfig.nvim",
+	-- 	},
+	-- 	config = function()
+	-- 		local capabilities = require('cmp_nvim_lsp').default_capabilities()
+	-- 		local lspconfig = require('lspconfig')
+	--
+	-- 		lspconfig.lua_ls.setup({
+	-- 			capabilities = capabilities
+	-- 		})
+	--
+	-- 		lspconfig.omnisharp.setup({
+	-- 			capabilities = capabilities,
+	-- 			enable_roslyn_analysers = true,
+	-- 			enable_import_completion = true,
+	-- 			organize_imports_on_format = true,
+	-- 			enable_decompilation_support = true,
+	-- 			filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx', 'targets', 'tproj', 'slngen', 'fproj' },
+	-- 		})
+	--
+	-- 		lspconfig.powershell_es.setup({
+	-- 			capabilities = capabilities,
+	-- 			bundle_path = vim.fn.stdpath("data") .. "/mason/packages/powershell-editor-services",
+	-- 			init_options = {
+	-- 				enableProfileLoading = false,
+	-- 			}
+	-- 		})
+	--
+	-- 		lspconfig.pylsp.setup({
+	-- 			capabilities = capabilities,
+	-- 		})
+	--
+	-- 		lspconfig.yamlls.setup({
+	-- 			capabilities = capabilities
+	-- 		})
+	--
+	-- 		lspconfig.buf_ls.setup({
+	-- 			capabilities = capabilities
+	-- 		})
+	--
+	-- 		lspconfig.bicep.setup({
+	-- 			capabilities = capabilities
+	-- 		})
+	--
+	-- 		lspconfig.lemminx.setup({
+	-- 			capabilities = capabilities
+	-- 		})
+	--
+	-- 		lspconfig.pylsp.setup({
+	-- 			capabilities = capabilities
+	-- 		})
+	--
+	-- 		-- lspconfig.codeql.setup({
+	-- 		-- 	capabilities = capabilities
+	-- 		-- })
+	--
+	-- 		vim.keymap.set('n', 'K', vim.lsp.buf.hover, {})
+	-- 		vim.keymap.set('n', 'gd', vim.lsp.buf.definition, {})
+	-- 		-- vim.keymap.set({ 'n', 'v' }, '<leader>la', vim.lsp.buf.code_action, {})
+	-- 	end
+	-- },
 	{
 		"neovim/nvim-lspconfig",
 		event = { "BufReadPre", "BufNewFile" },
-		-- event = "VeryLazy",
-		-- lazy = true,
-		dependencies = {
-			"williamboman/mason.nvim",
-			"williamboman/mason-lspconfig.nvim",
-		},
 		config = function()
 			local capabilities = require('cmp_nvim_lsp').default_capabilities()
 			local lspconfig = require('lspconfig')
 
-			lspconfig.lua_ls.setup({
-				capabilities = capabilities
-			})
+			-- Lazy load only when opening relevant filetypes
+			local function setup(server, config)
+				local ft = config.filetypes or {}
+				vim.api.nvim_create_autocmd("FileType", {
+					pattern = ft,
+					callback = function()
+						lspconfig[server].setup(config)
+					end,
+					once = true,
+				})
+			end
 
-			lspconfig.omnisharp.setup({
+			setup("lua_ls", { capabilities = capabilities, filetypes = { "lua" } })
+			setup("omnisharp", {
 				capabilities = capabilities,
+				filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx', 'targets', 'tproj', 'slngen', 'fproj' },
 				enable_roslyn_analysers = true,
 				enable_import_completion = true,
 				organize_imports_on_format = true,
 				enable_decompilation_support = true,
-				filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx', 'targets', 'tproj', 'slngen', 'fproj' },
 			})
-
-			lspconfig.powershell_es.setup({
+			setup("powershell_es", {
 				capabilities = capabilities,
+				filetypes = { "ps1" },
 				bundle_path = vim.fn.stdpath("data") .. "/mason/packages/powershell-editor-services",
 				init_options = {
 					enableProfileLoading = false,
 				}
 			})
-
-			lspconfig.pylsp.setup({
-				capabilities = capabilities,
-			})
-
-			lspconfig.yamlls.setup({
-				capabilities = capabilities
-			})
-
-			lspconfig.buf_ls.setup({
-				capabilities = capabilities
-			})
-
-			lspconfig.bicep.setup({
-				capabilities = capabilities
-			})
-
-			lspconfig.lemminx.setup({
-				capabilities = capabilities
-			})
-
-			lspconfig.pylsp.setup({
-				capabilities = capabilities
-			})
-
-			-- lspconfig.codeql.setup({
-			-- 	capabilities = capabilities
-			-- })
-
-			vim.keymap.set('n', 'K', vim.lsp.buf.hover, {})
-			vim.keymap.set('n', 'gd', vim.lsp.buf.definition, {})
-			-- vim.keymap.set({ 'n', 'v' }, '<leader>la', vim.lsp.buf.code_action, {})
+			setup("pylsp", { capabilities = capabilities, filetypes = { "py" } })
+			setup("bicep", { capabilities = capabilities, filetypes = { "bicep" } })
+			setup("buf_ls", { capabilities = capabilities, filetypes = { "proto" } })
+			setup("yamlls", { capabilities = capabilities, filetypes = { "yaml", "yml" } })
 		end
 	},
 	{
 		'nvimtools/none-ls.nvim',
 		-- event = { "BufReadPre", "BufNewFile" },
-		lazy = true,
+		-- lazy = true,
+		event = { "BufReadPre", "BufNewFile" },
 		-- event = "VeryLazy",
 		config = function()
 			local null_ls = require('null-ls')
@@ -106,7 +152,8 @@ return {
 					-- null_ls.builtins.formatting.isort,
 				}
 			})
-			vim.keymap.set('n', '<leader>lff', function() vim.lsp.buf.format({ async = true }) end, { desc = "Format document" })
+			vim.keymap.set('n', '<leader>lff', function() vim.lsp.buf.format({ async = true }) end,
+				{ desc = "Format document" })
 			vim.keymap.set('n', '<leader>lr', vim.lsp.buf.rename, { desc = "Rename Symbol" })
 			vim.keymap.set({ 'n', 'i' }, '<f2>', vim.lsp.buf.rename, { desc = "Rename Symbol" })
 			vim.keymap.set({ 'n', 'i' }, '<f12>', vim.lsp.buf.definition, { desc = "Go to Definition" })
@@ -138,7 +185,8 @@ return {
 	},
 	{
 		'https://git.sr.ht/~whynothugo/lsp_lines.nvim',
-		event = "VeryLazy",
+		-- event = "VeryLazy",
+		event = { "BufReadPre", "BufNewFile" },
 		config = function()
 			require('lsp_lines').setup()
 
