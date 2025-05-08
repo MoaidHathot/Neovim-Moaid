@@ -27,136 +27,142 @@ return {
 			})
 		end
 	},
+	{
+		"neovim/nvim-lspconfig",
+		event = { "BufReadPre", "BufNewFile" },
+		-- event = "VeryLazy",
+		-- lazy = true,
+		dependencies = {
+			"williamboman/mason.nvim",
+			"williamboman/mason-lspconfig.nvim",
+		},
+		config = function()
+			local capabilities = require('cmp_nvim_lsp').default_capabilities()
+			local lspconfig = require('lspconfig')
+
+			lspconfig.lua_ls.setup({
+				capabilities = capabilities
+			})
+
+			lspconfig.omnisharp.setup({
+				capabilities = capabilities,
+				enable_roslyn_analysers = true,
+				enable_import_completion = true,
+				organize_imports_on_format = true,
+				enable_decompilation_support = true,
+				filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx', 'targets', 'tproj', 'slngen', 'fproj' },
+			})
+
+			lspconfig.powershell_es.setup({
+				capabilities = capabilities,
+				bundle_path = vim.fn.stdpath("data") .. "/mason/packages/powershell-editor-services",
+				init_options = {
+					enableProfileLoading = false,
+				}
+			})
+
+			lspconfig.pylsp.setup({
+				capabilities = capabilities,
+			})
+
+			lspconfig.yamlls.setup({
+				capabilities = capabilities
+			})
+
+			lspconfig.buf_ls.setup({
+				capabilities = capabilities
+			})
+
+			lspconfig.bicep.setup({
+				capabilities = capabilities
+			})
+
+			lspconfig.lemminx.setup({
+				capabilities = capabilities
+			})
+
+			lspconfig.pylsp.setup({
+				capabilities = capabilities
+			})
+
+			-- lspconfig.codeql.setup({
+			-- 	capabilities = capabilities
+			-- })
+
+			vim.keymap.set('n', 'K', vim.lsp.buf.hover, {})
+			vim.keymap.set('n', 'gd', vim.lsp.buf.definition, {})
+			-- vim.keymap.set({ 'n', 'v' }, '<leader>la', vim.lsp.buf.code_action, {})
+		end
+	},
 	-- {
 	-- 	"neovim/nvim-lspconfig",
 	-- 	event = { "BufReadPre", "BufNewFile" },
-	-- 	-- event = "VeryLazy",
-	-- 	-- lazy = true,
 	-- 	dependencies = {
 	-- 		"williamboman/mason.nvim",
 	-- 		"williamboman/mason-lspconfig.nvim",
 	-- 	},
 	-- 	config = function()
 	-- 		local capabilities = require('cmp_nvim_lsp').default_capabilities()
+	-- 		local function get_capabilities()
+	-- 			return capabilities
+	-- 			-- return require('cmp_nvim_lsp').default_capabilities()
+	-- 		end
+	-- 		-- local capabilities = nil
+	-- 		-- local get_capabilities = function()
+	-- 		-- 	if capabilities == nil then
+	-- 		-- 		capabilities = get_default_capabilities()
+	-- 		-- 	end
+	--
+	-- 		-- 	return capabilities
+	-- 		-- end
 	-- 		local lspconfig = require('lspconfig')
 	--
-	-- 		lspconfig.lua_ls.setup({
-	-- 			capabilities = capabilities
-	-- 		})
+	-- 		-- Lazy load only when opening relevant filetypes
+	-- 		local function setup(server, config)
+	-- 			local ft = config.filetypes or {}
+	-- 			vim.api.nvim_create_autocmd("FileType", {
+	-- 				pattern = ft,
+	-- 				callback = function()
+	-- 					lspconfig[server].setup(config)
+	-- 				end,
+	-- 				once = true,
+	-- 			})
+	-- 		end
 	--
-	-- 		lspconfig.omnisharp.setup({
-	-- 			capabilities = capabilities,
-	-- 			enable_roslyn_analysers = true,
-	-- 			enable_import_completion = true,
-	-- 			organize_imports_on_format = true,
-	-- 			enable_decompilation_support = true,
+	-- 		setup("omnisharp", {
+	-- 			capabilities = get_capabilities(),
 	-- 			filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx', 'targets', 'tproj', 'slngen', 'fproj' },
-	-- 		})
+	-- 			-- enable_roslyn_analysers = true,
+	-- 			-- enable_import_completion = true,
+	-- 			-- organize_imports_on_format = true,
+	-- 			-- enable_decompilation_support = true,
+	-- 			-- cmd = { "omnisharp", "--languageserver", "--hostPID", tostring(vim.fn.getpid()), "DotNet:enablePackageRestore=false", "--encoding", "utf-8", "--languageserver", "FormattingOptions:EnableEditorConfigSupport=true", "Sdk:IncludePrereleases=true" },
+	-- 			-- root_dir = lspconfig.util.root_pattern("*.csproj", "*.sln"),
+	-- 			settings = {
+	-- 				RoslynExtensionsOptions = {
+	-- 					enableDecompilationSupport = true,
+	-- 					enableImportCompletion = true,
+	-- 					enableAnalyzersSupport = true,
+	-- 					organizeImportsOnFormat = true,
+	-- 				}
+	-- 			},
 	--
-	-- 		lspconfig.powershell_es.setup({
-	-- 			capabilities = capabilities,
+	-- 		})
+	-- 		setup("powershell_es", {
+	-- 			capabilities = get_capabilities(),
+	-- 			filetypes = { "ps1" },
 	-- 			bundle_path = vim.fn.stdpath("data") .. "/mason/packages/powershell-editor-services",
 	-- 			init_options = {
 	-- 				enableProfileLoading = false,
 	-- 			}
 	-- 		})
-	--
-	-- 		lspconfig.pylsp.setup({
-	-- 			capabilities = capabilities,
-	-- 		})
-	--
-	-- 		lspconfig.yamlls.setup({
-	-- 			capabilities = capabilities
-	-- 		})
-	--
-	-- 		lspconfig.buf_ls.setup({
-	-- 			capabilities = capabilities
-	-- 		})
-	--
-	-- 		lspconfig.bicep.setup({
-	-- 			capabilities = capabilities
-	-- 		})
-	--
-	-- 		lspconfig.lemminx.setup({
-	-- 			capabilities = capabilities
-	-- 		})
-	--
-	-- 		lspconfig.pylsp.setup({
-	-- 			capabilities = capabilities
-	-- 		})
-	--
-	-- 		-- lspconfig.codeql.setup({
-	-- 		-- 	capabilities = capabilities
-	-- 		-- })
-	--
-	-- 		vim.keymap.set('n', 'K', vim.lsp.buf.hover, {})
-	-- 		vim.keymap.set('n', 'gd', vim.lsp.buf.definition, {})
-	-- 		-- vim.keymap.set({ 'n', 'v' }, '<leader>la', vim.lsp.buf.code_action, {})
+	-- 		setup("lua_ls", { capabilities = get_capabilities(), filetypes = { "lua" } })
+	-- 		setup("pylsp", { capabilities = get_capabilities(), filetypes = { "py" } })
+	-- 		setup("bicep", { capabilities = get_capabilities(), filetypes = { "bicep" } })
+	-- 		setup("buf_ls", { capabilities = get_capabilities(), filetypes = { "proto" } })
+	-- 		setup("yamlls", { capabilities = get_capabilities(), filetypes = { "yaml", "yml" } })
 	-- 	end
 	-- },
-	{
-		"neovim/nvim-lspconfig",
-		event = { "BufReadPre", "BufNewFile" },
-		config = function()
-			-- local capabilities = require('cmp_nvim_lsp').default_capabilities()
-			local function get_default_capabilities()
-				return vim.lsp.protocol.make_client_capabilities()
-			end
-			local capabilities = nil
-			local get_capabilities = function()
-				if capabilities == nil then
-					capabilities = get_default_capabilities()
-				end
-
-				return capabilities
-			end
-			local lspconfig = require('lspconfig')
-
-			-- Lazy load only when opening relevant filetypes
-			local function setup(server, config)
-				local ft = config.filetypes or {}
-				vim.api.nvim_create_autocmd("FileType", {
-					pattern = ft,
-					callback = function()
-						lspconfig[server].setup(config)
-					end,
-					once = true,
-				})
-			end
-
-			setup("omnisharp", {
-				capabilities = get_capabilities(),
-				filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx', 'targets', 'tproj', 'slngen', 'fproj' },
-				-- enable_roslyn_analysers = true,
-				-- enable_import_completion = true,
-				-- organize_imports_on_format = true,
-				-- enable_decompilation_support = true,
-				-- cmd = { "omnisharp", "--languageserver", "--hostPID", tostring(vim.fn.getpid()), "DotNet:enablePackageRestore=false", "--encoding", "utf-8", "--languageserver", "FormattingOptions:EnableEditorConfigSupport=true", "Sdk:IncludePrereleases=true" },
-				-- root_dir = lspconfig.util.root_pattern("*.csproj", "*.sln"),
-				settings = {
-					RoslynExtensionsOptions = {
-						enableDecompilationSupport = true,
-						enableImportCompletion = true,
-						enableAnalyzersSupport = true,
-						organizeImportsOnFormat = true,
-					}
-				},
-
-			})
-			setup("powershell_es", {
-				capabilities = get_capabilities(),
-				filetypes = { "ps1" },
-				bundle_path = vim.fn.stdpath("data") .. "/mason/packages/powershell-editor-services",
-				init_options = {
-					enableProfileLoading = false,
-				}
-			})
-			setup("pylsp", { capabilities = get_capabilities(), filetypes = { "py" } })
-			setup("bicep", { capabilities = get_capabilities(), filetypes = { "bicep" } })
-			setup("buf_ls", { capabilities = get_capabilities(), filetypes = { "proto" } })
-			setup("yamlls", { capabilities = get_capabilities(), filetypes = { "yaml", "yml" } })
-		end
-	},
 	{
 		'nvimtools/none-ls.nvim',
 		-- event = { "BufReadPre", "BufNewFile" },
