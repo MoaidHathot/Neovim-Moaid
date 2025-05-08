@@ -137,3 +137,6 @@ end
 -- Set the key mapping
 vim.keymap.set('n', '<leader>ha', toggle_highlight, { desc = 'Toggle Highlight Line' })
 vim.keymap.set('n', '<leader>hr', "<cmd>call clearmatches()<CR>", { desc = 'Toggle Highlight Line' })
+
+vim.keymap.set({'n'}, '<leader>/', 'gcc', { remap = true, desc = 'Comment in Normal Mode' })
+vim.keymap.set({'v'}, '<leader>/', 'gc', { remap = true, desc = 'Comment in Visual Mode' })
