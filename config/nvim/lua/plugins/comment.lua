@@ -1,6 +1,6 @@
 return {
 	'numtostr/comment.nvim',
-	enabled = true,
+	enabled = false,
 	-- event = "verylazy",
 	keys = {
 		{ '<leader>/', mode = { 'n', 'v' } }
