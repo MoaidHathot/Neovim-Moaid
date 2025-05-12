@@ -5,6 +5,7 @@ return {
 		-- lazy = true,
 		-- event = { "BufReadPre", "BufNewFile" },
 		cmd = { "Mason", "MasonUpdate" },
+		version = "1.11.0",
 		config = function()
 			require('mason').setup()
 		end
@@ -15,6 +16,7 @@ return {
 		-- lazy = true,
 		-- event = { "BufReadPre", "BufNewFile" },
 		event = { "BufReadPost", "BufNewFile" },
+		version = "1.32.0",
 		dependencies = {
 			"williamboman/mason.nvim"
 		},
