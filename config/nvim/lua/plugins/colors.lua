@@ -32,7 +32,8 @@ return {
 		config = function()
 			-- vim.cmd.colorscheme "lunar"
 			-- vim.cmd.colorscheme "retrobox"
-			vim.cmd.colorscheme "tokyonight-moon"
+			-- vim.cmd.colorscheme "tokyonight-moon"
+			vim.cmd.colorscheme "gruvbox"
 			-- vim.api.nvim_create_user_command( 'LoadColors', function(opts) end, {})
 		end
 	},
@@ -139,6 +140,10 @@ return {
 	},
 	{
 		"tomasiser/vim-code-dark",
+		cmd = "LoadColors",
+	},
+	{
+		"lifepillar/vim-gruvbox8",
 		cmd = "LoadColors",
 	}
 }
