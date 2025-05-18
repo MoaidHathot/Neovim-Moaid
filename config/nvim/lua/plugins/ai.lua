@@ -4,9 +4,9 @@ return {
 	enabled = true,
 	version = false, -- Never set this value to "*"! Never!
 	keys = {
-		{ "<leader>aa", "<cmd>AvanteToggle<cr>", desc = "Avante" },
-		{ "<leader>at", "<cmd>AvanteToggle<cr>", desc = "Avante" },
-		{ "<leader>af", "<cmd>AvanteFocus<cr>", desc = "Avante" },
+		{  "<leader>aa", "<cmd>AvanteToggle<cr>", mode = { 'n', 'v' }, desc = "Avante" },
+		{  "<leader>at", "<cmd>AvanteToggle<cr>", mode = { 'n', 'v' }, desc = "Avante" },
+		{  "<leader>af", "<cmd>AvanteFocus<cr>", mode = { 'n', 'v' }, desc = "Avante" },
 	},
 	opts = {
 		provider = "openai",
