@@ -31,9 +31,14 @@ return {
 		-- event = "VeryLazy",
 		config = function()
 			-- vim.cmd.colorscheme "lunar"
-			vim.cmd.colorscheme "retrobox"
+			-- vim.cmd.colorscheme "retrobox"
+			vim.cmd.colorscheme "tokyonight-moon"
 			-- vim.api.nvim_create_user_command( 'LoadColors', function(opts) end, {})
 		end
+	},
+	{
+		"NLKNguyen/papercolor-theme",
+		cmd = "LoadColors",
 	},
 	{
 		"lunarvim/Onedarker.nvim",
@@ -98,6 +103,42 @@ return {
 	{
 		'loctvl842/monokai-pro.nvim',
 		-- event = "VeryLazy",
+		cmd = "LoadColors",
+	},
+	{
+		"morhetz/gruvbox",
+		cmd = "LoadColors",
+	},
+	{
+		"ellisonleao/gruvbox.nvim",
+		cmd = "LoadColors",
+	},
+	{
+		"WTFox/jellybeans.nvim",
+		cmd = "LoadColors",
+	},
+	{
+		"sainnhe/everforest",
+		cmd = "LoadColors",
+	},
+	{
+		"projekt0n/github-nvim-theme",
+		cmd = "LoadColors",
+	},
+	{
+		"sainnhe/sonokai",
+		cmd = "LoadColors",
+	},
+	{
+		"sjl/badwolf",
+		cmd = "LoadColors",
+	},
+	{
+		"jacoborus/tender.vim",
+		cmd = "LoadColors",
+	},
+	{
+		"tomasiser/vim-code-dark",
 		cmd = "LoadColors",
 	}
 }
