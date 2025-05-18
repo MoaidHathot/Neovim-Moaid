@@ -145,5 +145,25 @@ return {
 	{
 		"lifepillar/vim-gruvbox8",
 		cmd = "LoadColors",
+	},
+	{
+		"luisiacc/gruvbox-baby",
+		cmd = "LoadColors",
+	},
+	{
+		"jonathanfilip/vim-lucius",
+		cmd = "LoadColors",
+	},
+	{
+		"gosukiwi/vim-atom-dark",
+		cmd = "LoadColors",
+	},
+	{
+		"keitanakamura/neodark.vim",
+		cmd = "LoadColors",
+	},
+	{
+		"cormacrelf/vim-colors-github",
+		cmd = "LoadColors",
 	}
 }
