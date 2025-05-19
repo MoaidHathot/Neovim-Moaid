@@ -4,7 +4,7 @@ My Neovim Configuration for Windows and Linux :)
 # Installation
 
 #### Manual Installation for Windows & Linux
-	
+
 1. Update `XDG_CONFIG_HOME` if needed
     - Should point to the `config/` folder in this repo.
     - For example: `C:/Github/Neovim-Moaid/config`
