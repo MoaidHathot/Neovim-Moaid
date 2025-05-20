@@ -87,9 +87,13 @@ return {
 				capabilities = capabilities
 			})
 
-			-- lspconfig.codeql.setup({
-			-- 	capabilities = capabilities
-			-- })
+			lspconfig.eslint.setup({
+				capabilities = capabilities
+			})
+
+			lspconfig.tsserver.setup({
+				capabilities = capabilities
+			})
 
 			vim.keymap.set('n', 'K', vim.lsp.buf.hover, {})
 			vim.keymap.set('n', 'gd', vim.lsp.buf.definition, {})

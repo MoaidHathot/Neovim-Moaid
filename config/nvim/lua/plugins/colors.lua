@@ -165,5 +165,9 @@ return {
 	{
 		"cormacrelf/vim-colors-github",
 		cmd = "LoadColors",
+	},
+	{
+		"shaunsingh/nord.nvim",
+		cmd = "LoadColors",
 	}
 }
