@@ -21,7 +21,7 @@ return {
 			},
 			textobjects = {
 				move = {
-					ehnable = true,
+					enable = true,
 					set_jumps = true,
 					goto_next_start = {
 						["]m"] = "@function.outer",
