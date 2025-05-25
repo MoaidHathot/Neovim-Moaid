@@ -83,10 +83,6 @@ return {
 				capabilities = capabilities
 			})
 
-			lspconfig.pylsp.setup({
-				capabilities = capabilities
-			})
-
 			lspconfig.eslint.setup({
 				capabilities = capabilities
 			})
