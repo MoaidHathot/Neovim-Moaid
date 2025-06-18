@@ -97,11 +97,12 @@ workspaces:
     bind_to_monitor: 0
   - name: '9'
   - name: '0'
+    display_name: 'Docs'
     bind_to_monitor: 0
   - name: '-'
     display_name: 'Chat'
   - name: '\'
-    display_name: 'AI'
+    display_name: 'Presentation'
     bind_to_monitor: 0
   - name: '='
     display_name: 'Notes'
@@ -115,7 +116,7 @@ workspaces:
     display_name: 'System'
     bind_to_monitor: 1
   - name: ''''
-    display_name: 'Presentation'
+    display_name: 'AI'
     bind_to_monitor: 0
   - name: ';'
     display_name: 'Quick'
