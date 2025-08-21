@@ -1,5 +1,6 @@
 Set-Alias moaid nvim
 Set-Alias lg lazygit
+Set-Alias pp presenterm
 # Set-Alias .. cd..
 
 function ..
@@ -101,6 +102,23 @@ function Copy-Location
 	Get-Location | Set-Clipboard
 }
 
+function Copy-FileContent
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(ValueFromPipeline)]
+		$path
+	)
+
+	if ($path -and (Test-Path -Path $path -PathType Leaf))
+	{
+		Get-Content -Path $path | Set-Clipboard
+		return
+	}
+
+	Write-Host "Please provide a valid file path." -ForegroundColor Red
+}
+
 function Show-IL
 {
 	[CmdletBinding()]
@@ -199,6 +217,14 @@ function Remove-Shada
 	$shadaPath = "$localData/nvim-data/shada/"
 	Remove-Item $shadaPath -Recurse
 }
+
+function Remove-NvimLspLog
+{
+	$localData  = Get-LocalAppData
+	$nvimDataPath = "$localData/nvim-data/lsp.log"
+	Remove-Item $nvimDataPath
+}
+
 
 function Remove-NvimData
 {

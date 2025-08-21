@@ -119,7 +119,7 @@ workspaces:
     display_name: 'AI'
     bind_to_monitor: 0
   - name: ';'
-    display_name: 'Quick'
+    display_name: 'Slides'
     bind_to_monitor: 0
   - name: '['
     display_name: 'Recording'

@@ -1,6 +1,10 @@
 {
-  "$schema": "https://github.com/glzr-io/zebar/raw/v2.1.0/resources/settings-schema.json",
+  "$schema": "https://github.com/glzr-io/zebar/raw/v3.1.1/resources/settings-schema.json",
   "startupConfigs": [
-    "moaid\\zebar_config.zebar.json"
+    {
+      "pack": "moaid",
+      "widget": "zebar_config",
+      "preset": "default"
+    }
   ]
 }
