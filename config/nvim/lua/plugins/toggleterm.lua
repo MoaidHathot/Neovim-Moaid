@@ -17,6 +17,7 @@ return {
 
 			start_in_insert = true,
 			terminal_mappings = true,
+			insert_mappings = true,
 			-- direction = 'float',
 			-- shell = "pwsh.exe -NoLogo -NoProfile",
 			shell = "pwsh.exe -NoLogo",
@@ -24,6 +25,9 @@ return {
 			-- persist_mode = true,
 			persist_size = true,
 			close_on_exit = true,
+			  on_open = function(term)
+				vim.api.nvim_buf_set_keymap(term.bufnr, "t", "<Esc>", "<Esc>", { noremap = true, silent = true })
+			end,
 		})
 		-- function _lazygit_toggle()
 		-- local Terminal = require('toggleterm.terminal').Terminal
