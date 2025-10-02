@@ -46,7 +46,8 @@ config/lazygit
 config/nvim/lazy-lock.json
 config/gh
 config/gh-copilot
-
+config/.copilot
+config/configstore
 config/nushell
 config/k9s
 
@@ -55,3 +56,4 @@ test.sh
 .luarc.json
 
 spell/
+
