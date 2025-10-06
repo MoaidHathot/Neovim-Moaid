@@ -90,9 +90,10 @@ return {
 			},
 			{
 				"<leader>aa",
-				function() require("sidekick.cli").toggle() end,
+				function() require("sidekick.cli").toggle({ name = "copilot" }) end,
+				-- function() require("sidekick.cli").show({ name = "copilot" }) end,
 				mode = { "n", "v" },
-				desc = "Sidekick Toggle CLI",
+				desc = "Sidekick Toggle CLI (Copilot)",
 			},
 			{
 				"<leader>as",
