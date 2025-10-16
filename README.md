@@ -48,6 +48,8 @@ My Neovim Configuration for Windows and Linux :)
 
 8. Install html-tidy (for `nvim-rest`)
     - https://github.com/htacg/tidy-html5
+    - Using Windows via `winget`
+        - `winget install HTACG.tidy`
 
 9. Install `D2` (optional)
     - Using Windows via `Winget`
