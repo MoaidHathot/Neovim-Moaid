@@ -21,7 +21,7 @@ properties:
       id: Zig
       directives:
         description: Install Zig
-        allowPrerelease: true 
+        allowPrerelease: true
       settings:
         id: zig.zig
         source: winget
@@ -62,6 +62,13 @@ properties:
       directives:
         description: Install JQ
         allowPrerelease: true
+      settings:
+        id: jqlang.jq
+        source: winget
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: HTACG.tidy
+      directives:
+        description: Install tidy-html5
       settings:
         id: jqlang.jq
         source: winget

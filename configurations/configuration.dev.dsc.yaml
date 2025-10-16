@@ -171,6 +171,16 @@ properties:
         id: rsteube.Carapace
         source: winget
 
+    - resource: PSDscResources/Script
+      id: Install_github_copilot_cli
+      directives:
+        description: Install Github Copilot CLI
+      settings:
+        SetScript: |
+          'npm install -g @github/copilot'
+        GetScript: return $false
+        TestScript: return $false
+
     - resource: PSDscResources/Environment
       id: Moaid_Config_Path
       directives:
