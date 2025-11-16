@@ -7,7 +7,12 @@ return {
 		cmd = { "Mason", "MasonUpdate" },
 		version = "1.11.0",
 		config = function()
-			require('mason').setup()
+			require('mason').setup({
+				    registries = {
+					"github:mason-org/mason-registry",
+					"github:Crashdummyy/mason-registry",
+				},
+			})
 		end
 	},
 	{
@@ -30,6 +35,12 @@ return {
 		end
 	},
 	{
+		"seblyng/roslyn.nvim",
+		opts = {
+			-- your configuration comes here; leave empty for default settings
+		},
+	},
+	{
 		"neovim/nvim-lspconfig",
 		event = { "BufReadPre", "BufNewFile" },
 		-- event = "VeryLazy",
@@ -46,7 +57,16 @@ return {
 				capabilities = capabilities
 			})
 
-			lspconfig.omnisharp.setup({
+			-- lspconfig.omnisharp.setup({
+			-- 	capabilities = capabilities,
+			-- 	enable_roslyn_analysers = true,
+			-- 	enable_import_completion = true,
+			-- 	organize_imports_on_format = true,
+			-- 	enable_decompilation_support = true,
+			-- 	filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx', 'targets', 'tproj', 'slngen', 'fproj' },
+			-- })
+
+			lspconfig.roslyn.setup({
 				capabilities = capabilities,
 				enable_roslyn_analysers = true,
 				enable_import_completion = true,
