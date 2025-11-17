@@ -1,6 +1,7 @@
 Set-Alias moaid nvim
 Set-Alias lg lazygit
 Set-Alias pp presenterm
+set-Alias Copy-Path Copy-Location
 # Set-Alias .. cd..
 
 function ..
