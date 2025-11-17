@@ -123,11 +123,14 @@ local smart_find_files = function(opts)
 
 	local finder = finders.new_async_job({
 		command_generator = function(prompt)
-			if not prompt or prompt == "" then
-				return nil
-			end
-
 			local args = { "fd" }
+
+			-- If prompt is empty, just list all files
+			if not prompt or prompt == "" then
+				table.insert(args, "--color=never")
+				table.insert(args, "--type=f")
+				return args
+			end
 
 			local extracted = extract_args(prompt, opts)
 
@@ -271,7 +274,8 @@ return {
 		},
 		keys = {
 			{ '<leader>sF', "<cmd>Telescope find_files hidden=true no_ignore=true<CR>", { desc = 'Find All Files' } },
-			{ '<leader>sf', function() require('telescope.builtin').find_files() end,   { desc = 'Find Files' } },
+			{ '<leader>sff', function() require('telescope.builtin').find_files() end,   { desc = 'Find Files' } },
+			{ '<leader>sf', function() smart_find_files({}) end, { desc = "Smart Find Files with filters" }},
 			-- vim.keymap.set('n', '<C-p>', require('telescope.builtin').find_files, { desc = 'Find Files' })
 			-- { '<leader>sg', function() require('telescope.builtin').live_grep() end,    { desc = 'Find Grep' } },
 			-- { '<leader>sG',
@@ -311,7 +315,6 @@ return {
 			{ '<leader>sT', function() require('telescope.builtin').builtin() end,                              { desc = 'Find Telescope cached Pickers' } },
 			{ '<leader>sg', function() smart_grep({}) end, { desc = "Find Grep with filters" }},
 			{ '<leader>sG', function() smart_fd({}) end, { desc = "Find Grep with filters" }},
-			{ '<leader>sff', function() smart_find_files({}) end, { desc = "Smart Find Files with filters" }},
 		},
 	},
 	{
