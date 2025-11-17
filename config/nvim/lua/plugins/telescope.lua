@@ -111,6 +111,66 @@ local smart_grep = function(opts)
 	}):find()
 end
 
+local smart_find_files = function(opts)
+	opts.cwd = opts.cwd or vim.uv.cwd()
+	opts.delimeter = opts.delimeter or "  "
+	opts.title = opts.title or "Smart Find Files"
+
+	local pickers = require('telescope.pickers')
+	local finders = require('telescope.finders')
+	local make_entry = require('telescope.make_entry')
+	local config = require('telescope.config').values
+
+	local finder = finders.new_async_job({
+		command_generator = function(prompt)
+			if not prompt or prompt == "" then
+				return nil
+			end
+
+			local args = { "fd" }
+
+			local extracted = extract_args(prompt, opts)
+
+			if not extracted then
+				return nil
+			end
+
+			-- Add the search pattern
+			if extracted.prompt and extracted.prompt ~= "" then
+				table.insert(args, extracted.prompt)
+			end
+
+			-- Add file type/extension filter
+			if extracted.type and type(extracted.type) == "string" then
+				table.insert(args, "-e")
+				table.insert(args, (string.gsub(extracted.type, "%*%.", "")))  -- Remove *. prefix
+			end
+
+			-- Add command arguments (--hidden, --no-ignore, etc.)
+			local command_args = extracted.command_args or {}
+			table.insert(command_args, { "--color=never", "--type=f" })
+
+			local final_args = vim.tbl_flatten {
+				args,
+				command_args
+			}
+
+			return final_args
+		end,
+
+		entry_maker = make_entry.gen_from_file(opts),
+		cwd = opts.cwd,
+	})
+
+	pickers.new(opts, {
+		debounce = 100,
+		prompt_title = opts.title,
+		finder = finder,
+		previewer = config.file_previewer(opts),
+		sorter = require('telescope.sorters').empty(),
+	}):find()
+end
+
 local smart_fd = function(opts)
 	opts.cwd = opts.cwd or vim.uv.cwd()
 	opts.delimeter = opts.delimeter or "  "
@@ -251,6 +311,7 @@ return {
 			{ '<leader>sT', function() require('telescope.builtin').builtin() end,                              { desc = 'Find Telescope cached Pickers' } },
 			{ '<leader>sg', function() smart_grep({}) end, { desc = "Find Grep with filters" }},
 			{ '<leader>sG', function() smart_fd({}) end, { desc = "Find Grep with filters" }},
+			{ '<leader>sff', function() smart_find_files({}) end, { desc = "Smart Find Files with filters" }},
 		},
 	},
 	{
