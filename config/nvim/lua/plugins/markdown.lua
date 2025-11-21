@@ -2,11 +2,16 @@ return {
 	{
 		"iamcco/markdown-preview.nvim",
 		-- event = "VeryLazy",
+		enable = true,
 		cmd = { "MarkdownPreviewToggle", "MarkdownPreview", "MarkdownPreviewStop" },
 		ft = { "markdown", "md" },
-		build = function()
+		-- build = function()
 			-- vim.fn["mkdp#util#install"]()
-		end
+		-- end
+		build = "cd app && npm install",
+	    init = function()
+			vim.g.mkdp_filetypes = { "markdown" }
+		end,
 	},
 	{
 		"ellisonleao/glow.nvim",
@@ -19,7 +24,7 @@ return {
 	},
 	{
 		"OXY2DEV/markview.nvim",
-		-- enabled = false,
+		enable = false,
 		lazy = true,
 		-- ft = { "markdown", "md" },
 		cmd = "Markview",
