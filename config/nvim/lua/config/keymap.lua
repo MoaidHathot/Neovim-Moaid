@@ -140,3 +140,25 @@ vim.keymap.set('n', '<leader>hr', "<cmd>call clearmatches()<CR>", { desc = 'Togg
 
 vim.keymap.set({'n'}, '<leader>/', 'gcc', { remap = true, desc = 'Comment in Normal Mode' })
 vim.keymap.set({'v'}, '<leader>/', 'gc', { remap = true, desc = 'Comment in Visual Mode' })
+
+vim.keymap.set("n", "<leader>dr", function()
+	local Terminal = require("toggleterm.terminal").Terminal
+  -- 1. Get relative file path
+  local buf = vim.api.nvim_get_current_buf()
+  local abs_path = vim.api.nvim_buf_get_name(buf)
+  if abs_path == "" then
+    print("No file name for this buffer")
+    return
+  end
+
+  local rel_path = vim.fn.fnamemodify(abs_path, ":.")
+  local cmd = "dotnet run " .. rel_path .. "\n"
+
+  -- 2. Toggle the existing terminal (same behavior as Ctrl+\)
+  -- The default terminal is ID=1
+  local term = Terminal:new({ id = 1 })
+  term:toggle()
+
+  -- 3. Send the command to the terminal
+  term:send(cmd)
+end, { desc = "dotnet run current file in ToggleTerm" })

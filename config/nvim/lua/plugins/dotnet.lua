@@ -14,6 +14,9 @@ return {
 			{ '<leader>npr', "<cmd>:DotnetUI project package remove<CR>", { desc = '.NET remove project package', silent = true} },
 		},
 		opts = {
+			bootstrap = {
+				auto_bootstrap = false,
+			}
 			-- project_selection = {
 			-- 	path_display = 'filename_first',
 			-- }

@@ -11,6 +11,9 @@ return {
 		{ "<leader>5", function() require("harpoon.ui").nav_file(5) end },
 		{ "<leader>6", function() require("harpoon.ui").nav_file(6) end },
 		{ "<leader>7", function() require("harpoon.ui").nav_file(7) end },
+		{ "<leader>8", function() require("harpoon.ui").nav_file(8) end },
+		{ "<leader>9", function() require("harpoon.ui").nav_file(9) end },
+		{ "<leader>0", function() require("harpoon.ui").nav_file(10) end },
 	},
 	opts = {
 		global_settings = {

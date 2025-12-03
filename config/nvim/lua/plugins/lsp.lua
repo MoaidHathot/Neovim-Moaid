@@ -59,7 +59,13 @@ return {
 						enable_import_completion = true,
 						organize_imports_on_format = true,
 						enable_decompilation_support = true,
-					}
+					},
+					["csharp|projects"] = {
+						dotnet_enable_file_based_programs = true,
+					},
+					["csharp|code_lens"] = {
+						dotnet_enable_references_code_lens = false
+					},
 				}
 			}
 		end
