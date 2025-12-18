@@ -86,3 +86,10 @@ vim.api.nvim_create_autocmd("TermOpen", {
 		vim.keymap.set("t", "<esc>", "<C-\\><C-n>", { silent = true })
 	end,
 })
+
+vim.api.nvim_create_autocmd({ "BufRead", "BufNewFile" }, {
+  pattern = { "*/chart/templates/*.yaml", "*/chart/templates/*.yml" },
+  callback = function()
+    vim.bo.filetype = "helm"
+  end,
+})
