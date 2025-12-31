@@ -273,9 +273,9 @@ return {
 			}
 		},
 		keys = {
-			{ '<leader>sF', "<cmd>Telescope find_files hidden=true no_ignore=true<CR>", { desc = 'Find All Files' } },
-			{ '<leader>sff', function() require('telescope.builtin').find_files() end,   { desc = 'Find Files' } },
-			{ '<leader>sf', function() smart_find_files({}) end, { desc = "Smart Find Files with filters" }},
+			{ '<leader>sF', "<cmd>Telescope find_files hidden=true no_ignore=true<CR>", mode = "n", desc = 'Find All Files' },
+			{ '<leader>Sf', function() require('telescope.builtin').find_files() end, mode = "n", desc = 'Find Files' },
+			{ '<leader>sf', function() smart_find_files({}) end, mode = "n", desc = "Smart Find Files with filters" },
 			-- vim.keymap.set('n', '<C-p>', require('telescope.builtin').find_files, { desc = 'Find Files' })
 			-- { '<leader>sg', function() require('telescope.builtin').live_grep() end,    { desc = 'Find Grep' } },
 			-- { '<leader>sG',
@@ -285,36 +285,36 @@ return {
 			-- 				{ '--hidden', '--no-ignore' })
 			-- 		end }
 			-- 	end, { desc = 'Find Grep Everything' } },
-			{ '<leader>sb', function() require('telescope.builtin').buffers() end,                              { desc = 'Find Buffers' } },
-			{ '<leader>sh', function() require('telescope.builtin').help_tags() end,                            { desc = 'Find Help' } },
-			{ '<leader>sc', function() require('telescope.builtin').current_buffer_fuzzy_find() end,            { desc = 'Find in current buffer' } },
-			{ '<leader>sd', function() require('telescope.builtin').diagnostics() end,                          { desc = 'Find Diagnostics' } },
-			{ '<leader>sk', function() require('telescope.builtin').keymaps() end,                              { desc = 'Find Keymaps' } },
-			{ '<leader>sp', function() require('telescope.builtin').git_files() end,                            { desc = 'Find Project git files' } },
+			{ '<leader>sb', function() require('telescope.builtin').buffers() end, mode = "n", desc = 'Find Buffers' },
+			{ '<leader>sh', function() require('telescope.builtin').help_tags() end, mode = "n", desc = 'Find Help' },
+			{ '<leader>sc', function() require('telescope.builtin').current_buffer_fuzzy_find() end, mode = "n", desc = 'Find in current buffer' },
+			{ '<leader>sd', function() require('telescope.builtin').diagnostics() end, mode = "n", desc = 'Find Diagnostics' },
+			{ '<leader>sk', function() require('telescope.builtin').keymaps() end, mode = "n", desc = 'Find Keymaps' },
+			{ '<leader>sp', function() require('telescope.builtin').git_files() end, mode = "n", desc = 'Find Project git files' },
 			-- vim.keymap.set('n', '<leader>sB', ":Telescope file_browser path=%:p:h select_buffer=true<CR>",
 			-- { desc = "File Browser" })
 			-- vim.keymap.set('n', '<leader>sP', ":Telescope project<CR>", { desc = "Find Projects" })
-			{ '<leader>sr', function() require('telescope.builtin').registers() end,                            { desc = 'Find Registers' } },
-			{ '<leader>sR', function() require('telescope.builtin').resume() end,                               { desc = 'Open last picker' } },
-			{ '<leader>sm', function() require('telescope.builtin').marks() end,                                { desc = 'Find Marks' } },
+			{ '<leader>sr', function() require('telescope.builtin').registers() end, mode = "n", desc = 'Find Registers' },
+			{ '<leader>sR', function() require('telescope.builtin').resume() end, mode = "n", desc = 'Open last picker' },
+			{ '<leader>sm', function() require('telescope.builtin').marks() end, mode = "n", desc = 'Find Marks' },
 			-- vim.keymap.set('n', '<leader>sC', require('telescope.builtin').colorscheme, { desc = 'Find Color Scheme' })
-			{ '<leader>sC', function() require('telescope.builtin').colorscheme({ enable_preview = true }) end, { desc = 'Find Color Scheme' } },
-			{ '<leader>sj', function() require('telescope.builtin').jumplist() end,                             { desc = 'Find Jump List' } },
-			{ '<leader>so', function() require('telescope.builtin').oldfiles() end,                             { desc = 'Find Recent Files' } },
+			{ '<leader>sC', function() require('telescope.builtin').colorscheme({ enable_preview = true }) end, mode = "n", desc = 'Find Color Scheme' },
+			{ '<leader>sj', function() require('telescope.builtin').jumplist() end, mode = "n", desc = 'Find Jump List' },
+			{ '<leader>so', function() require('telescope.builtin').oldfiles() end, mode = "n", desc = 'Find Recent Files' },
 
-			{ '<leader>lQ', function() require('telescope.builtin').quickfix() end,                             { desc = 'Find Quick Fixes' } },
-			{ '<leader>gi', function() require('telescope.builtin').lsp_implementations() end,                  { desc = 'Find Implementations' } },
-			{ '<leader>gd', function() require('telescope.builtin').lsp_definitions() end,                      { desc = 'Find Definitions' } },
-			{ '<leader>gD', function() require('telescope.builtin').lsp_type_definitions() end,                 { desc = 'Find Definitions' } },
+			{ '<leader>lQ', function() require('telescope.builtin').quickfix() end, mode = "n", desc = 'Find Quick Fixes' },
+			{ '<leader>gi', function() require('telescope.builtin').lsp_implementations() end, mode = "n", desc = 'Find Implementations' },
+			{ '<leader>gd', function() require('telescope.builtin').lsp_definitions() end, mode = "n", desc = 'Find Definitions' },
+			{ '<leader>gD', function() require('telescope.builtin').lsp_type_definitions() end, mode = "n", desc = 'Find Definitions' },
 
-			{ '<leader>gb', function() require('telescope.builtin').git_branches() end,                         { desc = 'Git Branches' } },
-			{ '<leader>gs', function() require('telescope.builtin').git_status() end,                           { desc = 'Git Status' } },
-			{ '<leader>gS', function() require('telescope.builtin').git_stash() end,                            { desc = 'Git Stash' } },
+			{ '<leader>gb', function() require('telescope.builtin').git_branches() end, mode = "n", desc = 'Git Branches' },
+			{ '<leader>gs', function() require('telescope.builtin').git_status() end, mode = "n", desc = 'Git Status' },
+			{ '<leader>gS', function() require('telescope.builtin').git_stash() end, mode = "n", desc = 'Git Stash' },
 
-			{ '<leader>st', function() require('telescope.builtin').builtin() end,                              { desc = 'Find Telescope Pickers' } },
-			{ '<leader>sT', function() require('telescope.builtin').builtin() end,                              { desc = 'Find Telescope cached Pickers' } },
-			{ '<leader>sg', function() smart_grep({}) end, { desc = "Find Grep with filters" }},
-			{ '<leader>sG', function() smart_fd({}) end, { desc = "Find Grep with filters" }},
+			{ '<leader>st', function() require('telescope.builtin').builtin() end, mode = "n", desc = 'Find Telescope Pickers' },
+			{ '<leader>sT', function() require('telescope.builtin').builtin() end, mode = "n", desc = 'Find Telescope cached Pickers' },
+			{ '<leader>sg', function() smart_grep({}) end, mode = "n", desc = "Find Grep with filters" },
+			{ '<leader>sG', function() smart_fd({}) end, mode = "n", desc = "Find Grep with filters" },
 		},
 	},
 	{

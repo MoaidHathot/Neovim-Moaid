@@ -68,6 +68,9 @@ return {
 		"folke/sidekick.nvim",
 		opts = {
 			-- add any options here
+			nes = {
+				enabled = false, -- disable automatic next edit suggestions
+			},
 			cli = {
 				mux = {
 					backend = "zellij",
@@ -77,6 +80,11 @@ return {
 		},
 		-- stylua: ignore
 		keys = {
+			{
+				"<leader>an",
+				function() require("sidekick").nes() end,
+				desc = "Trigger Next Edit Suggestion",
+			},
 			{
 				"<tab>",
 				function()
