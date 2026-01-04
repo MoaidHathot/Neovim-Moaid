@@ -25,6 +25,7 @@ function Get-LocalAppData
 
 function Start-Glaze
 {
+	Set-TerminalTitleFast "GlazeWM"
 	$glazeConfigPath = "$env:Moaid_Config_Path/config/glazewm/glazewm_config.yaml"
 	write-host $glazeConfigPath
 	glazewm start --config="$glazeConfigPath"
@@ -234,6 +235,15 @@ function Set-TerminalTitle
 		[string]$Title
 	)
 	$Host.UI.RawUI.WindowTitle = $Title
+}
+
+function Set-TerminalTitleFast
+{
+	param (
+		[string]$Title
+	)
+	# Set title asynchronously using ANSI escape sequence (non-blocking write)
+	[Console]::Write("`e]0;$Title`a")
 }
 
 function moaid
