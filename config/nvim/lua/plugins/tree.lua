@@ -5,9 +5,10 @@ return {
 		-- event = "VeryLazy",
 		branch = "v3.x",
 		keys = {
-			{ '<leader>e', ':Neotree reveal toggle<CR>', desc = "Toggle Neotree" },
+			{ mode = { 'n', 'v' },'<leader>e', ':Neotree reveal toggle<CR>', desc = "Toggle Neotree" },
 			{
 				'<leader>tf',
+				mode = { 'n', 'v' },
 				function()
 					local currBuffer = vim.api.nvim_buf_get_name(0)
 					vim.cmd("Neotree reveal_file=" .. currBuffer)
@@ -42,9 +43,9 @@ return {
 			"nvim-tree/nvim-web-devicons"
 		},
 		keys = {
-			{ '<leader>e',  vim.cmd.NvimTreeToggle },
-			{ '<leader>tc', vim.cmd.NvimTreeCollapse },
-			{ '<leader>tf', vim.cmd.NvimTreeFindFile }
+			{ mode = { 'n', 'v' },'<leader>e',  vim.cmd.NvimTreeToggle },
+			{ mode = { 'n', 'v' },'<leader>tc', vim.cmd.NvimTreeCollapse },
+			{ mode = { 'n', 'v' },'<leader>tf', vim.cmd.NvimTreeFindFile }
 		},
 		config = function()
 			require('nvim-tree').setup({

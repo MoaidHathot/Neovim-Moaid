@@ -3,6 +3,6 @@ return {
 	-- event = "VeryLazy",
 	-- lazy = false,
 	keys = {
-		{ "<leader>la", "<cmd>lua require('actions-preview').code_actions()<CR>", desc = "Code Actions" },
+		{ mode = { 'n', 'v' }, "<leader>la", "<cmd>lua require('actions-preview').code_actions()<CR>", desc = "Code Actions" },
 	}
 }

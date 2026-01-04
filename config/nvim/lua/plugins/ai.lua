@@ -82,6 +82,7 @@ return {
 		keys = {
 			{
 				"<leader>an",
+				mode = { 'n', 'v' },
 				function() require("sidekick").nes() end,
 				desc = "Trigger Next Edit Suggestion",
 			},
@@ -105,6 +106,8 @@ return {
 			},
 			{
 				"<leader>as",
+				mode = { 'n', 'v' },
+
 				function() require("sidekick.cli").select() end,
 				-- Or to select only installed tools:
 				-- require("sidekick.cli").select({ filter = { installed = true } })
