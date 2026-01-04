@@ -98,11 +98,18 @@ return {
 				desc = "Goto/Apply Next Edit Suggestion",
 			},
 			{
-				"<leader>aa",
+				"<leader>ao",
 				function() require("sidekick.cli").toggle({ name = "copilot" }) end,
 				-- function() require("sidekick.cli").show({ name = "copilot" }) end,
 				mode = { "n", "v" },
 				desc = "Sidekick Toggle CLI (Copilot)",
+			},
+			{
+				"<leader>aa",
+				function() require("sidekick.cli").toggle({ name = "opencode" }) end,
+				-- function() require("sidekick.cli").show({ name = "copilot" }) end,
+				mode = { "n", "v" },
+				desc = "Sidekick Toggle CLI (OpenCode)",
 			},
 			{
 				"<leader>as",
