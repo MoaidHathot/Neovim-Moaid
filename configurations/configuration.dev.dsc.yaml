@@ -171,14 +171,14 @@ properties:
         id: rsteube.Carapace
         source: winget
 
-    - resource: Microsoft.WinGet.DSC/WinGetPackage
-      id: ajeetdsouza.zoxide
-      directives:
-        description: Install Zoxide
-        allowPrerelease: true
-      settings:
-        id: ajeetdsouza.zoxide
-        source: winget
+    # - resource: Microsoft.WinGet.DSC/WinGetPackage
+    #   id: ajeetdsouza.zoxide
+    #   directives:
+    #     description: Install Zoxide
+    #     allowPrerelease: true
+    #   settings:
+    #     id: ajeetdsouza.zoxide
+    #     source: winget
 
     - resource: PSDscResources/Script
       id: Install_github_copilot_cli
@@ -218,3 +218,14 @@ properties:
         GetScript: return $false
         TestScript: return $false
 
+    - resource: PSDscResources/Script
+      id: Install_Z_Module_PowerShell_Gallery
+      directives:
+        description: Install Z module from PowerShell Gallery
+      settings:
+        GetScript: |
+          return (Get-Module -ListAvailable -Name Z -ErrorAction SilentlyContinue) -ne $null
+        TestScript: |
+          return (Get-Module -ListAvailable -Name Z -ErrorAction SilentlyContinue) -ne $null
+        SetScript: |
+          Install-Module -Name Z -RequiredVersion '1.1.9' -Force -Confirm:$false -AcceptLicense
