@@ -1,4 +1,4 @@
-Set-Alias moaid nvim
+# Set-Alias moaid nvim
 Set-Alias lg lazygit
 Set-Alias pp presenterm
 set-Alias Copy-Path Copy-Location
@@ -226,6 +226,25 @@ function moaid2 {
     $env:XDG_CONFIG_HOME = "P:\Github\Neovim-Moaid\configurations/../config2/"
     nvim @args
     $env:XDG_CONFIG_HOME = "P:\Github\Neovim-Moaid\configurations/../config/"
+}
+
+function Set-TerminalTitle
+{
+	param (
+		[string]$Title
+	)
+	$Host.UI.RawUI.WindowTitle = $Title
+}
+
+function moaid
+{
+	$dirName = Split-Path -Leaf (Get-Location)
+	
+	# Set title asynchronously using ANSI escape sequence (non-blocking write)
+	# Set-TerminalTitle "nvim: $dirName"
+	[Console]::Write("`e]0;nvim: $dirName`a")
+	
+	nvim @args
 }
 
 # Invoke-Expression (&starship init powershell)
