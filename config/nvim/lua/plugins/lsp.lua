@@ -105,8 +105,8 @@ return {
 	},
 	{
 		"jay-babu/mason-null-ls.nvim",
-		event = { "BufReadPre", "BufNewFile" },
-		-- event = { 'VeryLazy' },
+		-- event = { "BufReadPre", "BufNewFile" },
+		event = { 'VeryLazy' },
 		-- enabled = false,
 		dependencies = {
 			"williamboman/mason.nvim",
