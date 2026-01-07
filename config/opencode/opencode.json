@@ -1,0 +1,44 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "keybinds": {
+    "leader": "\\",
+	"session_interrupt": "ctrl+c",
+    "app_exit": "ctrl+d"
+  },
+  "mcp": {
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "ev2": {
+      "type": "local",
+      "command": [
+        "dotnet",
+        "run",
+        "--project",
+        "P:\\Work\\Networking\\Repo\\ev2-mcp\\src\\mcp\\ev2\\ev2mcp\\"
+      ]
+    },
+    "azure": {
+      "type": "local",
+      "command": [
+        "dnx",
+        "Azure.Mcp",
+        "--yes",
+        "--",
+        "azmcp",
+        "server",
+        "start"
+      ]
+    },
+    "azdo": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@azure-devops/mcp",
+        "msazure"
+      ]
+    }
+  }
+}
