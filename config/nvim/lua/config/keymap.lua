@@ -141,6 +141,9 @@ vim.keymap.set('n', '<leader>hr', "<cmd>call clearmatches()<CR>", { desc = 'Togg
 vim.keymap.set({'n'}, '<leader>/', 'gcc', { remap = true, desc = 'Comment in Normal Mode' })
 vim.keymap.set({'v'}, '<leader>/', 'gc', { remap = true, desc = 'Comment in Visual Mode' })
 
+-- Terminal mode: alternative escape (for TUI apps like OpenCode where <Esc> passes through)
+vim.keymap.set('t', '<C-]>', '<C-\\><C-n>', { desc = 'Exit Terminal Mode', silent = true })
+
 vim.keymap.set("n", "<leader>dr", function()
 	local Terminal = require("toggleterm.terminal").Terminal
   -- 1. Get relative file path

@@ -83,7 +83,27 @@ vim.api.nvim_create_autocmd("FileType", {
 vim.api.nvim_create_autocmd("TermOpen", {
 	group = vim.api.nvim_create_augroup("custom-terminal-group", { clear = true }),
 	callback = function()
-		vim.keymap.set("t", "<esc>", "<C-\\><C-n>", { silent = true })
+		local bufnr = vim.api.nvim_get_current_buf()
+		local bufname = vim.api.nvim_buf_get_name(bufnr)
+
+		-- List of CLI tools that need <Esc> to pass through (TUI applications)
+		local passthrough_patterns = {
+			"opencode",
+			"lazygit",
+			"copilot",
+			"sidekick",
+		}
+
+		for _, pattern in ipairs(passthrough_patterns) do
+			if bufname:lower():find(pattern) then
+				-- Pass <Esc> through to the terminal application
+				vim.keymap.set("t", "<Esc>", "<Esc>", { buffer = bufnr, noremap = true, silent = true })
+				return
+			end
+		end
+
+		-- Default: <Esc> exits terminal mode
+		vim.keymap.set("t", "<esc>", "<C-\\><C-n>", { buffer = bufnr, silent = true })
 	end,
 })
 
