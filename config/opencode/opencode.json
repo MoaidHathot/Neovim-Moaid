@@ -13,10 +13,10 @@
     "ev2": {
       "type": "local",
       "command": [
-        "dotnet",
-        "run",
-        "--project",
-        "P:\\Work\\Networking\\Repo\\ev2-mcp\\src\\mcp\\ev2\\ev2mcp\\"
+        "pwsh",
+        "-NoProfile",
+        "-Command",
+        "Push-Location 'P:\\Work\\Networking\\Repo\\ev2-mcp\\src\\mcp\\ev2\\ev2mcp'; dotnet run; Pop-Location"
       ]
     },
     "azure": {
@@ -40,17 +40,14 @@
         "msazure"
       ]
     },
-	"dtfx": {
-	"type": "local",
-		"command": [
-			"dotnet",
-			"run",
-			"--project",
-			"P:\\Playground\\DurableTasksMcp",
-			"--",
-			"-s",
-			"ztsdevlndt"
-		]
-	}
+    "dtfx": {
+      "type": "local",
+      "command": [
+        "pwsh",
+        "-NoProfile",
+        "-Command",
+        "Push-Location 'P:\\Playground\\DurableTasksMcp'; dotnet run -- -s ztsdevlndt; Pop-Location"
+      ]
+    }
   }
 }

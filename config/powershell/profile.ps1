@@ -257,6 +257,29 @@ function moaid
 	nvim @args
 }
 
+function Invoke-FromDirectory
+{
+	[CmdletBinding()]
+	param (
+		[string]$Directory,
+		
+		[Parameter(Mandatory = $true, ValueFromRemainingArguments = $true)]
+		[string[]]$Command
+	)
+
+	if (-not $Directory) {
+		$Directory = Split-Path -Parent $MyInvocation.PSCommandPath
+	}
+
+	Push-Location $Directory
+	try {
+		Invoke-Expression ($Command -join ' ')
+	}
+	finally {
+		Pop-Location
+	}
+}
+
 # Invoke-Expression (&starship init powershell)
 
 # Invoke-Expression (& { (zoxide init powershell | Out-String) })
