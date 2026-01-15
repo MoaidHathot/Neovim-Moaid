@@ -39,6 +39,18 @@
         "@azure-devops/mcp",
         "msazure"
       ]
-    }
+    },
+	"dtfx": {
+	"type": "local",
+		"command": [
+			"dotnet",
+			"run",
+			"--project",
+			"P:\\Playground\\DurableTasksMcp",
+			"--",
+			"-s",
+			"ztsdevlndt"
+		]
+	}
   }
 }
