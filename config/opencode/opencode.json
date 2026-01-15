@@ -22,22 +22,19 @@
     "azure": {
       "type": "local",
       "command": [
-        "dnx",
-        "Azure.Mcp",
-        "--yes",
-        "--",
-        "azmcp",
-        "server",
-        "start"
+        "pwsh",
+        "-NoProfile",
+        "-Command",
+        "Push-Location $env:TEMP; dnx Azure.Mcp --yes -- azmcp server start; Pop-Location"
       ]
     },
     "azdo": {
       "type": "local",
       "command": [
-        "npx",
-        "-y",
-        "@azure-devops/mcp",
-        "msazure"
+        "pwsh",
+        "-NoProfile",
+        "-Command",
+        "Push-Location $env:TEMP; npx -y @azure-devops/mcp msazure; Pop-Location"
       ]
     },
     "dtfx": {
