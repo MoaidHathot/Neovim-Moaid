@@ -144,15 +144,9 @@ window_rules:
   - commands: ['move --workspace 0', 'focus --workspace 0']
     match:
       - window_title: { regex: "/.+[Pp]ower[Pp]oint [Pp]resenter [Vv]iew/" }
-  - commands: ['move --workspace -']
-    match:
-      - window_process: { regex: "ms-teams" }
   - commands: ['move --workspace ]']
     match:
       - window_process: { regex: "olk|olkexthost" }
-  - commands: ['move --workspace 2']
-    match:
-      - window_process: { regex: "msedge" }
 
 binding_modes:
   # When enabled, the focused window can be resized via arrow keys or HJKL.
