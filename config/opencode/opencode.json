@@ -2,8 +2,6 @@
   "$schema": "https://opencode.ai/config.json",
   "keybinds": {
     "leader": "\\",
-	"session_interrupt": "ctrl+c",
-    "app_exit": "ctrl+d"
   },
   "mcp": {
     "context7": {
