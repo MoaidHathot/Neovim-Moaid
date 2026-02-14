@@ -1,5 +1,5 @@
 return {
-	{
+{
 		"nvim-neo-tree/neo-tree.nvim",
 		enabled = true,
 		-- event = "VeryLazy",
@@ -21,6 +21,26 @@ return {
 			"nvim-tree/nvim-web-devicons", -- not strictly required, but recommended
 			"MunifTanjim/nui.nvim",
 			-- "3rd/image.nvim", -- Optional image support in preview window: See `# Preview Mode` for more information
+		},
+		opts = {
+			window = {
+				mappings = {
+					["Y"] = function(state)
+						-- Copy absolute path to clipboard
+						local node = state.tree:get_node()
+						local filepath = node:get_id()
+						vim.fn.setreg("+", filepath)
+						vim.notify("Copied path: " .. filepath)
+					end,
+					["y"] = function(state)
+						-- Copy file name to clipboard
+						local node = state.tree:get_node()
+						local filename = node.name
+						vim.fn.setreg("+", filename)
+						vim.notify("Copied name: " .. filename)
+					end,
+				},
+			},
 		},
 		-- opts = function(_, opts)
 		-- 	local function on_move(data)
