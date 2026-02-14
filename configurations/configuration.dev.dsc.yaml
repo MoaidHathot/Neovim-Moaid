@@ -141,7 +141,7 @@ properties:
         description: Install k9s
         allowPrerelease: true
       settings:
-        id: sharkdp.bat
+        id: Derailed.k9s
         source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
@@ -210,11 +210,13 @@ properties:
 
     - resource: PSDscResources/Script
       id: Update_PowerShell_Profile
+      dependsOn:
+        - Moaid_Config_Path
       directives:
         description: Update PowerShells' Profile
       settings:
         SetScript: |
-          '. ${WinGetConfigRoot}/../config/powershell/profile.ps1' > "$([System.Environment]::GetFolderPath('MyDocuments'))/PowerShell/Microsoft.PowerShell_profile.ps1"
+          '. "$env:Moaid_Config_Path/config/powershell/profile.ps1"' > "$([System.Environment]::GetFolderPath('MyDocuments'))/PowerShell/Microsoft.PowerShell_profile.ps1"
         GetScript: return $false
         TestScript: return $false
 
