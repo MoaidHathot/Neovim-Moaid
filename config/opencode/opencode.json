@@ -9,6 +9,7 @@
       "url": "https://mcp.context7.com/mcp"
     },
     "ev2": {
+	"enabled": false,
       "type": "local",
       "command": [
         "pwsh",
@@ -18,6 +19,7 @@
       ]
     },
     "azure": {
+	"enabled": false,
       "type": "local",
       "command": [
         "pwsh",
@@ -27,6 +29,7 @@
       ]
     },
     "azdo": {
+	"enabled": false,
       "type": "local",
       "command": [
         "pwsh",
@@ -36,6 +39,7 @@
       ]
     },
     "dtfx": {
+	"enabled": false,
       "type": "local",
       "command": [
         "pwsh",

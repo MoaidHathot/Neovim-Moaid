@@ -113,3 +113,33 @@ vim.api.nvim_create_autocmd({ "BufRead", "BufNewFile" }, {
     vim.bo.filetype = "helm"
   end,
 })
+
+-- Auto-enter terminal mode for TUI applications (OpenCode, lazygit, etc.)
+-- This prevents Neovim's normal mode from interfering with the application's keybindings
+vim.api.nvim_create_autocmd({"BufEnter", "WinEnter"}, {
+    group = augroup("tui-auto-terminal-mode"),
+    callback = function()
+        local bufnr = vim.api.nvim_get_current_buf()
+        local bufname = vim.api.nvim_buf_get_name(bufnr)
+        
+        -- Only apply to terminal buffers
+        if vim.bo[bufnr].buftype ~= "terminal" then
+            return
+        end
+        
+        -- List of TUI applications that should auto-enter terminal mode
+        local auto_terminal_patterns = {
+            "opencode",
+            "lazygit",
+            "copilot",
+            "sidekick",
+        }
+        
+        for _, pattern in ipairs(auto_terminal_patterns) do
+            if bufname:lower():find(pattern) then
+                vim.cmd("startinsert")
+                return
+            end
+        end
+    end,
+})
