@@ -280,6 +280,27 @@ function Invoke-FromDirectory
 	}
 }
 
+function Save-TerminalSettings {
+    <#
+    .SYNOPSIS
+    Saves current Windows Terminal settings to the dotfiles repository.
+    .DESCRIPTION
+    Copies the current Windows Terminal Preview settings.json to your dotfiles repo,
+    allowing you to commit and push the changes.
+    #>
+    $sourcePath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json"
+    $targetPath = "$env:Moaid_Config_Path\config\windows-terminal\settings.json"
+
+    if (!(Test-Path $sourcePath)) {
+        Write-Error "Windows Terminal settings not found at: $sourcePath"
+        return
+    }
+
+    Copy-Item $sourcePath $targetPath -Force
+    Write-Host "Windows Terminal settings saved to: $targetPath" -ForegroundColor Green
+    Write-Host "Don't forget to commit and push your changes!" -ForegroundColor Yellow
+}
+
 # Invoke-Expression (&starship init powershell)
 
 # Invoke-Expression (& { (zoxide init powershell | Out-String) })

@@ -72,6 +72,29 @@ properties:
         id: Microsoft.WindowsTerminal.Preview
         source: winget
 
+    - resource: PSDscResources/Script
+      id: Windows_Terminal_Settings_Copy
+      dependsOn:
+        - Windows_Terminal_Preview
+        - Moaid_Config_Path
+      directives:
+        description: Copy Windows Terminal settings from dotfiles
+      settings:
+        TestScript: |
+          return $false
+        GetScript: |
+          return @{ Result = "N/A" }
+        SetScript: |
+          $sourcePath = "$env:Moaid_Config_Path\config\windows-terminal\settings.json"
+          $targetPath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json"
+          $targetDir = Split-Path $targetPath
+
+          if (!(Test-Path $targetDir)) {
+            New-Item -ItemType Directory -Path $targetDir -Force
+          }
+
+          Copy-Item $sourcePath $targetPath -Force
+
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: Ditto_Clipboard_Manager
       directives:
