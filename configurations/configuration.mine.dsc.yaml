@@ -63,3 +63,12 @@ properties:
       settings:
         id: Spotify.Spotify
         source: winget
+
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: Obsidian
+      directives:
+        description: Install Obsidian
+        allowPrerelease: false
+      settings:
+        id: Obsidian.Obsidian
+        source: winget
