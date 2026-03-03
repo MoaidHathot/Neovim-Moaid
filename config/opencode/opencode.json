@@ -1,8 +1,5 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "keybinds": {
-    "leader": "\\",
-  },
   "mcp": {
     "context7": {
       "type": "remote",
