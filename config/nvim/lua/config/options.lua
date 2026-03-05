@@ -61,6 +61,8 @@ vim.opt.formatoptions:remove { 'c', 'r', 'o' }
 -- vim.opt.foldexpr = "nvim_treesitter#foldexpr()"
 vim.opt.foldmethod = "manual"
 
+vim.opt.winborder = 'rounded'
+
 -- Is not supported in Windows Terminal. This is a new feature in 0.10.0 for preventing screen flippering
 -- https://gist.github.com/christianparpart/d8a62cc1ab659194337d73e399004036
--- vim.opt.termsync = false
+vim.opt.termsync = false
