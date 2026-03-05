@@ -29,13 +29,7 @@ return {
 	{
 		'LunarVim/lunar.nvim',
 		-- event = "VeryLazy",
-		config = function()
-			-- vim.cmd.colorscheme "lunar"
-			-- vim.cmd.colorscheme "retrobox"
-			-- vim.cmd.colorscheme "tokyonight-moon"
-			vim.cmd.colorscheme "gruvbox"
-			-- vim.api.nvim_create_user_command( 'LoadColors', function(opts) end, {})
-		end
+		cmd = "LoadColors",
 	},
 	{
 		"NLKNguyen/papercolor-theme",
@@ -108,7 +102,10 @@ return {
 	},
 	{
 		"morhetz/gruvbox",
-		cmd = "LoadColors",
+		priority = 1000,
+		config = function()
+			vim.cmd.colorscheme "gruvbox"
+		end
 	},
 	{
 		"ellisonleao/gruvbox.nvim",

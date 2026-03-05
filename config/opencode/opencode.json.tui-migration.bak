@@ -1,0 +1,52 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "keybinds": {
+    "leader": "\\",
+  },
+  "mcp": {
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "ev2": {
+	"enabled": false,
+      "type": "local",
+      "command": [
+        "pwsh",
+        "-NoProfile",
+        "-Command",
+        "Push-Location 'P:\\Work\\Networking\\Repo\\ev2-mcp\\src\\mcp\\ev2\\ev2mcp'; dotnet run; Pop-Location"
+      ]
+    },
+    "azure": {
+	"enabled": false,
+      "type": "local",
+      "command": [
+        "pwsh",
+        "-NoProfile",
+        "-Command",
+        "Push-Location $env:TEMP; dnx Azure.Mcp --yes -- azmcp server start; Pop-Location"
+      ]
+    },
+    "azdo": {
+	"enabled": false,
+      "type": "local",
+      "command": [
+        "pwsh",
+        "-NoProfile",
+        "-Command",
+        "Push-Location $env:TEMP; npx -y @azure-devops/mcp msazure; Pop-Location"
+      ]
+    },
+    "dtfx": {
+	"enabled": false,
+      "type": "local",
+      "command": [
+        "pwsh",
+        "-NoProfile",
+        "-Command",
+        "Push-Location 'P:\\Playground\\DurableTasksMcp'; dotnet run -- -s ztsdevlndt; Pop-Location"
+      ]
+    }
+  }
+}

@@ -19,6 +19,7 @@ return {
 		"williamboman/mason-lspconfig.nvim",
 		-- event = { "BufReadPre", "BufNewFile" },
 		-- version = "1.32.0",
+		event = "VeryLazy",
 		dependencies = {
 			"williamboman/mason.nvim",
 			"neovim/nvim-lspconfig",
@@ -26,14 +27,10 @@ return {
 		opts = {
 			auto_install = false,
 		},
-		config = function()
-			require('mason-lspconfig').setup({
-				-- ensure_installed = { "lua_ls", "omnisharp", "bicep" }
-			})
-		end
 	},
 	{
 		"seblyng/roslyn.nvim",
+		ft = { "cs", "vb", "csproj", "sln", "slnx", "props", "csx", "targets" },
 		opts = {
 			-- your configuration comes here; leave empty for default settings
 		},
@@ -68,25 +65,7 @@ return {
 					},
 				}
 			}
-		end
-	},
-	{
-		'nvimtools/none-ls.nvim',
-		-- event = { "BufReadPre", "BufNewFile" },
-		-- lazy = true,
-		event = { "BufReadPre", "BufNewFile" },
-		-- event = "VeryLazy",
-		config = function()
-			local null_ls = require('null-ls')
-			null_ls.setup({
-				sources = {
-					-- null_ls.builtins.formatting.stylua,
-					-- null_ls.builtins.formatting.csharpier,
-					-- null_ls.builtins.formatting.yamlfmt,
-					-- null_ls.builtins.formatting.black,
-					-- null_ls.builtins.formatting.isort,
-				}
-			})
+
 			vim.keymap.set('n', '<leader>lff', function() vim.lsp.buf.format({ async = true }) end, { desc = "Format document" })
 			vim.keymap.set('n', '<leader>lr', vim.lsp.buf.rename, { desc = "Rename Symbol" })
 			vim.keymap.set({ 'n', 'i' }, '<f2>', vim.lsp.buf.rename, { desc = "Rename Symbol" })
@@ -104,10 +83,30 @@ return {
 		end
 	},
 	{
+		'nvimtools/none-ls.nvim',
+		-- event = { "BufReadPre", "BufNewFile" },
+		-- lazy = true,
+		enabled = false,
+		event = { "BufReadPre", "BufNewFile" },
+		-- event = "VeryLazy",
+		config = function()
+			local null_ls = require('null-ls')
+			null_ls.setup({
+				sources = {
+					-- null_ls.builtins.formatting.stylua,
+					-- null_ls.builtins.formatting.csharpier,
+					-- null_ls.builtins.formatting.yamlfmt,
+					-- null_ls.builtins.formatting.black,
+					-- null_ls.builtins.formatting.isort,
+				}
+			})
+		end
+	},
+	{
 		"jay-babu/mason-null-ls.nvim",
 		-- event = { "BufReadPre", "BufNewFile" },
 		event = { 'VeryLazy' },
-		-- enabled = false,
+		enabled = false,
 		dependencies = {
 			"williamboman/mason.nvim",
 			"nvimtools/none-ls.nvim",
@@ -122,7 +121,7 @@ return {
 	{
 		'https://git.sr.ht/~whynothugo/lsp_lines.nvim',
 		-- event = "VeryLazy",
-		event = { "BufReadPre", "BufNewFile" },
+		event = { "BufReadPost", "BufNewFile" },
 		config = function()
 			require('lsp_lines').setup()
 

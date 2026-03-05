@@ -33,6 +33,7 @@ require("lazy").setup({
 	},
 	install = { colorscheme = { "nightfox", "habamax" } },
 	change_detection = {
+		enabled = false,
 		notify = false
 	},
 	performance = {
@@ -40,8 +41,8 @@ require("lazy").setup({
 			-- disable some rtp plugins
 			disabled_plugins = {
 				"gzip",
-				-- "matchit",
-				-- "matchparen",
+				"matchit",
+				"matchparen",
 				"man",
 				"rplugin",
 				"netrwPlugin",
@@ -49,6 +50,7 @@ require("lazy").setup({
 				"tohtml",
 				"tutor",
 				"zipPlugin",
+				"spellfile",
 			},
 		},
 	}
@@ -56,4 +58,3 @@ require("lazy").setup({
 
 require("config.autocmds")
 require("config.keymap")
-require("config.overrides")
