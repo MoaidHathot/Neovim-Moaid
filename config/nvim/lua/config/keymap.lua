@@ -1,5 +1,3 @@
-vim.g.mapleader = " "
-
 -- save document
 vim.keymap.set({'n', 'i', 'v'}, "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })
 -- vim.keymap.set("i", "<C-s>", vim.cmd.w, { desc = "Save Buffer", silent = true })

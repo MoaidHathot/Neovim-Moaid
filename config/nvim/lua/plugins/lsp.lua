@@ -17,9 +17,8 @@ return {
 	},
 	{
 		"williamboman/mason-lspconfig.nvim",
-		-- event = { "BufReadPre", "BufNewFile" },
-		-- version = "1.32.0",
 		event = "VeryLazy",
+		-- version = "1.32.0",
 		dependencies = {
 			"williamboman/mason.nvim",
 			"neovim/nvim-lspconfig",
@@ -37,7 +36,6 @@ return {
 	},
 	{
 		"neovim/nvim-lspconfig",
-		-- event = { "BufReadPre", "BufNewFile" },
 		event = { "BufReadPost", "BufNewFile" },
 		-- event = "VeryLazy",
 		-- lazy = true,

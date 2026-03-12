@@ -32,7 +32,12 @@ vim.g.maplocalleader = "\\"
 
 vim.opt.autowrite = true          -- Enable auto write
 vim.opt.completeopt = "menu,menuone,noselect"
-vim.opt.clipboard = "unnamedplus" -- Sync with system clipboard
+-- Sync with system clipboard
+-- Since this operation is synchronous and can be relatively slow (specially on Windows), schedule it to make it asynchrounous
+vim.schedule(function()
+  vim.opt.clipboard = "unnamedplus"
+end)
+-- vim.opt.clipboard = "unnamedplus" -- Sync with system clipboard
 
 vim.opt.confirm = true            -- Confirm to save changes before exiting modified buffer
 vim.opt.cursorline = true         -- Enable highlighting of the current line
