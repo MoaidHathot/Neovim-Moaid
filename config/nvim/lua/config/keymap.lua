@@ -18,9 +18,27 @@ vim.keymap.set('n', '<C-Del>', "ce")
 -- vim.keymap.set('n', '<C><BS>', "cb<Esc>")
 -- vim.keymap.set('n', '<C-backspace>', "<Esc>cb")
 
--- vim.keymap.set('n', '<leader>q', ':q!<CR>:q!<CR>:q!<CR>')
-vim.keymap.set({ 'n', 'v' }, '<leader>q', ':qa<CR>:qa<CR>:qa<CR>', { desc = 'Quit nvim' })
-vim.keymap.set({ 'n', 't', 'v' }, '<leader>Q', ':q!<CR>:q!<CR>:q!<CR>', { desc = 'Quit nvim with Force' })
+-- Graceful quit: close terminal buffers first to prevent exit freeze,
+-- then quit all. Terminal processes (pwsh, lazygit, etc.) can block Neovim's
+-- exit if they're still running.
+local function quit_nvim(force)
+	-- Force-delete all terminal buffers to kill running processes
+	for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+		if vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == 'terminal' then
+			pcall(vim.api.nvim_buf_delete, buf, { force = true })
+		end
+	end
+	-- Stop all LSP clients to prevent them from blocking shutdown
+	vim.lsp.stop_client(vim.lsp.get_clients(), true)
+	if force then
+		vim.cmd('qa!')
+	else
+		vim.cmd('qa')
+	end
+end
+
+vim.keymap.set({ 'n', 'v' }, '<leader>q', function() quit_nvim(false) end, { desc = 'Quit nvim' })
+vim.keymap.set({ 'n', 't', 'v' }, '<leader>Q', function() quit_nvim(true) end, { desc = 'Quit nvim with Force' })
 
 -- Split navigation and management
 vim.keymap.set('n', '<leader>bb', ':bprev<CR>', { desc = 'Goto Previous Buffer', silent = true })
