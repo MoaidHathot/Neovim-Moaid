@@ -1,3 +1,6 @@
 return {
-	"xiyaowong/transparent.nvim"
+	"xiyaowong/transparent.nvim",
+	-- event = "VeryLazy",
+	-- event = "BufEnter",
+	event = "VimEnter",
 }

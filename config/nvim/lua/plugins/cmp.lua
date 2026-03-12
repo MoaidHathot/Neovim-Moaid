@@ -2,12 +2,12 @@ return {
 	{
 		'hrsh7th/cmp-nvim-lsp',
 		-- event = { "BufReadPre", "BufNewFile" },
-		event = "BufReadPost",
+		event = "InsertEnter",
 		-- event = "VeryLazy",
 	},
 	{
 		'github/copilot.vim',
-		event = { "BufReadPre", "BufNewFile" },
+		event = "InsertEnter",
 		keys = {
 			{ "<C-l>", "<Plug>(copilot-next)",        mode = "i" },
 			{ "<C-h>", "<Plug>(copilot-previous)",    mode = "i" },

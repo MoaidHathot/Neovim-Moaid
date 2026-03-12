@@ -1,7 +1,7 @@
 return {
 	'mbbill/undotree',
-	event = "VeryLazy",
-	config = function()
-		vim.keymap.set('n', '<leader><F5>', vim.cmd.UndotreeToggle)
-	end
+	cmd = "UndotreeToggle",
+	keys = {
+		{ '<leader><F5>', '<cmd>UndotreeToggle<CR>', desc = "Toggle Undotree" },
+	},
 }

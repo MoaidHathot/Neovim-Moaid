@@ -76,7 +76,7 @@ vim.api.nvim_create_autocmd("FileType", {
 vim.api.nvim_create_autocmd("FileType", {
     pattern = "d2",
     callback = function()
-        vim.api.nvim_buf_set_option(0, 'writebackup', false)
+        vim.bo[0].writebackup = false
     end,
 })
 
@@ -142,4 +142,14 @@ vim.api.nvim_create_autocmd({"BufEnter", "WinEnter"}, {
             end
         end
     end,
+})
+
+-- Fix intermittent screen not clearing on exit in Windows Terminal.
+-- Explicitly switch back from the alternate screen buffer to prevent
+-- Neovim content from lingering in the terminal after exit.
+vim.api.nvim_create_autocmd("VimLeave", {
+	group = augroup("restore_main_screen"),
+	callback = function()
+		io.write("\27[?1049l")
+	end,
 })

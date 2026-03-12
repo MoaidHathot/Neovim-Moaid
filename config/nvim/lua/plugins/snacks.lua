@@ -1,7 +1,6 @@
 return {
 	"folke/snacks.nvim",
-	priority = 1000,
-	lazy = false,
+	event = "VeryLazy",
 	opts = {
 		animate = { enabled = false },
 		bigfile = { enabled = false },

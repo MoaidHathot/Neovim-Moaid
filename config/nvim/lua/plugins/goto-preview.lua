@@ -10,7 +10,5 @@ return {
 		{ mode = { 'n', 'v' },'<leader>ps', function() require("goto-preview").goto_preview_declaration() end,      { desc = "Preview References", silent = true } },
 		{ mode = { 'n', 'v' },'<leader>pc', function() require("goto-preview").close_all_win() end,                { desc = "Close Previews", silent = true } },
 	},
-	config = function()
-		require('goto-preview').setup()
-	end
+	opts = {},
 }

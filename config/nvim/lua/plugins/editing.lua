@@ -18,9 +18,8 @@ return {
 			{ mode ='n', '<Leader>n', '<Cmd>noh<CR>', { desc = "No HLS", silent = true }},
 
 		},
-		config = function()
-			require('hlslens').setup()
-		end
+		main = "hlslens",
+		opts = {},
 	},
 	{
 		'tpope/vim-surround',
@@ -57,7 +56,7 @@ return {
 	{
 		'HiPhish/rainbow-delimiters.nvim',
 		enabled = true,
-		event = { "BufReadPre", "BufNewFile" },
+		event = { "BufReadPost", "BufNewFile" },
 		-- config = function()
 		-- 	require('rainbow-delimiters.setup').setup {
 		-- 	}
@@ -76,13 +75,12 @@ return {
 	{
 		"petertriho/nvim-scrollbar",
 		event = "VeryLazy",
-		config = function()
-			require('scrollbar').setup({})
-		end
+		main = "scrollbar",
+		opts = {},
 	},
 	{
 		"azabiong/vim-highlighter",
-		event = { "BufReadPre", "BufNewFile" },
+		event = { "BufReadPost", "BufNewFile" },
 		enabled = true,
 		init = function()
 			 vim.cmd([[

@@ -5,7 +5,8 @@ vim.g.loaded_netrwPlugin = 1
 
 local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
 
-if not vim.loop.fs_stat(lazypath) then
+-- if not vim.loop.fs_stat(lazypath) then
+if not vim.uv.fs_stat(lazypath) then
 	vim.fn.system({
 		"git",
 		"clone",
@@ -33,6 +34,7 @@ require("lazy").setup({
 	},
 	install = { colorscheme = { "nightfox", "habamax" } },
 	change_detection = {
+		enabled = false,
 		notify = false
 	},
 	performance = {
@@ -40,8 +42,8 @@ require("lazy").setup({
 			-- disable some rtp plugins
 			disabled_plugins = {
 				"gzip",
-				-- "matchit",
-				-- "matchparen",
+				"matchit",
+				"matchparen",
 				"man",
 				"rplugin",
 				"netrwPlugin",
@@ -49,6 +51,7 @@ require("lazy").setup({
 				"tohtml",
 				"tutor",
 				"zipPlugin",
+				"spellfile",
 			},
 		},
 	}
@@ -56,4 +59,3 @@ require("lazy").setup({
 
 require("config.autocmds")
 require("config.keymap")
-require("config.overrides")
