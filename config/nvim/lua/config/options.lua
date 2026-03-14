@@ -1,4 +1,3 @@
-vim.opt.nu = true
 vim.opt.relativenumber = true
 vim.opt.ignorecase = true
 vim.opt.smartcase = true
@@ -55,16 +54,16 @@ vim.opt.laststatus = 3
 vim.opt.list = true                -- Show some invisible characters (tabs...
 vim.opt.mouse = "a"                -- Enable mouse mode
 vim.opt.number = true              -- Print line number
-vim.opt.formatoptions = "jcroqlnt" -- tcqj
+vim.opt.formatoptions = "jqlnt"    -- tcqj
 vim.opt.grepformat = "%f:%l:%c:%m"
 vim.opt.grepprg = "rg --vimgrep"
 
 --vim.g.markdown_recommended_style = 0
 
-vim.opt.formatoptions:remove { 'c', 'r', 'o' }
--- vim.opt.foldmethod = "expr"
--- vim.opt.foldexpr = "nvim_treesitter#foldexpr()"
 vim.opt.foldmethod = "manual"
+
+vim.opt.splitbelow = true            -- New horizontal splits open below
+vim.opt.splitright = true            -- New vertical splits open to the right
 
 vim.opt.winborder = 'rounded'
 

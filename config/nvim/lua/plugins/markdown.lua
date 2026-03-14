@@ -2,7 +2,7 @@ return {
 	{
 		"iamcco/markdown-preview.nvim",
 		-- event = "VeryLazy",
-		enable = true,
+		enabled = true,
 		cmd = { "MarkdownPreviewToggle", "MarkdownPreview", "MarkdownPreviewStop" },
 		ft = { "markdown", "md" },
 		-- build = function()
@@ -24,7 +24,7 @@ return {
 	},
 	{
 		"OXY2DEV/markview.nvim",
-		enable = false,
+		enabled = false,
 		lazy = true,
 		-- ft = { "markdown", "md" },
 		cmd = "Markview",

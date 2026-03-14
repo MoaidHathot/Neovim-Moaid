@@ -132,12 +132,7 @@ return {
 				mode = { "x" },
 				desc = "Send Visual Selection",
 			},
-			{
-				"<leader>as",
-				function() require("sidekick.cli").send({ selection = true }) end,
-				mode = { "v" },
-				desc = "Sidekick Send Visual Selection",
-			},
+
 			{
 				"<leader>ap",
 				function() require("sidekick.cli").prompt() end,

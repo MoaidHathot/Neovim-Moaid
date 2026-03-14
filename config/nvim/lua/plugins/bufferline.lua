@@ -29,7 +29,7 @@ return
 							separator = true
 						}
 					},
-					separator_style = "think",
+					separator_style = "thin",
 					hover = {
 						enabled = true,
 						delay = 200,

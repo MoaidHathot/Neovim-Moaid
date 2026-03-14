@@ -3,7 +3,7 @@ return {
 	event = "VeryLazy",
 	opts = {
 		animate = { enabled = false },
-		bigfile = { enabled = false },
+		bigfile = { enabled = true },
 		bufdelete = { enabled = false },
 		dashboard = { enabled = false },
 		debug = { enabled = false },
