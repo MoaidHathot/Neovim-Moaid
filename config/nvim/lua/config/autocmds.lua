@@ -145,13 +145,15 @@ vim.api.nvim_create_autocmd({"BufEnter", "WinEnter"}, {
 })
 
 -- Fix intermittent screen not clearing on exit in Windows Terminal.
--- Explicitly switch back from the alternate screen buffer to prevent
--- Neovim content from lingering in the terminal after exit.
--- Wrapped in pcall to prevent io.write from blocking if stdout is unavailable.
-vim.api.nvim_create_autocmd("VimLeave", {
+-- Explicitly leave the alternate screen buffer so the terminal restores
+-- the main buffer content. Using VimLeavePre instead of VimLeave ensures
+-- stdout is still reliably connected when the escape sequence is written.
+vim.api.nvim_create_autocmd("VimLeavePre", {
 	group = augroup("restore_main_screen"),
 	callback = function()
-		pcall(io.write, "\27[?1049l")
-		pcall(io.flush)
+		local ok, _ = pcall(io.write, "\27[?1049l")
+		if ok then
+			pcall(io.flush)
+		end
 	end,
 })
