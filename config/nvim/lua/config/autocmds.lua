@@ -145,15 +145,16 @@ vim.api.nvim_create_autocmd({"BufEnter", "WinEnter"}, {
 })
 
 -- Fix screen not clearing on exit in Windows Terminal.
--- 1. Switch from the alternate screen buffer back to the main buffer (\27[?1049l)
--- 2. Clear the visible screen (\27[2J) and scrollback (\27[3J) so stale content
---    (e.g. old error messages) from the main buffer doesn't linger.
--- 3. Move cursor to the top-left (\27[H) for a clean prompt.
--- Using VimLeavePre ensures stdout is still reliably connected.
+-- Windows Terminal doesn't always cleanly restore the main screen buffer
+-- when leaving the alternate buffer. We clear the alternate buffer first,
+-- then let the normal \27[?1049l switch restore the main buffer untouched.
+-- This avoids both lingering Neovim content and wiping the main buffer's
+-- scrollback history.
 vim.api.nvim_create_autocmd("VimLeavePre", {
 	group = augroup("restore_main_screen"),
 	callback = function()
-		local ok, _ = pcall(io.write, "\27[?1049l\27[2J\27[3J\27[H")
+		-- Clear the alternate screen buffer, then switch back to main
+		local ok, _ = pcall(io.write, "\27[2J\27[H\27[?1049l")
 		if ok then
 			pcall(io.flush)
 		end
