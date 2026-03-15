@@ -1,6 +1,47 @@
 # Set-Alias moaid nvim
 Set-Alias lg lazygit
-Set-Alias pp presenterm
+function pp
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Position = 0)]
+		[string]$Path,
+
+		[Alias('c', 'config-file')]
+		[string]$ConfigFile
+	)
+
+	# If no path given, use current directory
+	if (-not $Path) {
+		$Path = Get-Location
+	}
+
+	# If path is a directory, look for main.md inside it
+	if (Test-Path -Path $Path -PathType Container) {
+		$slidePath = Join-Path $Path 'main.md'
+	}
+	else {
+		# Path is a file — use it directly as the slide
+		$slidePath = $Path
+	}
+
+	# Auto-detect config.yaml next to the slide file if not explicitly provided
+	if (-not $ConfigFile) {
+		$slideDir = Split-Path $slidePath -Parent
+		$autoConfig = Join-Path $slideDir 'config.yaml'
+		if (Test-Path $autoConfig -PathType Leaf) {
+			$ConfigFile = $autoConfig
+		}
+	}
+
+	$args_ = @($slidePath)
+	if ($ConfigFile) {
+		$args_ += '--config-file'
+		$args_ += $ConfigFile
+	}
+
+	presenterm @args_
+}
 set-Alias Copy-Path Copy-Location
 # Set-Alias .. cd..
 
