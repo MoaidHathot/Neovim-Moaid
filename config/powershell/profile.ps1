@@ -351,6 +351,19 @@ function Save-TerminalSettings {
     Write-Host "Don't forget to commit and push your changes!" -ForegroundColor Yellow
 }
 
+function Apply-TerminalSettings {
+    $sourcePath = "$env:Moaid_Config_Path\config\windows-terminal\settings.json"
+    $targetPath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json"
+
+    if (!(Test-Path $sourcePath)) {
+        Write-Error "Dotfiles settings not found at: $sourcePath"
+        return
+    }
+
+    Copy-Item $sourcePath $targetPath -Force
+    Write-Host "Windows Terminal settings applied from: $sourcePath" -ForegroundColor Green
+}
+
 # Invoke-Expression (&starship init powershell)
 
 # Invoke-Expression (& { (zoxide init powershell | Out-String) })
