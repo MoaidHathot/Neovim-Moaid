@@ -258,6 +258,12 @@ function moaid
 	[Console]::Write("`e]0;nvim: $dirName`a")
 	
 	nvim @args
+
+	# Fix Windows Terminal not clearing Neovim content on exit.
+	# ConPTY doesn't reliably restore the main screen buffer when leaving
+	# the alternate buffer. This runs *after* nvim exits (even on crash),
+	# ensuring the terminal is restored. (neovim#30175, terminal#17874)
+	[Console]::Write("`e[?1049l`e[?25h`e[0m")
 }
 
 function Invoke-FromDirectory
