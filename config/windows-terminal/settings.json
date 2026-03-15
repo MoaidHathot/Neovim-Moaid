@@ -133,24 +133,24 @@
                 "source": "Git"
             },
             {
-                "antialiasingMode": "grayscale",
-                "backgroundImage": null,
-                "backgroundImageOpacity": 0.12,
-                "colorScheme": "Campbell",
-                "commandline": "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\"",
-                "experimental.retroTerminalEffect": false,
+                "colorScheme": "One Half Dark",
+                "commandline": "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoLogo",
+                "cursorShape": "bar",
                 "font": 
                 {
-                    "face": "CaskaydiaCove Nerd Font"
+                    "face": "CaskaydiaCove Nerd Font",
+                    "size": 20
                 },
                 "guid": "{a8998801-1f52-4a36-977c-658ef8a59587}",
                 "hidden": false,
                 "icon": "C:\\Program Files\\PowerShell\\7\\assets\\Powershell_avatar.ico",
+                "intenseTextStyle": "bold",
                 "name": "Slides",
                 "opacity": 100,
-                "padding": "8",
+                "padding": "24",
+                "scrollbarState": "hidden",
                 "startingDirectory": "P:\\Github",
-                "useAcrylic": true
+                "useAcrylic": false
             },
             {
                 "guid": "{d3d778e6-dc78-5663-b66b-29332d62d06e}",
