@@ -90,10 +90,7 @@ local smart_grep = function(opts)
 			local command_args = extracted.command_args or {}
 			table.insert(command_args, { "--color=never", "--no-heading", "--with-filename", "--line-number", "--column", "--smart-case", "--follow" })
 
-			local final_args = vim.tbl_flatten {
-				args,
-				command_args
-			}
+			local final_args = vim.iter({ args, command_args }):flatten():totable()
 
 			return final_args
 		end,
@@ -153,10 +150,7 @@ local smart_find_files = function(opts)
 			local command_args = extracted.command_args or {}
 			table.insert(command_args, { "--color=never", "--type=f" })
 
-			local final_args = vim.tbl_flatten {
-				args,
-				command_args
-			}
+			local final_args = vim.iter({ args, command_args }):flatten():totable()
 
 			return final_args
 		end,
@@ -193,7 +187,7 @@ local smart_fd = function(opts)
 			local args = { "fd" }
 
 			local extracted = extract_args(prompt, opts)
-			print("Extracted", vim.inspect(extracted))
+
 
 			if not extracted then
 				return nil
@@ -212,12 +206,7 @@ local smart_fd = function(opts)
 			local command_args = extracted.command_args or {}
 			table.insert(command_args, { "--color=never", "--no-heading", "--with-filename", "--line-number", "--column", "--smart-case", "--follow" })
 
-			local final_args = vim.tbl_flatten {
-				args,
-				command_args
-			}
-
-			print(vim.inspect(final_args))
+			local final_args = vim.iter({ args, command_args }):flatten():totable()
 
 			return final_args
 		end,
@@ -328,6 +317,7 @@ return {
 
 			telescope.load_extension('ui-select')
 			telescope.load_extension('fzf')
+			telescope.load_extension('power_review')
 		end
 	},
 	-- {

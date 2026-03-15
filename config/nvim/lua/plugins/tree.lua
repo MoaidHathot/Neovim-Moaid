@@ -23,6 +23,21 @@ return {
 			-- "3rd/image.nvim", -- Optional image support in preview window: See `# Preview Mode` for more information
 		},
 		opts = {
+			sources = {
+				"filesystem",
+				"buffers",
+				"git_status",
+				"power_review", -- PowerReview.nvim PR changed files
+			},
+			source_selector = {
+				winbar = false,
+				sources = {
+					{ source = "filesystem",   display_name = " Files" },
+					{ source = "buffers",      display_name = " Buffers" },
+					{ source = "git_status",   display_name = " Git" },
+					{ source = "power_review", display_name = " PR Review" },
+				},
+			},
 			window = {
 				mappings = {
 					["Y"] = function(state)
@@ -39,6 +54,50 @@ return {
 						vim.fn.setreg("+", filename)
 						vim.notify("Copied name: " .. filename)
 					end,
+				},
+			},
+			-- PowerReview Neo-tree source config
+			power_review = {
+				window = {
+					position = "left",
+					width = 40,
+					mappings = {
+						["<cr>"] = "open",
+						["o"] = "open",
+						["<C-v>"] = "open_vsplit",
+						["<C-x>"] = "open_split",
+						["<C-t>"] = "open_tabnew",
+						["a"] = "add_comment",
+						["i"] = "show_file_details",
+						["R"] = "refresh",
+						["y"] = "copy_path",
+					},
+				},
+				renderers = {
+					pr_root = {
+						{ "indent" },
+						{ "icon" },
+						{ "name" },
+						{ "comment_count" },
+					},
+					pr_dir = {
+						{ "indent" },
+						{ "icon" },
+						{ "name" },
+					},
+					pr_file = {
+						{ "indent" },
+						{ "change_type" },
+						{ "icon" },
+						{ "comment_count" },
+						{ "name" },
+						{ "file_stats" },
+					},
+					message = {
+						{ "indent" },
+						{ "icon" },
+						{ "name" },
+					},
 				},
 			},
 		},
