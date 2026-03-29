@@ -1,6 +1,14 @@
 {
   "$schema": "https://opencode.ai/tui.json",
   "keybinds": {
-    "leader": "\\"
+    "leader": "\\",
+    "input_line_home": "home",
+    "input_line_end": "end",
+    "input_buffer_home": "ctrl+a",
+    "input_buffer_end": "ctrl+e",
+    "input_select_line_home": "shift+home",
+    "input_select_line_end": "shift+end",
+    "input_select_buffer_home": "ctrl+shift+a",
+    "input_select_buffer_end": "ctrl+shift+e"
   }
 }
