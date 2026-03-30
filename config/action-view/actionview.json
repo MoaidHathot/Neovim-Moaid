@@ -1,0 +1,8 @@
+{
+  "dataDirectory": "data",
+  "notifications": {
+    "enabled": true
+  },
+  "secrets": {}
+}
+

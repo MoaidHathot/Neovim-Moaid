@@ -1,0 +1,67 @@
+{
+  "defaultProvider": "copilot",
+  "providers": {
+    "openai": {
+      "type": "openai",
+      "apiKey": "${OPENAI_API_KEY}",
+      "model": "gpt-4o"
+    },
+    "azure-openai": {
+      "type": "azure-openai",
+      "endpoint": "${AZURE_OPENAI_ENDPOINT}",
+      "apiKey": "${AZURE_OPENAI_KEY}",
+      "deploymentName": "gpt-4"
+    },
+    "anthropic": {
+      "type": "anthropic",
+      "apiKey": "${ANTHROPIC_API_KEY}",
+      "model": "claude-sonnet-4-20250514"
+    },
+    "copilot": {
+      "type": "copilot",
+      "model": "claude-opus-4.6"
+    },
+    "ollama": {
+      "type": "ollama",
+      "endpoint": "http://localhost:11434",
+      "model": "llama3.2"
+    }
+  },
+  "hotkeys": [
+  { "keys": "Ctrl+Alt+G", "preset": "grammar" },
+  { "keys": "Ctrl+Alt+P", "preset": "paraphrase" },
+  { "keys": "Ctrl+Alt+F", "preset": "formal" },
+  { "keys": "Ctrl+Alt+K", "preset": "casual" }
+],  
+  "presets": {
+    "grammar": {
+      "name": "Fix Grammar",
+      "systemPrompt": "Fix all grammar, spelling, and punctuation errors in the following text. Return ONLY the corrected text without any explanation or additional commentary.",
+      "provider": null
+    },
+    "paraphrase": {
+      "name": "Paraphrase",
+      "systemPrompt": "Paraphrase the following text while maintaining its original meaning, but making it clearer, easy to understand and correct English wise. Try maintain the original form as much as possible. Return ONLY the paraphrased text without any explanation or additional commentary.",
+      "provider": null
+    },
+    "formal": {
+      "name": "Make Formal",
+      "systemPrompt": "Rewrite the following text in a formal, professional tone. Return ONLY the rewritten text without any explanation or additional commentary.",
+      "provider": null
+    },
+    "casual": {
+      "name": "Make Casual",
+      "systemPrompt": "Rewrite the following text in a casual, friendly tone. Return ONLY the rewritten text without any explanation or additional commentary.",
+      "provider": null
+    }
+  },
+  "notifications": {
+    "showOnStartup": true,
+    "showOnSuccess": true,
+    "showOnError": true,
+    "showOnConfigReload": true,
+    "showOnProviderChange": true,
+    "showProcessingOverlay": true,
+    "showProcessingAnimation": true
+  }
+}
