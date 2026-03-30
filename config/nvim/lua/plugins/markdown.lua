@@ -8,7 +8,7 @@ return {
 		build = function()
 			vim.fn["mkdp#util#install"]()
 		end,
-	    init = function()
+		init = function()
 			vim.g.mkdp_filetypes = { "markdown" }
 		end,
 	},
