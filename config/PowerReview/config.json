@@ -1,0 +1,20 @@
+{
+  "git": {
+    "strategy": "Worktree",
+    "repo_base_path": "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS-worktrees",
+    "cleanup_on_close": true
+  },
+  "auth": {
+    "azdo": {
+      "method": "az_cli"
+    },
+    "github": {
+      "pat_env_var": "GITHUB_TOKEN"
+    }
+  },
+  "providers": {
+    "azdo": {
+      "api_version": "7.1"
+    }
+  }
+}
