@@ -88,7 +88,7 @@ local smart_grep = function(opts)
 			end
 
 			local command_args = extracted.command_args or {}
-			table.insert(command_args, { "--color=never", "--no-heading", "--with-filename", "--line-number", "--column", "--smart-case", "--follow" })
+			vim.list_extend(command_args, { "--color=never", "--no-heading", "--with-filename", "--line-number", "--column", "--smart-case", "--follow" })
 
 			local final_args = vim.iter({ args, command_args }):flatten():totable()
 
@@ -148,7 +148,7 @@ local smart_find_files = function(opts)
 
 			-- Add command arguments (--hidden, --no-ignore, etc.)
 			local command_args = extracted.command_args or {}
-			table.insert(command_args, { "--color=never", "--type=f" })
+			vim.list_extend(command_args, { "--color=never", "--type=f" })
 
 			local final_args = vim.iter({ args, command_args }):flatten():totable()
 
@@ -204,7 +204,7 @@ local smart_fd = function(opts)
 			end
 
 			local command_args = extracted.command_args or {}
-			table.insert(command_args, { "--color=never", "--no-heading", "--with-filename", "--line-number", "--column", "--smart-case", "--follow" })
+			vim.list_extend(command_args, { "--color=never", "--no-heading", "--with-filename", "--line-number", "--column", "--smart-case", "--follow" })
 
 			local final_args = vim.iter({ args, command_args }):flatten():totable()
 
