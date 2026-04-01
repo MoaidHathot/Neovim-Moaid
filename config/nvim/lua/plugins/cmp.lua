@@ -11,7 +11,7 @@ return {
 		keys = {
 			{ "<C-l>", "<Plug>(copilot-next)",        mode = "i" },
 			{ "<C-h>", "<Plug>(copilot-previous)",    mode = "i" },
-			{ "<C-c>", "<Plug>(copilot-suggest)",     mode = "i" },
+			{ "<C-a>", "<Plug>(copilot-suggest)",     mode = "i" },
 			{ "<C-d>", "<Plug>(copilot-dismiss)",     mode = "i" },
 			{ "<C-f>", "<Plug>(copilot-accept-word)", mode = "i" },
 			{ "<C-g>", "<Plug>(copilot-accept-line)", mode = "i" },

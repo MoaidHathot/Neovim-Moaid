@@ -64,20 +64,30 @@ return {
 				}
 			}
 
-			vim.keymap.set('n', '<leader>lff', function() vim.lsp.buf.format({ async = true }) end, { desc = "Format document" })
-			vim.keymap.set('n', '<leader>lr', vim.lsp.buf.rename, { desc = "Rename Symbol" })
-			vim.keymap.set({ 'n', 'i' }, '<f2>', vim.lsp.buf.rename, { desc = "Rename Symbol" })
-			vim.keymap.set({ 'n', 'i' }, '<f12>', vim.lsp.buf.definition, { desc = "Go to Definition" })
-			vim.keymap.set({ 'n' }, '<leader>ld', vim.lsp.buf.definition, { desc = "Go to Definition" })
-			vim.keymap.set('n', '<leader>li', vim.lsp.buf.implementation, { desc = "Go to Implementation" })
-			vim.keymap.set('n', '<leader>lh', vim.lsp.buf.signature_help, { desc = "Signature Help" })
-			vim.keymap.set('n', '<leader>lsR', vim.lsp.buf.references, { desc = "To to References" })
-			-- vim.keymap.set({ 'n' }, '<leader>lsD', ":Trouble document_diagnostics<CR>", { desc = "Toggle Document Diagnostics" })
-			vim.keymap.set({ 'n' }, '<leader>lsD', ":Trouble diagnostics<CR>", { desc = "Toggle Document Diagnostics" })
-			vim.keymap.set('n', '<leader>lsI', ':Trouble lsp_implementations<CR>', { desc = "Toggle LSP References" })
-			vim.keymap.set('n', '<leader>lsd', ":Trouble lsp_definitions<CR>", { desc = "Toggle LSP Definitions" })
-			vim.keymap.set('n', 'K', vim.lsp.buf.hover, { desc = "LSP Hover" })
-			vim.keymap.set('n', 'gd', vim.lsp.buf.definition, { desc = "Go to Definition" })
+			vim.api.nvim_create_autocmd("LspAttach", {
+				group = vim.api.nvim_create_augroup("moaid_lsp_attach", { clear = true }),
+				callback = function(ev)
+					local buf = ev.buf
+					local bopts = function(desc)
+						return { buffer = buf, desc = desc, silent = true }
+					end
+
+					vim.keymap.set('n', '<leader>lff', function() vim.lsp.buf.format({ async = true }) end, bopts("Format document"))
+					vim.keymap.set('n', '<leader>lr', vim.lsp.buf.rename, bopts("Rename Symbol"))
+					vim.keymap.set({ 'n', 'i' }, '<f2>', vim.lsp.buf.rename, bopts("Rename Symbol"))
+					vim.keymap.set({ 'n', 'i' }, '<f12>', vim.lsp.buf.definition, bopts("Go to Definition"))
+					vim.keymap.set('n', '<leader>ld', vim.lsp.buf.definition, bopts("Go to Definition"))
+					vim.keymap.set('n', '<leader>li', vim.lsp.buf.implementation, bopts("Go to Implementation"))
+					vim.keymap.set('n', '<leader>lh', vim.lsp.buf.signature_help, bopts("Signature Help"))
+					vim.keymap.set('n', '<leader>lsR', vim.lsp.buf.references, bopts("Go to References"))
+					-- vim.keymap.set({ 'n' }, '<leader>lsD', ":Trouble document_diagnostics<CR>", bopts("Toggle Document Diagnostics"))
+					vim.keymap.set('n', '<leader>lsD', ":Trouble diagnostics<CR>", bopts("Toggle Document Diagnostics"))
+					vim.keymap.set('n', '<leader>lsI', ':Trouble lsp_implementations<CR>', bopts("Toggle LSP Implementations"))
+					vim.keymap.set('n', '<leader>lsd', ":Trouble lsp_definitions<CR>", bopts("Toggle LSP Definitions"))
+					vim.keymap.set('n', 'K', vim.lsp.buf.hover, bopts("LSP Hover"))
+					vim.keymap.set('n', 'gd', vim.lsp.buf.definition, bopts("Go to Definition"))
+				end,
+			})
 		end
 	},
 	{

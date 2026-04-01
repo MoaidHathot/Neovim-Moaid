@@ -60,7 +60,11 @@ vim.opt.grepprg = "rg --vimgrep"
 
 --vim.g.markdown_recommended_style = 0
 
-vim.opt.foldmethod = "manual"
+-- Folding (managed by nvim-ufo)
+vim.opt.foldcolumn = "1"
+vim.opt.foldlevel = 99
+vim.opt.foldlevelstart = 99
+vim.opt.foldenable = true
 
 vim.opt.splitbelow = true            -- New horizontal splits open below
 vim.opt.splitright = true            -- New vertical splits open to the right

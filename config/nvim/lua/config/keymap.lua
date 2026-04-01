@@ -76,6 +76,8 @@ vim.keymap.set({ 'n' }, '<S-h>', '10zh', { desc = "Scroll To The Left", silent =
 -- Move current line / block with Alt-j/k a la vscode.
 vim.keymap.set('n', "<M-Down>", ":m .+1<CR>==", { silent = true })
 vim.keymap.set('n', "<M-Up>", ":m .-2<CR>==", { silent = true })
+vim.keymap.set('v', "<M-Down>", ":m '>+1<CR>gv=gv", { silent = true })
+vim.keymap.set('v', "<M-Up>", ":m '<-2<CR>gv=gv", { silent = true })
 
 -- Better line / block movement
 -- vim.keymap.set('n', "<A-j>", ":m '>+1<CR>gv-gv", { silent = true })
@@ -156,6 +158,10 @@ vim.keymap.set('n', '<leader>hr', "<cmd>call clearmatches()<CR>", { desc = 'Togg
 
 vim.keymap.set({'n'}, '<leader>/', 'gcc', { remap = true, desc = 'Comment in Normal Mode' })
 vim.keymap.set({'v'}, '<leader>/', 'gc', { remap = true, desc = 'Comment in Visual Mode' })
+
+-- Diagnostic navigation
+vim.keymap.set('n', '[d', function() vim.diagnostic.goto_prev() end, { desc = 'Previous Diagnostic', silent = true })
+vim.keymap.set('n', ']d', function() vim.diagnostic.goto_next() end, { desc = 'Next Diagnostic', silent = true })
 
 -- Terminal mode: alternative escape (for TUI apps like OpenCode where <Esc> passes through)
 vim.keymap.set('t', '<C-]>', '<C-\\><C-n>', { desc = 'Exit Terminal Mode', silent = true })

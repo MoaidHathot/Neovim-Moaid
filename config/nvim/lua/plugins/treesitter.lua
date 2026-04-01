@@ -27,7 +27,6 @@ return {
 			sync_install = false,
 			highlight = {
 				enable = true,
-				indent = { enable = true },
 				additional_vim_regex_highlighting = false
 			},
 			indent = {
@@ -41,10 +40,17 @@ return {
 						["]m"] = "@function.outer",
 						["]c"] = "@class.outer",
 					},
-					-- goto next end
 					goto_next_end = {
 						["]M"] = "@function.outer",
 						["]C"] = "@class.outer",
+					},
+					goto_previous_start = {
+						["[m"] = "@function.outer",
+						["[c"] = "@class.outer",
+					},
+					goto_previous_end = {
+						["[M"] = "@function.outer",
+						["[C"] = "@class.outer",
 					},
 				},
 				select = {
