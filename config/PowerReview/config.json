@@ -2,7 +2,8 @@
   "git": {
     "strategy": "Worktree",
     "repo_base_path": "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS-worktrees",
-    "cleanup_on_close": true
+    "cleanup_on_close": true,
+	"auto_clone": true
   },
   "auth": {
     "azdo": {
