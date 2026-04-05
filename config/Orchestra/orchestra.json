@@ -1,0 +1,24 @@
+{
+	"dataPath": null,
+	"hostBaseUrl": "http://localhost:5200",
+	"orchestrationsScanPath": null,
+	"shutdownTimeoutSeconds": 30,
+	"logLevel": "Debug",
+	"retention": {
+		"maxRunsPerOrchestration": 0,
+		"maxRunAgeDays": 0
+	},
+	"polling": {
+		"activeExecutionsMs": 1000,
+		"orchestrationsMs": 2000,
+		"historyMs": 5000,
+		"serverStatusMs": 5000
+	},
+	"mcpServer": {
+		"dataPlaneEnabled": true,
+		"dataPlaneRoute": "/mcp/data",
+		"controlPlaneEnabled": false,
+		"controlPlaneRoute": "/mcp/control",
+		"maxNestingDepth": 5
+	}
+}
