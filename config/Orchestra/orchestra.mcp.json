@@ -1,0 +1,62 @@
+{
+	"mcps": [
+		{
+			"name": "icm-full",
+			"type": "local",
+			"command": "dnx",
+			"arguments": [
+				"IcM.Mcp",
+				"--source",
+				"https://pkgs.dev.azure.com/msazure/One/_packaging/ZTS/nuget/v3/index.json",
+				"--yes"
+			]
+		},
+		{
+			"name": "icm-readonly",
+			"type": "local",
+			"command": "dnx",
+			"arguments": [
+				"IcM.Mcp",
+				"--source",
+				"https://pkgs.dev.azure.com/msazure/One/_packaging/ZTS/nuget/v3/index.json",
+				"--yes",
+				"--",
+				"--read-only"
+			]
+		},
+		{
+			"name": "azdo",
+			"type": "local",
+			"command": "npx",
+			"arguments": [
+				"-y",
+				"@azure-devops/mcp",
+				"msazure"
+			]
+		},
+		{
+			"name": "azure",
+			"type": "local",
+			"command": "dnx",
+			"arguments": [
+				"Azure.Mcp",
+				"--yes",
+				"--",
+				"azmcp",
+				"server",
+				"start"
+			]
+		},
+		{
+			"name": "powerreview",
+			"type": "local",
+			"command": "dnx",
+			"arguments": [
+				"PowerReview",
+				"--yes",
+				"--",
+				"mcp"
+			]
+		}
+	]
+}
