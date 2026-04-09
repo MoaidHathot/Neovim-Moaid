@@ -18,6 +18,7 @@ export default function (): Hooks {
           limit: {
             ...base.limit,
             context: 1000000,
+            input: 900000,
           },
         };
         return provider.models;
