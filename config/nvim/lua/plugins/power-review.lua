@@ -44,7 +44,8 @@ return {
 		opts = {
 			-- Run CLI from local nupkg source via dotnet dnx (no global install needed)
 			cli = {
-				executable = {"dnx", "--yes", "PowerReview", "--" },
+				-- executable = {"dnx", "--yes", "PowerReview", "--" },
+				executable = {"PowerReview" },
 			},
 
 			ui = {
