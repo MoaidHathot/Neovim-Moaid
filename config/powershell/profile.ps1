@@ -364,6 +364,17 @@ function Apply-TerminalSettings {
     Write-Host "Windows Terminal settings applied from: $sourcePath" -ForegroundColor Green
 }
 
+function mkcd
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$Path
+	)
+
+	mkdir $Path
+	Set-Location $Path
+}
+
 # Invoke-Expression (&starship init powershell)
 
 # Invoke-Expression (& { (zoxide init powershell | Out-String) })
