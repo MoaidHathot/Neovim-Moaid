@@ -57,6 +57,16 @@
 				"--",
 				"mcp"
 			]
+		},
+		{
+			"name": "debug-mcp",
+			"type": "local",
+			"command": "dotnet",
+			"arguments": [
+				"run",
+				"--file",
+				"P:\\Github\\Orchestra\\playground\\mcp\\McpDebug.cs"
+			]
 		}
 	]
 }
