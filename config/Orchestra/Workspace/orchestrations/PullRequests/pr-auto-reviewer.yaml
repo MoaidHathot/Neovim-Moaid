@@ -1,0 +1,296 @@
+name: pr-auto-reviewer
+description: |
+  Discovers Pull Requests assigned to me in Azure DevOps that need review. Filters out self-authored PRs, checks review state via Zakira.Exchange and PowerReview session existence to determine which PRs need review. Invokes the pr-code-reviewer orchestration for each PR that needs review, and tracks invocation outcomes (marking failed reviews so they are retried on the next run).
+version: 1.0.0
+tags: ["ZTS", "MSFT", "PR", "Code-Review"]
+
+variables:
+  organization: msazure
+  project: One
+  repository: ZTS
+  reviewerName: Moaid Hathot
+  repoLocalPath: "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS"
+  defaultModel: claude-opus-4.6
+  zakiraCategory: pr-code-review-state
+  staleReviewMinutes: "60"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 900
+timeoutSeconds: 7200
+
+mcps:
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - "--yes"
+      - "--"
+      - mcp
+      - "--category"
+      - "{{vars.zakiraCategory}}"
+
+  - name: orchestra
+    type: remote
+    endpoint: "{{server.url}}/mcp/data"
+
+steps:
+  - name: debug-tools
+    type: Prompt
+    dependsOn: []
+    systemPrompt: |
+      You are an assistant for debugging purposes. Your purpose is to see all Tools that are exposed to you and print them down
+    userPrompt: |
+      return a list of all of the tools that you have access to, along with a brief description of what they do. Format the response as a JSON array, where each element is an object with 'name' and 'description' properties.
+    mcps: [orchestra]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 600
+    retry:
+      maxRetries: 3
+      backoffSeconds: 10
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: fetch-assigned-prs
+    type: Prompt
+    dependsOn: []
+    systemPrompt: |
+      You are an Azure DevOps assistant. Query for active pull requests using the Azure DevOps MCP tools. Return structured data only -- no commentary.
+    userPrompt: |
+      Using the Azure DevOps tools, list all active (open) pull requests in project '{{vars.project}}' repository '{{vars.repository}}' that have '{{vars.reviewerName}}' as a reviewer. For each PR, return: id, title, createdBy (author display name), creationDate, sourceRefName, targetRefName, reviewers (array of display names), and the latest iteration id (if available).
+
+      Return ONLY a JSON array. If no PRs found, return [].
+    outputHandlerPrompt: |
+      Ensure the output is a valid JSON array. Strip any markdown fences. If empty, return [].
+    mcps: [azdo]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 600
+    retry:
+      maxRetries: 3
+      backoffSeconds: 10
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: filter-prs
+    type: Transform
+    dependsOn: [fetch-assigned-prs]
+    template: |
+      The following is the list of open PRs assigned to {{vars.reviewerName}} as a reviewer:
+
+      {{fetch-assigned-prs.output}}
+
+      INSTRUCTION: From the list above, only keep PRs where 'createdBy' is NOT '{{vars.reviewerName}}'. These are PRs created by others awaiting review. Pass the filtered list as-is.
+    contentType: text/plain
+
+  - name: check-review-state
+    type: Prompt
+    dependsOn: [filter-prs]
+    systemPrompt: |
+      You are a review state manager. You use both Zakira.Exchange and PowerReview to determine whether PRs need review.
+
+      ## State Machine
+
+      PR review states stored in Zakira.Exchange:
+      - (no entry) = never reviewed
+      - 'in-review' = review orchestration is currently running (or was running and crashed)
+      - 'reviewed' = review completed successfully at a specific iteration
+      - 'failed' = review orchestration failed
+
+      ## Decision Logic
+
+      For each PR, check Zakira.Exchange first (get_memory with PR ID as key), then check PowerReview (GetReviewSession with the PR's Azure DevOps URL).
+
+      A PR needs (re-)review if:
+      1. No Zakira state exists AND no PowerReview session exists (first time seeing this PR)
+      2. No Zakira state exists BUT a PowerReview session exists (partially reviewed or session created by another process -- include it for review, the code reviewer will pick up the existing session)
+      3. Zakira state is 'reviewed' but the stored iterationId differs from the current iteration ID (new commits pushed since last review)
+      4. Zakira state is 'failed' (previous review attempt failed, retry it)
+      5. Zakira state is 'in-review' but the startedAt timestamp is older than {{vars.staleReviewMinutes}} minutes ago (stale -- the review orchestration likely crashed, retry it)
+
+      A PR should be SKIPPED if:
+      1. Zakira state is 'reviewed' AND the iterationId matches the current iteration (already reviewed, nothing changed)
+      2. Zakira state is 'in-review' AND the startedAt timestamp is within the last {{vars.staleReviewMinutes}} minutes (review is still actively running)
+
+      You also have access to the orchestra_complete tool. If ALL PRs should be skipped, call orchestra_complete with status 'success' and reason explaining why no reviews are needed.
+    userPrompt: |
+      Check the review state for each PR in the filtered list:
+
+      {{filter-prs.output}}
+
+      For each PR:
+      1. Use Zakira.Exchange get_memory with the PR ID as key to retrieve stored review state
+      2. Use PowerReview GetReviewSession to check if a review session already exists for the PR (construct the Azure DevOps PR URL from the PR data)
+      3. Apply the decision logic from your instructions
+
+      Output a JSON object:
+      {
+        "prsToReview": [
+          {
+            ...PR data...,
+            "reviewReason": "first-time|new-iteration|stale-in-review|failed-retry",
+            "existingZakiraState": null | { "status": "...", "iterationId": "...", "startedAt": "..." },
+            "existingPowerReviewSession": null | { "sessionId": "...", "status": "..." }
+          }
+        ],
+        "prsSkipped": [
+          { "id": ..., "title": "...", "reason": "already reviewed at iteration X" | "review in progress since <timestamp>" }
+        ]
+      }
+
+      If prsToReview is empty, call orchestra_complete. Otherwise output the JSON.
+    mcps: [zakira, powerreview]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 900
+    retry:
+      maxRetries: 2
+      backoffSeconds: 5
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: invoke-reviews
+    type: Prompt
+    dependsOn: [check-review-state]
+    systemPrompt: |
+      You are an orchestration coordinator. You invoke the pr-code-reviewer orchestration for each PR that needs review, then track whether each invocation succeeded or failed.
+
+      For each PR:
+      1. Invoke pr-code-reviewer with the PR data as the 'prData' parameter
+      2. Use synchronous mode so you can detect success or failure
+      3. If the invocation fails or times out, record it as a failure
+
+      After all invocations complete, for any PRs whose review FAILED, update Zakira.Exchange to set their state to 'failed' so the next run of pr-auto-reviewer knows to retry them. Use edit_memory (or create_memory if no entry exists) with:
+      - key: the PR ID
+      - data: { "status": "failed", "iterationId": <current iteration>, "failedAt": <current timestamp>, "error": <brief error description> }
+      - reason: 'Review orchestration failed'
+
+      Do NOT update Zakira for successful reviews -- the pr-code-reviewer orchestration handles that itself.
+    userPrompt: |
+      The following PRs need to be reviewed:
+
+      {{check-review-state.output}}
+
+      For each PR in the 'prsToReview' array:
+      1. Use invoke_orchestration to invoke 'pr-code-reviewer' with mode 'sync' and timeoutSeconds 70000
+      2. Pass the PR data as the 'prData' parameter -- serialize the PR object as a JSON string (exclude the reviewReason, existingZakiraState, and existingPowerReviewSession fields -- only pass the original PR data fields)
+      3. After invocation completes, check whether it succeeded or failed
+      4. For any failed invocations, update Zakira.Exchange to mark the PR as 'failed'
+
+      After all reviews are complete, output a JSON summary:
+      {
+        "totalPRsReviewed": <count>,
+        "succeeded": <count>,
+        "failed": <count>,
+        "results": [
+          { "prId": ..., "prTitle": "...", "executionId": "...", "status": "succeeded|failed", "summary": "...", "error": null | "..." }
+        ]
+      }
+    mcps: [orchestra, zakira]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 7200
+
+  - name: fetch-action-view-schema
+    type: Command
+    dependsOn: []
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - schema
+    timeoutSeconds: 120
+
+  - name: create-action-view-entry
+    type: Prompt
+    dependsOn: [invoke-reviews, check-review-state, fetch-action-view-schema]
+    systemPrompt: |
+      You are an ActionView entry generator for PR auto-review runs. You create structured JSON entries conforming to the ActionView schema. The entry type must be 'pr-auto-review-run' and source must be '{{orchestration.name}}'.
+
+      Your entries should give the user a clear overview of what the auto-reviewer discovered and dispatched: how many PRs were found, how many were skipped vs reviewed, and the outcomes. This lets users stay informed about automated review activity.
+
+      IMPORTANT: Save the generated JSON entry using the orchestra_save_file tool.
+    userPrompt: |
+      Create an ActionView entry summarizing this PR auto-review run.
+
+      ActionView entry schema:
+      {{fetch-action-view-schema.output}}
+
+      Review state check (PRs found, skipped, and queued):
+      {{check-review-state.output}}
+
+      Review invocation results:
+      {{invoke-reviews.output}}
+
+      Create an entry with:
+      1. type: 'pr-auto-review-run'
+      2. source: '{{orchestration.name}}'
+      3. title: 'PR Auto-Review Run' with count of PRs reviewed
+      4. subtitle: Summary like 'X reviewed, Y skipped, Z failed'
+      5. severity: 'high' if any reviews failed, 'medium' if reviews were dispatched, 'low' if all skipped (nothing to do)
+      6. tags: ['pr-review', 'auto-review', 'ZTS']
+      7. content blocks:
+         - Alert block if any reviews failed (so the user knows retries are pending)
+         - A summary table: PR ID | Title | Author | Action | Outcome
+           - Action: 'reviewed', 'skipped (already reviewed)', 'skipped (in progress)', etc.
+           - Outcome: 'succeeded', 'failed', 'N/A' for skipped
+         - A section 'Skipped PRs' listing why each was skipped (if any)
+         - A section 'Review Results' with per-PR outcome details (if any were reviewed)
+         - A section 'Failed Reviews' listing errors and noting they will be retried (if any failed)
+      8. actions:
+         - 'View PRs' (style: primary)
+         - 'Dismiss' (style: default)
+
+      Save the JSON using orchestra_save_file. Output ONLY the raw JSON.
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 120
+
+  - name: submit-action-view-entry
+    type: Command
+    dependsOn: [create-action-view-entry]
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - add
+      - "--file"
+      - "{{create-action-view-entry.files[0]}}"
+    timeoutSeconds: 120
+
+  - name: generate-summary
+    type: Prompt
+    dependsOn: [invoke-reviews, check-review-state, submit-action-view-entry]
+    systemPrompt: |
+      You are a reporting assistant. Produce a clear, concise markdown summary of the PR auto-review orchestration run.
+    userPrompt: |
+      Create a final markdown summary of this PR auto-review orchestration run.
+
+      Review state check:
+      {{check-review-state.output}}
+
+      Review results:
+      {{invoke-reviews.output}}
+
+      ActionView submission:
+      {{submit-action-view-entry.output}}
+
+      Produce a polished markdown report:
+      1. Header: '## PR Auto-Review Summary' with orchestration run info
+      2. How many PRs were found assigned for review
+      3. How many were skipped (already reviewed or actively in-review) and why
+      4. How many were sent for review and their outcomes (succeeded vs failed)
+      5. For each reviewed PR: PR title, author, review reason (first-time, new-iteration, retry after failure, stale), and the outcome
+      6. Any PRs marked as failed that will be retried on the next run
+      7. Confirmation that ActionView entry was submitted
+      8. Any errors or issues encountered during the run
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 60
+
+trigger:
+  type: scheduler
+  enabled: true
+  intervalSeconds: 3600

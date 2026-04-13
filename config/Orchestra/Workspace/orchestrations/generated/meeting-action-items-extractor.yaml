@@ -1,0 +1,359 @@
+name: meeting-action-items-extractor
+description: |
+  Processes meeting transcripts to extract action items, decisions, follow-ups, and other trackable items. Searches WorkIQ for recent meeting transcripts, analyzes them with AI, deduplicates against previously extracted items via Zakira.Exchange, and saves results as structured markdown files plus ActionView notifications.
+version: 1.0.0
+tags: ["productivity", "meetings", "action-items", "WorkIQ", "MSFT"]
+
+variables:
+  defaultModel: claude-opus-4.6
+  lookBackHours: "8"
+  actionItemsDir: "C:\\Users\\moaid\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\Meeting Action Items"
+  zakiraCategory: meeting-action-items-state
+  myName: Moaid Hathot
+  myAlias: moaid
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 600
+timeoutSeconds: 3600
+
+mcps:
+  - name: workiq
+    type: local
+    command: npx
+    arguments:
+      - "-y"
+      - "@microsoft/workiq"
+      - mcp
+
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - "--yes"
+      - "--"
+      - mcp
+      - "--category"
+      - "{{vars.zakiraCategory}}"
+
+  - name: orchestra
+    type: remote
+    endpoint: "{{server.url}}/mcp/data"
+
+trigger:
+  type: scheduler
+  enabled: true
+  intervalSeconds: 28800
+
+steps:
+  - name: discover-recent-meetings
+    type: Prompt
+    dependsOn: []
+    systemPrompt: |
+      You are a meeting transcript discovery agent. Your job is to find meetings from the past {{vars.lookBackHours}} hours that have transcripts or recordings available.
+
+      Rules:
+      1. Use WorkIQ to search for meetings that occurred in the last {{vars.lookBackHours}} hours
+      2. For each meeting found, check if a transcript is available
+      3. Include meetings where you attended (not just organized)
+      4. Exclude: cancelled meetings, meetings you declined, focus time blocks
+      5. For each meeting with a transcript, extract: meeting title, date/time, organizer, attendees, duration, transcript content (or as much as available)
+      6. If no meetings with transcripts are found, call orchestra_complete with status 'success' and reason 'No meetings with transcripts found in the last {{vars.lookBackHours}} hours'
+      7. Output a JSON array of meetings with their transcript content
+    userPrompt: |
+      Find all my meetings from the last {{vars.lookBackHours}} hours that have transcripts available. I am {{vars.myName}} ({{vars.myAlias}}). Use WorkIQ to search calendar and find transcripts.
+
+      If no meetings with transcripts exist, call orchestra_complete to end early.
+    mcps: [workiq]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 600
+
+  - name: check-already-processed
+    type: Prompt
+    dependsOn: [discover-recent-meetings]
+    systemPrompt: |
+      You are a deduplication agent. Check which meeting transcripts have already been processed using Zakira.Exchange.
+
+      Rules:
+      1. For each meeting, generate a key: 'transcript-<date>-<normalized-title>' where date is YYYY-MM-DD-HHmm and normalized-title is lowercase with spaces replaced by hyphens, truncated to 50 chars
+      2. Check Zakira.Exchange using get_memory for each key
+      3. If a record exists with status 'processed', mark the meeting as 'skip'
+      4. If no record exists or status is 'failed', mark as 'needs-processing'
+      5. If ALL meetings are 'skip', call orchestra_complete with status 'success' and reason 'All recent meeting transcripts already processed'
+      6. Output JSON with: meetingsToProcess and meetingsSkipped arrays
+    userPrompt: |
+      Discovered meetings with transcripts:
+      {{discover-recent-meetings.output}}
+
+      Check Zakira.Exchange to see which ones have already been processed.
+    mcps: [zakira]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 180
+
+  - name: extract-action-items
+    type: Prompt
+    dependsOn: [check-already-processed]
+    systemPrompt: |
+      You are an expert meeting transcript analyzer. Your job is to carefully read meeting transcripts and extract ALL actionable items, decisions, and things that need tracking.
+
+      Extract the following categories:
+
+      1. **ACTION ITEMS** - Explicit or implicit tasks assigned to someone
+         - Who is responsible (name/alias, or 'unassigned' if unclear)
+         - What needs to be done (specific, actionable description)
+         - Deadline if mentioned
+         - Priority: high (blocking/urgent), medium (should do soon), low (nice to have)
+         - Flag items assigned to ME ({{vars.myName}}/{{vars.myAlias}}) prominently
+
+      2. **DECISIONS MADE** - Conclusions reached during the meeting
+         - What was decided
+         - Context/reasoning
+         - Who made or approved the decision
+         - Any conditions or caveats
+
+      3. **FOLLOW-UPS NEEDED** - Things that need checking, investigating, or revisiting
+         - What needs follow-up
+         - Who should follow up
+         - Why (what triggered this follow-up)
+         - Timeframe if mentioned
+
+      4. **QUESTIONS & OPEN ITEMS** - Unresolved questions raised during the meeting
+         - The question or open item
+         - Who raised it
+         - Who might have the answer
+         - Importance/urgency
+
+      5. **RISKS & CONCERNS** - Issues, risks, or concerns raised
+         - The risk/concern
+         - Who raised it
+         - Potential impact
+         - Any proposed mitigation
+
+      6. **INFORMATION SHARED** - Key facts, updates, or announcements worth noting
+         - The information
+         - Who shared it
+         - Relevance
+
+      Rules:
+      1. Process each meeting transcript independently
+      2. Be thorough -- implicit action items count (e.g., 'I'll look into that' = action item for the speaker)
+      3. Distinguish between my items vs others' items -- I need to know what I need to do
+      4. Use the exact words from the transcript when possible for accuracy
+      5. For each meeting, save a structured JSON result using orchestra_save_file with extension 'json'
+      6. Output a summary: { meetings: [{ title, date, actionItemsCount, decisionsCount, followUpsCount, questionsCount, risksCount, myActionItemsCount }] }
+    userPrompt: |
+      Meetings to process:
+      {{check-already-processed.output}}
+
+      I am {{vars.myName}} (alias: {{vars.myAlias}}). Extract all action items, decisions, follow-ups, questions, risks, and key information from each meeting transcript. Pay special attention to items assigned to me or that I committed to.
+    model: "{{vars.defaultModel}}"
+    reasoningLevel: High
+    timeoutSeconds: 1200
+
+  - name: generate-markdown-reports
+    type: Prompt
+    dependsOn: [extract-action-items]
+    systemPrompt: |
+      You are a markdown report generator for meeting action items. Convert the extracted action items into well-formatted markdown files.
+
+      For each meeting, generate a markdown file with this structure:
+
+      # Meeting Notes: <Title>
+
+      **Date:** <date/time>
+      **Duration:** <duration>
+      **Organizer:** <name>
+      **Attendees:** <list>
+
+      ---
+
+      ## My Action Items
+      <Items assigned to me, sorted by priority>
+      - [ ] **[HIGH]** <description> *(deadline if any)*
+      - [ ] **[MEDIUM]** <description>
+      - [ ] **[LOW]** <description>
+
+      ## All Action Items
+      | Owner | Action | Priority | Deadline |
+      |-------|--------|----------|----------|
+      | ... | ... | ... | ... |
+
+      ## Decisions Made
+      1. **<Decision>** - <context> *(decided by: <name>)*
+
+      ## Follow-Ups Needed
+      - [ ] <follow-up> - *<owner>*
+
+      ## Open Questions
+      - <question> *(raised by: <name>, directed at: <name>)*
+
+      ## Risks & Concerns
+      - **<risk>** - <impact> *(raised by: <name>)*
+
+      ## Key Information
+      - <info point>
+
+      ---
+      *Extracted by meeting-action-items-extractor on <timestamp>*
+
+      Rules:
+      1. Use checkbox syntax (- [ ]) for action items and follow-ups so they're trackable in Obsidian
+      2. Prioritize MY action items at the top, clearly separated
+      3. Save each meeting's markdown file using orchestra_save_file with extension 'md'
+      4. If a meeting had no significant items, still create a minimal file noting 'No action items identified'
+      5. Output the list of saved files and a summary
+    userPrompt: |
+      Extracted action items data:
+      {{extract-action-items.output}}
+
+      Extracted files:
+      {{extract-action-items.files}}
+
+      I am {{vars.myName}}. Generate a markdown report for each meeting. Read the JSON files if needed using orchestra_read_file.
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 600
+
+  - name: save-reports-to-disk
+    type: Prompt
+    dependsOn: [generate-markdown-reports]
+    systemPrompt: |
+      You are a file management agent. Copy the generated markdown reports to the designated directory.
+
+      Rules:
+      1. For each markdown file saved by generate-markdown-reports, read it using orchestra_read_file
+      2. Save to the action items directory with filename: YYYY-MM-DD-<meeting-title-slug>.md
+      3. The slug should be lowercase, spaces to hyphens, special chars removed, max 50 chars
+      4. Ensure the target directory exists (create if needed using PowerShell)
+      5. Report all saved file paths
+    userPrompt: |
+      Markdown report files:
+      {{generate-markdown-reports.files}}
+
+      Report summary:
+      {{generate-markdown-reports.output}}
+
+      Action items directory: {{vars.actionItemsDir}}
+
+      Copy each report to the action items directory.
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 120
+
+  - name: mark-meetings-processed
+    type: Prompt
+    dependsOn: [extract-action-items]
+    systemPrompt: |
+      You are a state management agent. Mark each processed meeting transcript in Zakira.Exchange so we don't reprocess it.
+
+      Rules:
+      1. For each meeting that was processed, use Zakira.Exchange create_memory
+      2. Key format: 'transcript-<date>-<normalized-title>' (same format used in check-already-processed)
+      3. Data: { status: 'processed', processedAt: '<ISO timestamp>', meetingTitle: '<title>', meetingDate: '<date>', actionItemsCount: <N>, myActionItemsCount: <M>, orchestrationRunId: '{{orchestration.runId}}' }
+      4. Report how many meetings were marked as processed
+    userPrompt: |
+      Extraction summary:
+      {{extract-action-items.output}}
+
+      Meetings processed:
+      {{check-already-processed.output}}
+
+      Mark each processed meeting in Zakira.Exchange.
+    mcps: [zakira]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 120
+
+  - name: create-actionview-entry
+    type: Prompt
+    dependsOn: [extract-action-items, save-reports-to-disk]
+    systemPrompt: |
+      You are an ActionView entry generator. Create an ActionView entry summarizing the action items extracted from meeting transcripts.
+
+      Entry requirements:
+      - type: 'meeting-action-items'
+      - source: 'meeting-action-items-extractor'
+      - title: '<N> action items from <M> meetings' (focus on MY items count)
+      - subtitle: 'You have <X> action items assigned to you'
+      - severity: 'high' if I have high-priority action items, 'medium' otherwise
+      - icon: 'list-checks'
+      - tags: ['meetings', 'action-items', 'productivity']
+      - pinned: true if I have high-priority action items
+      - content:
+        - An alert block (level: 'warning') listing my high-priority action items if any
+        - A keyValue block: Total Meetings Processed, Total Action Items, My Action Items, Decisions Made, Open Questions
+        - For each meeting, a section (type: 'section') with:
+          - Meeting title as section title
+          - A table of action items (Owner, Action, Priority)
+          - A markdown block with key decisions (if any)
+        - A markdown block listing all follow-ups needed
+      - groupId: Use current date YYYY-MM-DD
+      - actions: Include a CLI action to open the action items directory
+
+      Save the entry JSON using orchestra_save_file with extension 'json'.
+    userPrompt: |
+      Extraction summary:
+      {{extract-action-items.output}}
+
+      Extraction files:
+      {{extract-action-items.files}}
+
+      Saved report paths:
+      {{save-reports-to-disk.output}}
+
+      I am {{vars.myName}}. Create the ActionView entry. Highlight MY action items prominently. Save as JSON.
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 180
+
+  - name: submit-actionview-entry
+    type: Prompt
+    dependsOn: [create-actionview-entry]
+    systemPrompt: |
+      You are an orchestration coordinator. Submit the ActionView entry by invoking the actionview-submit orchestration.
+
+      Rules:
+      1. Read the saved ActionView JSON file using orchestra_read_file
+      2. Invoke the 'actionview-submit' orchestration using the orchestra MCP invoke_orchestration tool
+      3. Pass the entry JSON as the 'entryJson' parameter
+      4. Use synchronous mode (waitForResult: true) with a timeout of 300 seconds
+      5. Report the result
+    userPrompt: |
+      ActionView entry file:
+      {{create-actionview-entry.files[0]}}
+
+      Read the file and invoke the actionview-submit orchestration to submit it.
+    mcps: [orchestra]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 360
+
+  - name: generate-summary
+    type: Prompt
+    dependsOn: [extract-action-items, save-reports-to-disk, mark-meetings-processed, submit-actionview-entry]
+    systemPrompt: |
+      You are a summary generator. Create a concise markdown summary of this extraction run.
+
+      Include:
+      1. How many meetings were discovered vs processed vs skipped
+      2. Total action items extracted (total and mine)
+      3. Total decisions, follow-ups, open questions found
+      4. File paths where reports were saved
+      5. ActionView submission status
+      6. Highlight my most important/urgent action items at the end
+    userPrompt: |
+      Extraction summary:
+      {{extract-action-items.output}}
+
+      Saved reports:
+      {{save-reports-to-disk.output}}
+
+      Zakira state:
+      {{mark-meetings-processed.output}}
+
+      ActionView:
+      {{submit-actionview-entry.output}}
+
+      Generate a concise run summary. Emphasize what I need to act on.
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 60

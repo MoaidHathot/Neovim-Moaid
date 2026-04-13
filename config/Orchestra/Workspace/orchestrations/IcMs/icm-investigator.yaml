@@ -1,0 +1,277 @@
+name: icm-investigator
+description: |
+  Investigates a single IcM incident using KQL queries, playbook-driven analysis, and log correlation. Classifies the ICM type, runs the appropriate investigation playbook, queries Kusto clusters for evidence, and produces a structured investigation report. Tracks investigation state via Zakira.Exchange to avoid re-investigating already completed incidents.
+version: 1.0.0
+tags: ["ZTS", "MSFT", "OCE", "ICM"]
+
+inputs:
+  incidentId:
+    type: string
+    description: The IcM incident ID to investigate
+    required: true
+  incidentData:
+    type: string
+    description: JSON object containing the full incident details and description entries as fetched by icm-tracker
+    required: true
+
+variables:
+  defaultModel: claude-opus-4.6
+  zakiraCategory: icm-investigator-state
+  skillsDir: "P:\\Github\\OrcStra-Uruk\\Skills\\icm-investigator"
+  nugetSource: "https://pkgs.dev.azure.com/msazure/One/_packaging/ZTS/nuget/v3/index.json"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 900
+timeoutSeconds: 3600
+
+mcps:
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - "--yes"
+      - "--"
+      - mcp
+      - "--category"
+      - "{{vars.zakiraCategory}}"
+
+steps:
+  - name: prepare-incident-data
+    type: Transform
+    dependsOn: []
+    template: |
+      Incident ID: {{param.incidentId}}
+
+      Incident Data:
+      {{param.incidentData}}
+    parameters: [incidentId, incidentData]
+    contentType: text/plain
+
+  - name: check-investigation-state
+    type: Prompt
+    dependsOn: [prepare-incident-data]
+    systemPrompt: |
+      You are a state manager. You check Zakira.Exchange to determine if this incident has already been investigated.
+
+      Investigation states:
+      - (no entry) = never investigated, proceed
+      - 'investigating' = investigation in progress (possibly stale), skip
+      - 'completed' = investigation finished successfully, skip
+      - 'failed' = previous investigation failed, proceed (retry)
+
+      You have access to the orchestra_complete tool. If the incident should be skipped, call orchestra_complete with status 'success' and a reason explaining why.
+    userPrompt: |
+      Check the investigation state for incident:
+
+      {{prepare-incident-data.output}}
+
+      Use Zakira.Exchange get_memory with the incident ID as key.
+
+      Decision logic:
+      - If no entry exists: output the incident data as-is (proceed with investigation)
+      - If status is 'completed': call orchestra_complete with reason 'Incident already investigated successfully'
+      - If status is 'investigating': call orchestra_complete with reason 'Incident investigation already in progress'
+      - If status is 'failed': output the incident data as-is (retry investigation)
+
+      If proceeding, output the incident data unchanged.
+    mcps: [zakira]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 60
+
+  - name: mark-investigating
+    type: Prompt
+    dependsOn: [check-investigation-state]
+    systemPrompt: |
+      You are a state persistence assistant. Mark this incident as 'investigating' in Zakira.Exchange so that concurrent runs know not to pick it up.
+
+      Use create_memory for new entries or edit_memory if an entry already exists (e.g., retrying a previously failed investigation).
+    userPrompt: |
+      Mark the following incident as 'investigating' in Zakira.Exchange:
+
+      {{prepare-incident-data.output}}
+
+      Use Zakira.Exchange to save with:
+      - key: the incident ID
+      - data: { "status": "investigating", "startedAt": "<current timestamp>", "orchestrationRunId": "{{orchestration.runId}}" }
+      - reason: 'Investigation started by icm-investigator orchestration'
+      - tags: ['investigating']
+
+      Try create_memory first; if the key already exists, use edit_memory.
+
+      Output confirmation.
+    mcps: [zakira]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 60
+
+  - name: investigate
+    type: Prompt
+    dependsOn: [mark-investigating]
+    systemPrompt: |
+      You are an expert IcM incident investigator for the ZTS (Zero Trust Segmentation) service. You have access to the IcM MCP for fetching incident details and the Azure MCP for running KQL queries against Kusto clusters.
+
+      Follow the instructions in your skill files precisely. Your skill directory contains investigation playbooks, KQL query templates, cluster mappings, and a report template.
+
+      Your investigation process:
+      1. Read the shift scratchpad if it exists (references/shift-scratchpad.md)
+      2. Parse the incident data to extract key fields (monitor metadata, time window, affected API, datacenter, correlationIds)
+      3. Classify the ICM type using the title pattern table in the skill
+      4. Load and follow the appropriate investigation playbook
+      5. Resolve the correct Kusto cluster using the cluster mapping
+      6. Run KQL queries to gather evidence (error summary, request timelines, duration distribution, etc.)
+      7. Analyze the evidence to determine root cause
+      8. Produce a structured investigation report following the investigation template
+
+      Be thorough and evidence-based. Never speculate without log evidence. Include all KQL queries used in the appendix.
+
+      IMPORTANT: Save the investigation report using the orchestra_save_file tool.
+    userPrompt: |
+      Investigate the following IcM incident:
+
+      {{check-investigation-state.output}}
+
+      Follow your skill instructions to:
+      1. Classify the ICM type from the title
+      2. Load the appropriate playbook from your references
+      3. Query the relevant Kusto clusters for evidence
+      4. Analyze findings and determine root cause
+      5. Produce a full investigation report using the investigation template from references/investigation-template.md
+
+      Save the final report using orchestra_save_file.
+    mcps: [icm-readonly, azure]
+    model: "{{vars.defaultModel}}"
+    reasoningLevel: High
+    timeoutSeconds: 1800
+    skillDirectories:
+      - "{{vars.skillsDir}}"
+
+  - name: mark-completed
+    type: Prompt
+    dependsOn: [investigate]
+    systemPrompt: |
+      You are a state persistence assistant. Update the incident's investigation state from 'investigating' to 'completed' in Zakira.Exchange now that the investigation has finished successfully.
+
+      Use edit_memory since the entry already exists from the mark-investigating step.
+    userPrompt: |
+      Update the investigation state for this incident to 'completed'.
+
+      Incident:
+      {{prepare-incident-data.output}}
+
+      Investigation result:
+      {{investigate.output}}
+
+      Use Zakira.Exchange edit_memory with:
+      - key: the incident ID
+      - data: { "status": "completed", "startedAt": "<from previous state>", "completedAt": "<current timestamp>", "orchestrationRunId": "{{orchestration.runId}}", "summary": "<brief 2-3 sentence summary of the investigation findings>" }
+      - reason: 'Investigation completed successfully by icm-investigator orchestration'
+      - tags: ['completed']
+
+      Output confirmation of what was saved.
+    mcps: [zakira]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 60
+
+  - name: fetch-action-view-schema
+    type: Command
+    dependsOn: []
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - schema
+    timeoutSeconds: 120
+
+  - name: create-action-view-entry
+    type: Prompt
+    dependsOn: [investigate, fetch-action-view-schema, prepare-incident-data]
+    systemPrompt: |
+      You are an ActionView entry generator for IcM investigations. You create structured JSON entries conforming to the ActionView schema. The entry type must be 'icm-investigation' and source must be '{{orchestration.name}}'.
+
+      Your entries should present the investigation findings clearly so that on-call engineers can quickly understand the root cause, evidence, and recommended actions. Use alerts for critical findings, tables for evidence summaries, and sections for detailed analysis.
+
+      IMPORTANT: Save the generated JSON entry using the orchestra_save_file tool.
+    userPrompt: |
+      Create an ActionView entry summarizing the IcM investigation.
+
+      ActionView entry schema:
+      {{fetch-action-view-schema.output}}
+
+      Incident data:
+      {{prepare-incident-data.output}}
+
+      Investigation findings:
+      {{investigate.output}}
+
+      Create an entry with:
+      1. type: 'icm-investigation'
+      2. source: '{{orchestration.name}}'
+      3. title: 'IcM Investigation: ' + incident ID + ' - ' + incident title
+      4. subtitle: ICM type classification + root cause summary (one line)
+      5. severity: 'high' if critical root cause or severity 1-2 incident, 'medium' for severity 3, 'low' for severity 4+
+      6. tags: ['icm', 'investigation', 'ZTS', the ICM type classification]
+      7. content blocks:
+         - Alert block if a critical root cause was identified or if immediate action is needed
+         - A keyValue block with: Incident ID, Severity, State, Cluster/Environment, Time Window
+         - A section 'Root Cause' with a markdown block containing the root cause analysis
+         - A section 'Key Findings' with a table: Metric | Value (error counts, success rate, etc.)
+         - A section 'Evidence' with a markdown block of key log excerpts
+         - A section 'Recommendations' with a markdown block listing prioritized next steps
+         - A section 'Queries Used' with a markdown block listing the KQL queries for reproducibility
+      8. actions:
+         - 'Open IcM' (style: primary) linking to the IcM portal URL
+         - 'Dismiss' (style: default)
+
+      Save the JSON using orchestra_save_file. Output ONLY the raw JSON.
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 120
+
+  - name: submit-action-view-entry
+    type: Command
+    dependsOn: [create-action-view-entry]
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - add
+      - "--file"
+      - "{{create-action-view-entry.files[0]}}"
+    timeoutSeconds: 120
+
+  - name: generate-summary
+    type: Prompt
+    dependsOn: [investigate, mark-completed, submit-action-view-entry]
+    systemPrompt: |
+      You are a reporting assistant. Produce a clear, concise markdown summary of the investigation run.
+    userPrompt: |
+      Create a final markdown summary of this IcM investigation orchestration run.
+
+      Incident:
+      {{prepare-incident-data.output}}
+
+      Investigation result:
+      {{investigate.output}}
+
+      State update:
+      {{mark-completed.output}}
+
+      ActionView submission:
+      {{submit-action-view-entry.output}}
+
+      Produce a polished markdown report:
+      1. Header: '## IcM Investigation Summary'
+      2. Incident ID, title, severity, and status
+      3. ICM type classification and playbook used
+      4. Key findings and root cause summary
+      5. Recommendations
+      6. Confirmation that investigation state was saved and ActionView entry submitted
+      7. Any errors or notes
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 60

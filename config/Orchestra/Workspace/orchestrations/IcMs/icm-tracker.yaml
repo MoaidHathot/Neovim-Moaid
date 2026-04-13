@@ -1,0 +1,304 @@
+name: icm-tracker
+description: |
+  Periodically checks tracked IcM incidents for status changes, new comments, and state updates. Reads a watchlist file, fetches current details for each incident via IcM MCP, compares against previously stored snapshots in Zakira.Exchange, and reports changes via ActionView. After acknowledging changes, invokes the icm-investigator orchestration asynchronously for each incident with changes. Runs hourly.
+version: 1.0.0
+tags: ["ZTS", "MSFT", "RP", "ICM"]
+
+variables:
+  watchlistPath: "C:\\Users\\moaid\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\ZTS\\Orchestration Data\\icm-watchlist.json.md"
+  icmSource: "https://pkgs.dev.azure.com/msazure/One/_packaging/ZTS/nuget/v3/index.json"
+
+mcps:
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - "--yes"
+      - "--"
+      - mcp
+      - "--category"
+      - icm-tracker
+
+  - name: orchestra
+    type: remote
+    endpoint: "{{server.url}}/mcp/data"
+
+steps:
+  - name: load-watchlist
+    type: Command
+    dependsOn: []
+    command: pwsh
+    arguments:
+      - "-NoProfile"
+      - "-Command"
+      - "Get-Content -Raw '{{vars.watchlistPath}}'"
+    timeoutSeconds: 300
+
+  - name: check-watchlist
+    type: Prompt
+    dependsOn: [load-watchlist]
+    systemPrompt: |
+      You are a gate-check assistant. Your ONLY job is to determine whether the watchlist contains any incidents to track. You have access to the orchestra_complete tool.
+    userPrompt: |
+      Review the following watchlist data:
+
+      {{load-watchlist.output}}
+
+      If the watchlist is empty (no incidents listed), call orchestra_complete with status 'success' and reason 'Watchlist is empty, no incidents to track'. If there ARE incidents in the list, output ONLY a JSON array of the incident IDs as strings, e.g. ["770343639", "760607426"]. No other text.
+    mcps: []
+    model: claude-opus-4.6
+    timeoutSeconds: 300
+
+  - name: fetch-incident-details
+    type: Prompt
+    dependsOn: [check-watchlist]
+    systemPrompt: |
+      You are an IcM data collector. You have IcM MCP tools available to fetch incident details. For EACH incident ID provided, you MUST call the tool to get the full incident details (including description entries/comments). Collect all results and output them as a single JSON object mapping incident ID to its full details.
+
+      IMPORTANT: For each incident, fetch both the incident details AND description entries (comments). Use the appropriate tools from your MCP tool list. Always return a json object containing the content of the info that you fetched
+    userPrompt: |
+      Fetch full details and description entries for each of these tracked incidents:
+
+      {{check-watchlist.output}}
+
+      For each incident ID:
+      1. Get the incident details
+      2. Get the description entries (comments)
+
+      Output a single JSON object with this structure:
+      {
+        "<incident_id>": {
+          "incident": { ...incident details... },
+          "descriptions": [ ...description entries... ]
+        }
+      }
+
+      . **Always** return ONLY the JSON content that you fetched. Important, return the json content only (of the IcM that you fetched!), nothing more, nothing else
+    mcps: [icm-readonly]
+    model: claude-opus-4.6
+    timeoutSeconds: 600
+
+  - name: load-previous-snapshots
+    type: Prompt
+    dependsOn: [check-watchlist]
+    systemPrompt: |
+      You are a data retrieval assistant. You have Zakira.Exchange MCP tools available. Your job is to retrieve previously stored snapshots for each incident from Zakira.Exchange memory storage. The category is already locked to 'icm-tracker', so you only need to specify the key (which is the incident ID).
+
+      For each incident ID, attempt to retrieve the stored memory entry using the get tool. If no entry exists for an incident (first time tracking), that is fine - just note it as null.
+    userPrompt: |
+      Retrieve the previously stored snapshots for each of these incidents:
+
+      {{check-watchlist.output}}
+
+      For each incident ID, use the get_memory tool with the incident ID as the key. The category is already set to 'icm-tracker'.
+
+      Output a JSON object mapping each incident ID to its stored data, or null if no previous snapshot exists:
+      {
+        "<incident_id>": { ...previous data or null... }
+      }
+
+      Output ONLY the JSON, no other text.
+    mcps: [zakira]
+    model: claude-opus-4.6
+    timeoutSeconds: 180
+    retry:
+      maxRetries: 2
+      backoffSeconds: 5
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: detect-changes
+    type: Prompt
+    dependsOn: [fetch-incident-details, load-previous-snapshots, load-watchlist]
+    systemPrompt: |
+      You are a change detection analyst for IcM incidents. You compare current incident data against previous snapshots to identify meaningful changes. You are thorough and precise.
+
+      Changes to detect:
+      - State transitions (e.g., Active -> Mitigated -> Resolved)
+      - Severity changes
+      - New description entries / comments since the last snapshot
+      - Owner or team assignment changes
+      - Acknowledgment status changes
+      - Title or impact statement changes
+      - Any new linked/responsible incidents
+
+      You also have access to the orchestra_complete and orchestra_set_status tools. If there are NO changes for ANY incident, call orchestra_set_status with status 'no_action' and a reason. The orchestration will still continue to the save step but the ActionView entry creation will be skipped.
+    userPrompt: |
+      Compare the current incident data against the previous snapshots and identify all changes.
+
+      Watchlist (for labels):
+      {{load-watchlist.output}}
+
+      Current incident data:
+      {{fetch-incident-details.output}}
+
+      Previous snapshots:
+      {{load-previous-snapshots.output}}
+
+      For incidents with no previous snapshot (null), treat everything as 'new' (first time tracking) - report the current state as a summary rather than listing every field as a change.
+
+      Output a JSON object with this structure:
+      {
+        "hasChanges": true/false,
+        "incidents": {
+          "<incident_id>": {
+            "label": "<from watchlist>",
+            "isNew": true/false,
+            "changes": [
+              {
+                "field": "<what changed>",
+                "from": "<old value or null if new>",
+                "to": "<new value>"
+              }
+            ],
+            "newComments": [
+              {
+                "author": "<who>",
+                "date": "<when>",
+                "text": "<comment summary>"
+              }
+            ],
+            "currentState": "<current incident state>",
+            "currentSeverity": <severity number>
+          }
+        }
+      }
+
+      If hasChanges is false (no changes for any incident), use the orchestra_set_status tool with status 'no_action' and reason 'No changes detected for any tracked incident'. Still output the JSON.
+    mcps: []
+    model: claude-opus-4.6
+    timeoutSeconds: 600
+
+  - name: save-snapshots
+    type: Prompt
+    dependsOn: [fetch-incident-details, check-watchlist]
+    systemPrompt: |
+      You are a data persistence assistant. You have Zakira.Exchange MCP tools available. Your job is to save the current incident data as snapshots for future comparison. The category is already locked to 'icm-tracker'.
+
+      For each incident, use the create_memory or edit_memory tool (create if it's new, edit if it already exists) with:
+      - key: the incident ID
+      - data: the full current incident data (JSON stringified)
+      - reason: 'Snapshot updated by icm-tracker orchestration'
+      - tags: the incident state and severity for easy filtering
+    userPrompt: |
+      Save the current incident data as snapshots in Zakira.Exchange.
+
+      Incident IDs to save:
+      {{check-watchlist.output}}
+
+      Current incident data:
+      {{fetch-incident-details.output}}
+
+      For each incident, save the full data using create_memory (if it's a new entry) or edit_memory (if it already exists). Use the incident ID as the key. Try create first; if it fails because the entry already exists, use edit instead.
+
+      After saving all snapshots, output a confirmation message listing which incidents were saved/updated.
+    mcps: [zakira]
+    model: claude-opus-4.6
+    timeoutSeconds: 500
+    retry:
+      maxRetries: 2
+      backoffSeconds: 5
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: fetch-action-view-schema
+    type: Command
+    dependsOn: []
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - schema
+    timeoutSeconds: 320
+
+  - name: create-action-view-entry
+    type: Prompt
+    dependsOn: [detect-changes, fetch-action-view-schema, load-watchlist]
+    systemPrompt: |
+      You are an ActionView entry generator for IcM status tracking. You create structured JSON entries conforming to the ActionView schema. The entry type must be 'icm-status-update' and source must be 'icm-tracker'.
+
+      Your entries should be clear, scannable, and highlight what changed. Use tables for change summaries, sections for per-incident details, and alerts for important state changes (like incidents resolving or severity escalations).
+
+      IMPORTANT: Save the generated JSON entry using the orchestra_save_file tool. This is required so downstream steps can reference the file.
+    userPrompt: |
+      Create an ActionView entry reporting the IcM status changes detected.
+
+      ActionView entry schema:
+      {{fetch-action-view-schema.output}}
+
+      Change detection results:
+      {{detect-changes.output}}
+
+      Watchlist (for context/labels):
+      {{load-watchlist.output}}
+
+      Create an entry with:
+      1. type: 'icm-status-update'
+      2. source: 'icm-tracker'
+      3. title: 'IcM Status Update' with a count of incidents with changes
+      4. subtitle: Brief summary of the most notable changes
+      5. severity: 'high' if any severity escalation or state regression, 'medium' for normal updates, 'low' if only minor changes
+      6. tags: ['icm', 'tracking', 'status-update']
+      7. content blocks:
+         - An alert block if any critical state changes occurred (severity escalation, state regression)
+         - A summary table with columns: Incident ID, Label, State, Severity, Changes
+         - For each incident with changes, a section titled with the incident label containing:
+           - A keyValue block with current state details
+           - A markdown block listing the specific changes
+           - If there are new comments, a table of new comments with columns: Author, Date, Summary
+      8. actions:
+         - 'Acknowledge' (style: primary) with a CLI command: program 'echo', args ['Acknowledged']
+         - 'Dismiss' (style: default) with a CLI command: program 'echo', args ['Dismissed']
+
+      Respond with ONLY the raw JSON. No tools, no explanation, no markdown fences.
+    mcps: []
+    model: claude-opus-4.6
+    timeoutSeconds: 320
+
+  - name: submit-action-view-entry
+    type: Command
+    dependsOn: [create-action-view-entry]
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - add
+      - "--file"
+      - "{{create-action-view-entry.files[0]}}"
+    timeoutSeconds: 320
+
+  - name: generate-summary
+    type: Prompt
+    dependsOn: [detect-changes, save-snapshots, submit-action-view-entry]
+    systemPrompt: |
+      You are a reporting assistant. Produce clear, concise markdown summaries of the IcM tracker run. Use tables and formatting for scannability.
+    userPrompt: |
+      Create a final markdown summary of this IcM tracker orchestration run.
+
+      Change detection results:
+      {{detect-changes.output}}
+
+      Snapshot save results:
+      {{save-snapshots.output}}
+
+      ActionView submission result:
+      {{submit-action-view-entry.output}}
+
+      Produce a polished markdown report:
+      1. Header with orchestration name and timestamp
+      2. Summary line (e.g., 'X incidents tracked, Y had changes')
+      3. For each incident with changes: a brief list of what changed
+      4. Confirmation that snapshots were saved and ActionView entry was submitted
+      5. How many investigations were invoked (and for which incidents)
+      6. Note any errors or issues (or confirm none)
+    mcps: []
+    model: claude-opus-4.6
+    timeoutSeconds: 600
+
+trigger:
+  type: scheduler
+  enabled: true
+  intervalSeconds: 3600

@@ -1,0 +1,296 @@
+name: icm-auto-investigator
+description: |
+  Automatically discovers active IcM incidents via the IcM MCP, determines which have not been investigated yet by checking Zakira.Exchange state, and invokes the icm-investigator orchestration for each uninvestigated incident. Produces an ActionView summary of all dispatched investigations.
+version: 1.0.0
+tags: ["ZTS", "MSFT", "OCE", "ICM"]
+
+variables:
+  defaultModel: claude-opus-4.6
+  zakiraCategory: icm-investigator-state
+  staleInvestigationMinutes: "920"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 900
+timeoutSeconds: 7200
+
+mcps:
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - "--yes"
+      - "--"
+      - mcp
+      - "--category"
+      - icm-investigator-state
+
+  - name: orchestra
+    type: remote
+    endpoint: "{{server.url}}/mcp/data"
+
+steps:
+  - name: discover-incidents
+    type: Prompt
+    dependsOn: []
+    systemPrompt: |
+      You are an IcM incident discovery agent. You use the IcM MCP tools to find active incidents that need attention.
+
+      Your goal is to find all currently active (non-resolved, non-closed) incidents. Use the available IcM tools to search/list incidents.
+
+      You have access to the orchestra_complete tool. If no new active incidents are found, call orchestra_complete with status 'success' and reason 'No active incidents found'.
+    userPrompt: |
+      Use the IcM MCP tools to discover all currently active incidents.
+
+      1. List/search for active incidents (state: Active, Mitigated, or any non-resolved/non-closed state)
+      2. For each incident found, collect: incident ID, title, severity, state, owning team, created date, and any monitor/source metadata
+
+      Output a JSON object:
+      {
+        "totalFound": <count>,
+        "incidents": [
+          {
+            "incidentId": "<id>",
+            "title": "<title>",
+            "severity": <number>,
+            "state": "<state>",
+            "owningTeam": "<team>",
+            "createdDate": "<date>"
+          }
+        ]
+      }
+
+      If no active incidents are found, call orchestra_complete with status 'success' and reason 'No active incidents found'.
+      Otherwise output ONLY the JSON
+    mcps: [icm-readonly]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 300
+
+  - name: fetch-incident-details
+    type: Prompt
+    dependsOn: [discover-incidents]
+    systemPrompt: |
+      You are an IcM data collector. For EACH incident ID from the discovery step, fetch the full incident details including description entries (comments). Output as a single JSON object mapping incident ID to its data.
+    userPrompt: |
+      Fetch full details and description entries for each discovered incident:
+
+      {{discover-incidents.output}}
+
+      For each incident in the 'incidents' array:
+      1. Get the full incident details
+      2. Get the description entries (comments)
+
+      Output a single JSON object:
+      {
+        "<incident_id>": {
+          "incident": { ...full incident details... },
+          "descriptions": [ ...description entries... ]
+        }
+      }
+
+      Return ONLY the JSON content, nothing else.
+    mcps: [icm-readonly]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 600
+
+  - name: check-investigation-state
+    type: Prompt
+    dependsOn: [fetch-incident-details, discover-incidents]
+    systemPrompt: |
+      You are an investigation state manager. For each incident, you check Zakira.Exchange to determine whether it has already been investigated or is currently being investigated.
+
+      Investigation states stored in Zakira.Exchange:
+      - (no entry) = never investigated -> needs investigation
+      - 'investigating' with startedAt older than {{vars.staleInvestigationMinutes}} minutes -> stale, needs re-investigation
+      - 'investigating' with startedAt within the last {{vars.staleInvestigationMinutes}} minutes -> skip (in progress)
+      - 'completed' -> skip (already done)
+      - 'failed' -> needs re-investigation
+
+      You have access to the orchestra_complete tool. If ALL incidents should be skipped, call orchestra_complete with status 'success' and reason explaining why no investigations are needed.
+    userPrompt: |
+      Check the investigation state for each discovered incident.
+
+      Discovered incidents:
+      {{discover-incidents.output}}
+
+      For each incident:
+      1. Use Zakira.Exchange get_memory with the incident ID as key
+      2. Apply the decision logic from your instructions
+
+      Output a JSON object:
+      {
+        "incidentsToInvestigate": [
+          {
+            "incidentId": "<id>",
+            "reason": "never-investigated|stale-investigation|failed-retry",
+            "existingState": null | { "status": "...", "startedAt": "...", ... },
+            "incidentTitle": "<title>",
+            "severity": <severity number>
+          }
+        ],
+        "incidentsSkipped": [
+          {
+            "incidentId": "<id>",
+            "reason": "already-completed" | "investigation-in-progress",
+            "incidentTitle": "<title>"
+          }
+        ]
+      }
+
+      If incidentsToInvestigate is empty, call orchestra_complete. Otherwise output the JSON.
+    mcps: [zakira]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 120
+
+  - name: invoke-investigations
+    type: Prompt
+    dependsOn: [check-investigation-state, fetch-incident-details]
+    systemPrompt: |
+      You are an orchestration coordinator. You invoke the icm-investigator orchestration for each incident that needs investigation.
+
+      For each incident:
+      1. Prepare the parameters: incidentId (the ID) and incidentData (the full incident JSON from the fetched data)
+      2. Invoke icm-investigator in synchronous mode so you can detect success or failure
+      3. Record the result
+
+      After all invocations complete, for any incidents whose investigation FAILED, update Zakira.Exchange to set their state to 'failed' so the next run knows to retry. Use edit_memory (or create_memory if no entry exists) with:
+      - key: the incident ID
+      - data: { "status": "failed", "failedAt": <current timestamp>, "error": <brief error description> }
+      - reason: 'Investigation orchestration failed'
+
+      Do NOT update Zakira for successful investigations -- the icm-investigator orchestration handles that itself.
+    userPrompt: |
+      The following incidents need investigation:
+
+      {{check-investigation-state.output}}
+
+      Full incident data (use this to pass as incidentData parameter):
+      {{fetch-incident-details.output}}
+
+      For each incident in the 'incidentsToInvestigate' array:
+      1. Extract the full incident data for this incident from the fetched data above
+      2. Use invoke_orchestration to invoke 'icm-investigator' with mode 'sync' and timeoutSeconds 3600
+      3. Pass two parameters:
+         - incidentId: the incident ID as a string
+         - incidentData: the full incident JSON object (incident details + descriptions) serialized as a JSON string
+      4. After invocation completes, check whether it succeeded or failed
+      5. For any failed invocations, update Zakira.Exchange to mark the incident as 'failed'
+
+      After all investigations complete, output a JSON summary:
+      {
+        "totalInvestigated": <count>,
+        "succeeded": <count>,
+        "failed": <count>,
+        "results": [
+          {
+            "incidentId": "...",
+            "incidentTitle": "...",
+            "executionId": "...",
+            "status": "succeeded" | "failed",
+            "summary": "...",
+            "error": null | "..."
+          }
+        ]
+      }
+    mcps: [orchestra, zakira]
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 7200
+
+  - name: fetch-action-view-schema
+    type: Command
+    dependsOn: []
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - schema
+    timeoutSeconds: 120
+
+  - name: create-action-view-entry
+    type: Prompt
+    dependsOn: [invoke-investigations, fetch-action-view-schema, check-investigation-state]
+    systemPrompt: |
+      You are an ActionView entry generator for IcM auto-investigation runs. You create structured JSON entries conforming to the ActionView schema. The entry type must be 'icm-auto-investigation' and source must be '{{orchestration.name}}'.
+
+      Your entries should clearly report how many incidents were investigated, which succeeded, which failed, and which were skipped.
+
+      IMPORTANT: Save the generated JSON entry using the orchestra_save_file tool.
+    userPrompt: |
+      Create an ActionView entry summarizing this auto-investigation run.
+
+      ActionView entry schema:
+      {{fetch-action-view-schema.output}}
+
+      Investigation dispatch results:
+      {{invoke-investigations.output}}
+
+      State check results (for skipped incidents):
+      {{check-investigation-state.output}}
+
+      Create an entry with:
+      1. type: 'icm-auto-investigation'
+      2. source: '{{orchestration.name}}'
+      3. title: 'IcM Auto-Investigation Run' with counts (e.g., '3 investigated, 1 skipped')
+      4. subtitle: Brief outcome summary (e.g., '2 succeeded, 1 failed')
+      5. severity: 'high' if any investigations failed, 'medium' if all succeeded, 'low' if nothing to investigate
+      6. tags: ['icm', 'investigation', 'auto', 'ZTS']
+      7. content blocks:
+         - An alert block if any investigations failed
+         - A summary table with columns: Incident ID, Title, Severity, Action, Status, Execution ID
+         - Include both investigated and skipped incidents in the table
+         - For failed investigations, include the error message
+      8. actions:
+         - 'Acknowledge' (style: primary) with CLI command: program 'echo', args ['Acknowledged']
+         - 'Dismiss' (style: default) with CLI command: program 'echo', args ['Dismissed']
+
+      Save the JSON using orchestra_save_file. Output ONLY the raw JSON.
+    mcps: []
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 120
+
+  - name: submit-action-view-entry
+    type: Command
+    dependsOn: [create-action-view-entry]
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - add
+      - "--file"
+      - "{{create-action-view-entry.files[0]}}"
+    timeoutSeconds: 120
+
+  - name: generate-summary
+    type: Prompt
+    dependsOn: [invoke-investigations, submit-action-view-entry]
+    systemPrompt: |
+      You are a reporting assistant. Produce clear, concise markdown summaries.
+    userPrompt: |
+      Create a final markdown summary of this IcM auto-investigation run.
+
+      Investigation results:
+      {{invoke-investigations.output}}
+
+      ActionView submission:
+      {{submit-action-view-entry.output}}
+
+      Produce a polished markdown report:
+      1. Header: '## IcM Auto-Investigation Summary'
+      2. Summary line: X incidents discovered, Y investigated, Z skipped, W failed
+      3. For each investigated incident: ID, title, status, and a one-line result summary
+      4. For each skipped incident: ID, title, and reason for skipping
+      5. Confirmation that ActionView entry was submitted
+      6. Any errors or issues
+    model: "{{vars.defaultModel}}"
+    timeoutSeconds: 60
+
+trigger:
+  type: manual
+  enabled: false
