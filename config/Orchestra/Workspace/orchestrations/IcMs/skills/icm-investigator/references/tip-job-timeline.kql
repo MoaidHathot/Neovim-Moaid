@@ -1,0 +1,18 @@
+// TIP Job Execution Timeline — shows the full lifecycle of a single job run.
+// Cluster: Target ZTS cluster (e.g., https://ztsdev.westus3.kusto.windows.net)
+// Database: Log
+// Parameters: {start}, {end}, {jobName}
+// Use this to trace the execution order: job start → test starts → outputs → pass/fail/skip/timeout.
+// Critical for diagnosing timeout issues where tests don't complete within the allotted time.
+// IMPORTANT: TIP test logs require Tenant == "SyntheticsProd" filter.
+let _start = datetime({start});
+let _end = datetime({end});
+let _jobName = "{jobName}";
+Log
+| where TIMESTAMP between (_start .. _end)
+| where Tenant == "SyntheticsProd"
+| where JobName has _jobName
+| where body has "Starting" or body has "[PASSED]" or body has "[FAILED]" or body has "[SKIPPED]"
+    or body has "[TIMEOUT]" or body has "Finished" or body has "synthetics job"
+| project TIMESTAMP, type, body, displayName, duration, severityText
+| sort by TIMESTAMP asc

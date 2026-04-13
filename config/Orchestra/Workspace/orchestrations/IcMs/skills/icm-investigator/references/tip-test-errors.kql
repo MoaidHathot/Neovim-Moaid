@@ -1,0 +1,22 @@
+// TIP Test Errors — errors, exceptions, and timeout events in TIP test jobs.
+// Cluster: Target ZTS cluster (e.g., https://ztsdev.westus3.kusto.windows.net)
+// Database: Log
+// Parameters: {start}, {end}, {jobName}
+// Use this to find why tests fail or timeout. Checks for exceptions, timeout events, and error-level log entries.
+// IMPORTANT: TIP test logs require Tenant == "SyntheticsProd" filter.
+// TIP: Look for x-ms-client-request-id in the exceptionMessage field of Error-severity entries.
+//       This clientRequestId can be used to cross-reference with RPaaS logs
+//       (rpaas-incoming-requests.kql and rpaas-outgoing-requests.kql).
+let _start = datetime({start});
+let _end = datetime({end});
+let _jobName = "{jobName}";
+Log
+| where TIMESTAMP between (_start .. _end)
+| where Tenant == "SyntheticsProd"
+| where JobName has _jobName
+| where body has "[TIMEOUT]" or body has "[FAILED]"
+    or severityText in ("Error", "Critical", "Fatal")
+    or exceptionType != ""
+| extend clientRequestId = extract(@"x-ms-client-request-id:\s*([0-9a-fA-F-]+)", 1, exceptionMessage)
+| project TIMESTAMP, severityText, type, body, displayName, exceptionType, exceptionMessage, clientRequestId, exceptionStackTrace, duration, output
+| sort by TIMESTAMP desc

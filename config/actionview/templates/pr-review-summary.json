@@ -1,0 +1,155 @@
+{
+  "type": "pr-review-summary",
+  "description": "Pull Request review summary from the pr-auto-reviewer orchestration. Aggregates findings from multiple expert reviewers (.NET, Principal Engineer, Security, Durable Tasks) with PR metadata, categorized comments, per-comment metadata (reviewer name, file, severity, draft ID), inline code diffs, and per-comment approve/delete actions. Includes entry-level actions for opening the PR, bulk approve/submit/delete, and voting.",
+  "defaults": {
+    "icon": "git-pull-request",
+    "severity": "medium",
+    "tags": ["pr-review", "code-review", "ZTS"]
+  },
+  "contentTemplate": [
+    {
+      "type": "alert",
+      "required": false
+    },
+    {
+      "type": "keyValue",
+      "label": "Pull Request",
+      "required": false,
+      "description": "PR metadata. Expected keys: Repository, Branch (source -> target), Author, Files Changed, Lines (+added / -removed)."
+    },
+    {
+      "type": "table",
+      "label": "Review Summary",
+      "required": true,
+      "description": "One row per reviewer agent. Expected columns: Reviewer, Status, Comments, Critical Issues."
+    },
+    {
+      "type": "section",
+      "title": "Review Comments",
+      "titleAliases": ["Comments", "Findings", "Review Findings", "All Comments"],
+      "required": true,
+      "description": "Each nested section represents a single review comment with metadata, the comment body, an optional code diff, and per-comment actions.",
+      "nestedSections": {
+        "repeatable": true,
+        "contentTemplate": [
+          {
+            "type": "keyValue",
+            "label": "Details",
+            "required": false,
+            "description": "Comment metadata. Expected keys: Reviewer (agent name, e.g. '.NET Expert'), File (relative path), Lines (line range), Severity (nit/suggestion/bug/critical), Draft ID (PowerReview draft UUID for action commands)."
+          },
+          {
+            "type": "markdown",
+            "label": "Comment",
+            "required": true,
+            "description": "The reviewer's comment text."
+          },
+          {
+            "type": "code",
+            "label": "Code",
+            "required": false,
+            "description": "The relevant code snippet or diff for this comment. Use language 'diff' for unified diffs, or the file's language for code snippets. Set 'filename' to the file path and 'highlight' to the relevant line numbers."
+          }
+        ],
+        "expectedActions": [
+          {
+            "label": "Approve",
+            "style": "success",
+            "description": "Approve this draft comment. CLI: powerreview comment approve --pr-url <url> --draft-id <id>"
+          },
+          {
+            "label": "Delete",
+            "style": "danger",
+            "description": "Delete this draft comment. CLI: powerreview comment delete --pr-url <url> --draft-id <id>"
+          }
+        ]
+      }
+    },
+    {
+      "type": "section",
+      "title": "Critical & Blocking Issues",
+      "titleAliases": ["Critical Issues", "Blocking Issues", "Must Fix"],
+      "required": false
+    },
+    {
+      "type": "section",
+      "title": ".NET Expert Findings",
+      "titleAliases": [".NET Review", "DotNet Expert", "Runtime Findings"],
+      "required": false
+    },
+    {
+      "type": "section",
+      "title": "Architecture & Design",
+      "titleAliases": ["Principal Engineer Review", "Design Review", "Architecture"],
+      "required": false
+    },
+    {
+      "type": "section",
+      "title": "Security Findings",
+      "titleAliases": ["Security Review", "Security Issues", "Vulnerabilities"],
+      "required": false
+    },
+    {
+      "type": "section",
+      "title": "Durable Tasks Review",
+      "titleAliases": ["DTFx Review", "Orchestration Review", "Durable Functions"],
+      "required": false
+    },
+    {
+      "type": "section",
+      "title": "Test Coverage Assessment",
+      "titleAliases": ["Test Coverage", "Testing", "Test Gaps"],
+      "required": false
+    },
+    {
+      "type": "section",
+      "title": "Requirements Alignment",
+      "titleAliases": ["Work Item Alignment", "Requirements", "Implementation vs Spec"],
+      "required": false
+    },
+    {
+      "type": "markdown",
+      "label": "Full Review Report",
+      "required": false
+    },
+    {
+      "type": "link",
+      "label": "View PR",
+      "required": false,
+      "description": "Link to the pull request on Azure DevOps or GitHub."
+    }
+  ],
+  "expectedActions": [
+    {
+      "label": "Open PR",
+      "style": "primary",
+      "description": "Open the pull request in the browser."
+    },
+    {
+      "label": "Approve All",
+      "style": "success",
+      "description": "Approve all draft comments. CLI: powerreview comment approve-all --pr-url <url>"
+    },
+    {
+      "label": "Submit Review",
+      "style": "success",
+      "description": "Submit all pending (approved) comments to the remote provider. CLI: powerreview submit --pr-url <url>"
+    },
+    {
+      "label": "Approve PR",
+      "style": "success",
+      "description": "Cast an 'Approved' vote on the PR. CLI: powerreview vote --pr-url <url> --value approve"
+    },
+    {
+      "label": "Wait for Author",
+      "style": "default",
+      "description": "Cast a 'Wait for Author' vote on the PR. CLI: powerreview vote --pr-url <url> --value wait-for-author"
+    },
+    {
+      "label": "Delete All",
+      "style": "danger",
+      "description": "Delete all AI-authored draft comments. Removes all drafts without submitting."
+    }
+  ]
+}
+

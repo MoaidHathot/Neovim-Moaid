@@ -1,0 +1,20 @@
+// TIP Test Output — detailed output from a specific test method.
+// Cluster: Target ZTS cluster (e.g., https://ztsdev.westus3.kusto.windows.net)
+// Database: Log
+// Parameters: {start}, {end}, {testDisplayName}, {jobName}
+// Use this to see the full output trace of a specific test (e.g., CleanupOldResources).
+// The `type` column contains the fully qualified test name, e.g.:
+//   Microsoft.Azure.ZTS.E2E.Tests.V2025_10_01_Preview.ZTS_V2025_10_01_Preview_Create
+// The `displayName` is the test method name within the type.
+// IMPORTANT: TIP test logs require Tenant == "SyntheticsProd" filter.
+let _start = datetime({start});
+let _end = datetime({end});
+let _testDisplayName = "{testDisplayName}";
+let _jobName = "{jobName}";
+Log
+| where TIMESTAMP between (_start .. _end)
+| where Tenant == "SyntheticsProd"
+| where JobName has _jobName
+| where displayName has _testDisplayName
+| project TIMESTAMP, type, body, output, duration, exceptionMessage, exceptionType, severityText
+| sort by TIMESTAMP asc

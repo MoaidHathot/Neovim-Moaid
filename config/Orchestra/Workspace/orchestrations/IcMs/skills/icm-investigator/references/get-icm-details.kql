@@ -1,0 +1,28 @@
+// Fetch full ICM details including description for a specific incident.
+// Cluster: https://icmcluster.kusto.windows.net
+// Database: IcmDataWarehouse
+// Parameters: {incidentId}
+let _incidentId = {incidentId};
+IncidentsSnapshotV2
+| where IncidentId == _incidentId
+| summarize arg_max(ModifiedDate, *) by IncidentId
+| join kind=leftouter (
+    IncidentDescriptions
+    | where IncidentId == _incidentId
+    | summarize Description = make_list(Text) by IncidentId
+) on IncidentId
+| project
+    IncidentId,
+    Title,
+    Status,
+    Severity,
+    OwningContactAlias,
+    OccurringDatacenter,
+    OccurringDeviceName,
+    SourceCreateDate,
+    ModifiedDate,
+    MitigateDate,
+    ResolveDate,
+    HitCount,
+    Description,
+    Link = strcat("https://portal.microsofticm.com/imp/v3/incidents/incident/", IncidentId, "/summary")

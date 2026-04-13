@@ -1,0 +1,24 @@
+// TIP Test Results — recent PASSED/FAILED/SKIPPED results for a specific job group and API version.
+// Cluster: Target ZTS cluster (e.g., https://ztsdev.westus3.kusto.windows.net)
+// Database: Log
+// Parameters: {start}, {end}, {jobGroupName}, {jobName}
+// Use this to understand which tests are running, passing, failing, or being skipped.
+// IMPORTANT: TIP test logs require Tenant == "SyntheticsProd" filter.
+let _start = datetime({start});
+let _end = datetime({end});
+let _jobGroupName = "{jobGroupName}";
+let _jobName = "{jobName}";
+Log
+| where TIMESTAMP between (_start .. _end)
+| where Tenant == "SyntheticsProd"
+| where JobGroupName has _jobGroupName
+| where isempty(_jobName) or JobName has _jobName
+| where body has "[PASSED]" or body has "[FAILED]" or body has "[SKIPPED]" or body has "[TIMEOUT]"
+| extend ResultType = case(
+    body has "[PASSED]", "PASSED",
+    body has "[FAILED]", "FAILED",
+    body has "[SKIPPED]", "SKIPPED",
+    body has "[TIMEOUT]", "TIMEOUT",
+    "UNKNOWN")
+| project TIMESTAMP, ResultType, type, displayName, duration, skipReason, exceptionMessage, exceptionType, JobName, body
+| sort by TIMESTAMP desc

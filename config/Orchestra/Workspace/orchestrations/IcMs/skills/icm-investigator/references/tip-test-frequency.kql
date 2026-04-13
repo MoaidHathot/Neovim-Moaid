@@ -1,0 +1,22 @@
+// TIP Test Execution Frequency — hourly result counts per job, to detect when tests stop running.
+// Cluster: Target ZTS cluster (e.g., https://ztsdev.westus3.kusto.windows.net)
+// Database: Log
+// Parameters: {start}, {end}, {jobGroupName}
+// Use this to compare V2025 vs V2026 execution rates, detect job name transitions, and see breakdowns.
+// IMPORTANT: TIP test logs require Tenant == "SyntheticsProd" filter.
+let _start = datetime({start});
+let _end = datetime({end});
+let _jobGroupName = "{jobGroupName}";
+Log
+| where TIMESTAMP between (_start .. _end)
+| where Tenant == "SyntheticsProd"
+| where JobGroupName has _jobGroupName
+| where body has "[PASSED]" or body has "[FAILED]" or body has "[SKIPPED]" or body has "[TIMEOUT]"
+| summarize
+    Passed = countif(body has "[PASSED]"),
+    Failed = countif(body has "[FAILED]"),
+    Skipped = countif(body has "[SKIPPED]"),
+    Timeout = countif(body has "[TIMEOUT]"),
+    Total = count()
+    by JobName, bin(TIMESTAMP, 1h)
+| sort by TIMESTAMP desc, JobName asc

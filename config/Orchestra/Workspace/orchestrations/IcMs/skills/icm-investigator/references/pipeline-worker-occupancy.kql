@@ -1,0 +1,47 @@
+// Pipeline Worker Occupancy — show generator pod availability, postprocess occupancy, and queue pickup timing.
+// Cluster: Target ZTS cluster (e.g., https://ztsppe.uksouth.kusto.windows.net)
+// Database: Log
+// Parameters: {start}, {end}, {tenant}
+// Use this when a periodic parent is due but no child is launched near its NextRunTime.
+// This helps distinguish between:
+//   1. generator pods still being busy in long postprocess from other runs, and
+//   2. a genuinely idle scheduler that is not polling.
+let _start = datetime({start});
+let _end = datetime({end});
+let _tenant = "{tenant}";
+Log
+| where TIMESTAMP between (_start .. _end)
+| where Tenant == _tenant
+| where pod_name startswith "ccg-generator-deployment-"
+| where body has_any (
+    "recurring_runner:Awake.",
+    "recurring_runner:Sleeping for",
+    "recurring_runner:Next run",
+    "Pipeline run completed successfully",
+    "finished pipeline run; starting postprocess.",
+    "finished autoseg:",
+    "finished vmGraphGen:",
+    "finished clean:",
+    "report_run_ends")
+    or message has_any (
+    "recurring_runner:Awake.",
+    "recurring_runner:Sleeping for",
+    "recurring_runner:Next run",
+    "Pipeline run completed successfully",
+    "finished pipeline run; starting postprocess.",
+    "finished autoseg:",
+    "finished vmGraphGen:",
+    "finished clean:",
+    "report_run_ends")
+| extend Event = case(
+    body has "recurring_runner:Awake." or message has "recurring_runner:Awake.", "worker-awake",
+    body has "recurring_runner:Next run" or message has "recurring_runner:Next run", "next-run-picked",
+    body has "finished pipeline run; starting postprocess." or message has "finished pipeline run; starting postprocess.", "postprocess-start",
+    body has "finished autoseg:" or message has "finished autoseg:", "autoseg-finished",
+    body has "finished vmGraphGen:" or message has "finished vmGraphGen:", "vmgraph-finished",
+    body has "finished clean:" or message has "finished clean:", "clean-finished",
+    body has "report_run_ends" or message has "report_run_ends", "run-ended",
+    body has "Pipeline run completed successfully" or message has "Pipeline run completed successfully", "pipeline-finished",
+    "other")
+| project TIMESTAMP, pod_name, runid, Event, body
+| sort by TIMESTAMP asc

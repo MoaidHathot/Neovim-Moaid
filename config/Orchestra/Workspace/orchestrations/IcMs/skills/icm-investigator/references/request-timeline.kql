@@ -1,0 +1,26 @@
+// Full request trace for a specific correlationId (all severity levels).
+// Adapted from the production Kusto dashboard query.
+//
+// Cluster: target ZTS cluster (see cluster-mapping.md)
+// Database: Log
+// Parameters:
+//   {start}         — ISO-8601 start time
+//   {end}           — ISO-8601 end time
+//   {correlationId} — request correlation ID
+//
+// NOTE: When running via MCP kusto_query (already connected to cluster),
+//       use `Log` directly. For cross-cluster, prefix with
+//       `cluster('{environment}').database('Log').`
+let _correlationId = '{correlationId}';
+let _startTime = datetime({start});
+let _endTime = datetime({end});
+Log
+| where TIMESTAMP between (_startTime .. _endTime)
+  and correlationId == _correlationId
+  and env_name !in ("LogMsalInformational", "LogMsalAlways")
+  and isnotempty(_correlationId)
+| project
+    TIMESTAMP, body, env_name, severityText, function, env_properties,
+    ['exception.message'], ['exception.stacktrace'], ['exception.type'],
+    node_name, pod_name
+| sort by TIMESTAMP asc

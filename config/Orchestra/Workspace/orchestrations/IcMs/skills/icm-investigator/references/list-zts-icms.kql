@@ -1,0 +1,22 @@
+// List active and mitigated ZTS ICMs from the last 30 days.
+// Cluster: https://icmcluster.kusto.windows.net
+// Database: IcmDataWarehouse
+IncidentsSnapshotV2
+| where OwningTenantName == "Zero Trust Segmentation"
+  and ModifiedDate > ago(30d)
+  and isempty(ParentIncidentId)
+| summarize arg_max(ModifiedDate, *) by IncidentId
+| where Status in ("ACTIVE", "MITIGATED")
+| project
+    IncidentId,
+    Title,
+    Status,
+    Severity,
+    OwningContactAlias,
+    OccurringDatacenter,
+    OccurringDeviceName,
+    SourceCreateDate,
+    ModifiedDate,
+    HitCount,
+    Link = strcat("https://portal.microsofticm.com/imp/v3/incidents/incident/", IncidentId, "/summary")
+| sort by Severity asc, ModifiedDate desc

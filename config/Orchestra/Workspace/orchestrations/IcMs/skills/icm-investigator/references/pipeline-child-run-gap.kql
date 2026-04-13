@@ -1,0 +1,39 @@
+// Pipeline Child Run Gap — trace parent periodic scheduling, launched child runs, and skipped hourly windows.
+// Cluster: Target ZTS cluster (e.g., https://ztsppe.uksouth.kusto.windows.net)
+// Database: Log
+// Parameters: {start}, {end}, {tenant}, {parentRunId}
+// Use this when AvailabilityTest returns HTTP 200 with an empty graph and CCG logs show useful_child_runs = [].
+// This helps distinguish between:
+//   1. a child run that exists but failed / never ended successfully, and
+//   2. a missing child run caused by recurring_runner waking late and not backfilling missed hours.
+let _start = datetime({start});
+let _end = datetime({end});
+let _tenant = "{tenant}";
+let _parentRunId = "{parentRunId}";
+Log
+| where TIMESTAMP between (_start .. _end)
+| where Tenant == _tenant
+| where body has _parentRunId or runid == _parentRunId or tostring(env_properties) has _parentRunId
+| where body has_any (
+    "recurring_runner:Next run",
+    "recurring_runner:first run",
+    "Launching new child run",
+    "already existed on attempted creation",
+    "recordNewChildRun: Updated parent run",
+    "get_max_ended_child_run",
+    "get_child_run_ids",
+    "has no child runs that have ended successfully in the given time range",
+    "useful_child_runs")
+    or message has_any (
+    "recurring_runner:Next run",
+    "recurring_runner:first run",
+    "Launching new child run",
+    "already existed on attempted creation",
+    "recordNewChildRun: Updated parent run",
+    "get_max_ended_child_run",
+    "get_child_run_ids",
+    "has no child runs that have ended successfully in the given time range",
+    "useful_child_runs")
+| extend ChildRunId = extract(@"([a-z0-9]+c\d{10}c\d{10})", 1, body)
+| project TIMESTAMP, pod_name, severityText, runid, ChildRunId, correlationId, body
+| sort by TIMESTAMP asc

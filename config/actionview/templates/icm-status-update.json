@@ -1,0 +1,48 @@
+{
+  "type": "icm-status-update",
+  "description": "IcM incident status change report from the icm-tracker orchestration",
+  "defaults": {
+    "icon": "bell-ring",
+    "severity": "medium",
+    "tags": ["icm", "tracking"]
+  },
+  "contentTemplate": [
+    {
+      "type": "alert",
+      "required": false
+    },
+    {
+      "type": "table",
+      "label": "Changes Detected",
+      "required": true
+    },
+    {
+      "type": "section",
+      "title": "Incident Details",
+      "titleAliases": ["Details", "Incident Summary", "Current State"],
+      "required": false
+    },
+    {
+      "type": "section",
+      "title": "New Comments",
+      "titleAliases": ["Comments", "Recent Comments", "Discussion"],
+      "required": false
+    },
+    {
+      "type": "markdown",
+      "label": "Full Change Report",
+      "required": false
+    }
+  ],
+  "expectedActions": [
+    {
+      "label": "Acknowledge",
+      "style": "primary"
+    },
+    {
+      "label": "Dismiss",
+      "style": "default"
+    }
+  ]
+}
+

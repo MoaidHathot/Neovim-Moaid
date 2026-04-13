@@ -1,7 +1,12 @@
 {
 	"dataPath": null,
 	"hostBaseUrl": "http://localhost:5200",
-	"orchestrationsScanPath": null,
+	"defaultModel": "claude-opus-4.6",
+	"scan": {
+		"directory": "./Config/Orchestrations/",
+		"watch": false,
+		"recursive": false
+	},
 	"shutdownTimeoutSeconds": 30,
 	"logLevel": "Debug",
 	"retention": {
@@ -9,7 +14,7 @@
 		"maxRunAgeDays": 0
 	},
 	"polling": {
-		"activeExecutionsMs": 1000,
+		"activeExecutionsMs": 2000,
 		"orchestrationsMs": 2000,
 		"historyMs": 5000,
 		"serverStatusMs": 5000

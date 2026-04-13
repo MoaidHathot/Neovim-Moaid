@@ -1,0 +1,81 @@
+// HTTP error investigation: find correlationIds from RequestResponseLog, then
+// join with error logs, deduplicate per request, rank by informativeness, aggregate.
+//
+// Adapted from src/Kusto/Queries/HttpErrors.kql (the production dashboard query).
+//
+// Cluster: target ZTS cluster (see cluster-mapping.md)
+// Database: Log
+// Parameters:
+//   {environment} — full cluster URI, e.g. ztsprod.centralus.kusto.windows.net
+//   {start}       — ISO-8601 start time
+//   {end}         — ISO-8601 end time
+//   {statusCode}  — HTTP status to filter (e.g. 500), or empty for all 5xx
+//   {armId}       — optional ARM resource ID filter (empty = all)
+//
+// NOTE: When running via MCP kusto_query you are already connected to the target
+//       cluster, so replace `cluster(_environment).database("Log").Log` with just `Log`.
+//
+let _armId = '{armId}';
+let _startTime = datetime({start});
+let _endTime = datetime({end});
+let _statusCode = int({statusCode});
+let _showTestResources = true;
+let escapedArmId = replace(@"\/", @"\/", _armId);
+// --- Phase 1: find correlationIds from RequestResponseLog entries ---
+let correlationIds = Log
+| where TIMESTAMP between (_startTime .. _endTime)
+  and env_name has "RequestResponseLog"
+  and env_properties has "subscriptions"
+  and env_properties has escapedArmId
+| extend env_properties = todynamic(env_properties)
+| extend PathSegments = split(env_properties.Path, "/")
+| where _showTestResources or not(PathSegments has_any("tip-test-resources", "test-resources"))
+| extend StatusCode = column_ifexists("StatusCode", env_properties.StatusCode)
+| where isempty(_statusCode) or StatusCode == _statusCode
+| summarize by correlationId;
+// --- Phase 2: join with error logs for those correlationIds ---
+Log
+| where TIMESTAMP between (_startTime .. _endTime)
+| where correlationId in (correlationIds)
+| where severityText == "Error"
+| extend env_properties = todynamic(env_properties)
+| extend msg = tostring(env_properties.message)
+// Take first line only to remove stack traces
+| extend CleanBody = extract(@"^([^\r\n]+)", 1, body)
+| extend CleanMsg = extract(@"^([^\r\n]+)", 1, msg)
+// Strip MSAL diagnostic prefix
+| extend CleanMsg = replace_regex(CleanMsg, @"^(True|False)\s+MSAL\s+[\d.]+\s+\S+\s+\.NET\s+[\d.]+\s+\w+\s+\[.*?\]\s*", "")
+// Remove GUIDs
+| extend CleanBody = replace_regex(CleanBody, @"\(?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\)?\.?\s*", "")
+| extend CleanMsg = replace_regex(CleanMsg, @"\(?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\)?\.?\s*", "")
+// Remove timestamps
+| extend CleanBody = replace_regex(CleanBody, @"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}Z?\s*", "")
+| extend CleanMsg = replace_regex(CleanMsg, @"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}Z?\s*", "")
+// Strip retry telemetry details
+| extend CleanBody = replace_regex(CleanBody, @",\s*Operation Key:.*$", "")
+| extend CleanMsg = replace_regex(CleanMsg, @",\s*Operation Key:.*$", "")
+// Pick error reason from the best available source
+| extend ErrorReason = case(
+    isnotempty(['exception.type']), ['exception.type'],
+    isnotempty(env_ex_type), env_ex_type,
+    isnotempty(CleanBody), CleanBody,
+    isnotempty(CleanMsg), CleanMsg,
+    "Unknown"
+  )
+// Rank errors: lower = more informative
+| extend ErrorPriority = case(
+    name == "ExecutionAttempt", 100,    // Polly retry telemetry
+    name == "LogMsalError", 90,         // MSAL diagnostic logging
+    name == "Log", 80,                  // Generic log entries (MISE log lines)
+    name == "UnhandledException", 70,   // Generic middleware catch-all
+    isnotempty(['exception.type']), 10,  // Typed exception — most informative
+    isnotempty(env_ex_type), 20,
+    isnotempty(CleanBody), 30,
+    isnotempty(CleanMsg), 40,
+    50
+  )
+// Pick one error per correlationId: the most informative one
+| summarize arg_min(ErrorPriority, ErrorReason, ['exception.message'], env_ex_msg, service_name, name, env_name) by correlationId
+// Aggregate across correlation IDs
+| summarize Count=count(), SampleCorrelationId=max(correlationId), take_any(['exception.message']), take_any(env_ex_msg) by ErrorReason, service_name, name, env_name
+| sort by Count desc

@@ -1,0 +1,137 @@
+{
+  "type": "pr-comment-response",
+  "description": "Summary of AI agent responses to incoming PR comments. Shows each reviewer comment paired with the AI's draft reply and/or proposed code fix. Per-response actions let you approve/delete individual replies and approve/reject individual code fix proposals. Entry-level actions support bulk approve, submit replies, apply proposals, and cleanup.",
+  "defaults": {
+    "icon": "message-square-reply",
+    "severity": "medium",
+    "tags": ["pr-response", "comment-response"]
+  },
+  "contentTemplate": [
+    {
+      "type": "alert",
+      "required": false
+    },
+    {
+      "type": "keyValue",
+      "label": "Pull Request",
+      "required": false,
+      "description": "PR metadata. Expected keys: Repository, Branch (source -> target), Author, PR URL."
+    },
+    {
+      "type": "table",
+      "label": "Response Summary",
+      "required": true,
+      "description": "Overview of how the AI responded. Expected columns: Action, Count. Rows: Replies, Code Fixes, Won't Fix, Total Comments Addressed."
+    },
+    {
+      "type": "section",
+      "title": "Comment Responses",
+      "titleAliases": ["Responses", "AI Responses", "All Responses"],
+      "required": true,
+      "description": "Each nested section represents one incoming reviewer comment and the AI's response to it. Contains the original comment, the AI's draft reply, an optional proposed code fix diff, and per-response actions.",
+      "nestedSections": {
+        "repeatable": true,
+        "contentTemplate": [
+          {
+            "type": "keyValue",
+            "label": "Details",
+            "required": false,
+            "description": "Response metadata. Expected keys: Thread ID, Commenter (who left the original comment), File (relative path), Lines (line range), Action (Reply / Code Fix / Won't Fix), Agent (AI agent name), Reply Draft ID (PowerReview draft UUID), Proposal ID (PowerReview proposal UUID, if code fix)."
+          },
+          {
+            "type": "markdown",
+            "label": "Original Comment",
+            "required": true,
+            "description": "The reviewer's original comment that the AI is responding to."
+          },
+          {
+            "type": "markdown",
+            "label": "AI Response",
+            "required": false,
+            "description": "The AI's draft reply text. This is submitted as a reply on the comment thread when approved."
+          },
+          {
+            "type": "code",
+            "label": "Proposed Fix",
+            "required": false,
+            "description": "The unified diff of the proposed code fix. Only present when the AI created a code change proposal. Use language 'diff'."
+          }
+        ],
+        "expectedActions": [
+          {
+            "label": "Approve Reply",
+            "style": "success",
+            "description": "Approve the draft reply. CLI: powerreview comment approve --pr-url <url> --draft-id <id>"
+          },
+          {
+            "label": "Delete Reply",
+            "style": "danger",
+            "description": "Delete the draft reply. CLI: powerreview comment delete --pr-url <url> --draft-id <id>"
+          },
+          {
+            "label": "Approve Proposal",
+            "style": "success",
+            "description": "Approve the proposed code fix. CLI: powerreview proposal approve --pr-url <url> --proposal-id <id>"
+          },
+          {
+            "label": "Reject Proposal",
+            "style": "danger",
+            "description": "Reject the proposed code fix. CLI: powerreview proposal reject --pr-url <url> --proposal-id <id>"
+          }
+        ]
+      }
+    },
+    {
+      "type": "section",
+      "title": "Proposed Code Fixes",
+      "titleAliases": ["Code Fixes", "Proposals", "Fix Proposals"],
+      "required": false,
+      "description": "Optional dedicated section listing all proposed code fixes with their diffs. Useful when the user wants to review all code changes together rather than inline with each comment."
+    },
+    {
+      "type": "markdown",
+      "label": "Summary",
+      "required": false,
+      "description": "Overall summary of what the AI did: how many comments were addressed, what actions were taken, any comments that could not be addressed."
+    },
+    {
+      "type": "link",
+      "label": "View PR",
+      "required": false,
+      "description": "Link to the pull request on Azure DevOps or GitHub."
+    }
+  ],
+  "expectedActions": [
+    {
+      "label": "Open PR",
+      "style": "primary",
+      "description": "Open the pull request in the browser."
+    },
+    {
+      "label": "Approve All Replies",
+      "style": "success",
+      "description": "Approve all draft replies. CLI: powerreview comment approve-all --pr-url <url>"
+    },
+    {
+      "label": "Submit Replies",
+      "style": "success",
+      "description": "Submit all approved replies to the remote provider. CLI: powerreview submit --pr-url <url>"
+    },
+    {
+      "label": "Approve All Proposals",
+      "style": "success",
+      "description": "Approve all proposed code fixes. Requires per-proposal approval via CLI."
+    },
+    {
+      "label": "Apply All Proposals",
+      "style": "success",
+      "description": "Apply all approved proposals (cherry-pick into PR branch and push). Requires proposals to be approved first."
+    },
+    {
+      "label": "Delete All",
+      "style": "danger",
+      "description": "Delete all AI draft replies and reject all proposals."
+    }
+  ]
+}
+

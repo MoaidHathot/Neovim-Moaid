@@ -1,0 +1,71 @@
+{
+  "name": "debug",
+  "description": "Diagnostics orchestration for validating MCP connectivity, tool availability, engine tools, template resolution, and orchestration invocation. Run this to verify the Orchestra setup is healthy.",
+  "version": "1.0.0",
+  "tags": ["debug", "diagnostics", "validation"],
+  "variables": {
+    "testValue": "hello-from-variables",
+    "defaultModel": "claude-opus-4.6"
+  },
+  "defaultStepTimeoutSeconds": 420,
+  "timeoutSeconds": 1600,
+  "mcps": [
+    {
+      "name": "orchestra",
+      "type": "remote",
+      "endpoint": "{{server.url}}/mcp/data"
+    }
+  ],
+  "steps": [
+    {
+      "name": "validate-orchestra-mcp",
+      "type": "Prompt",
+      "dependsOn": [],
+      "systemPrompt": "You are a diagnostics assistant. Your job is to enumerate all tools available to you and verify MCP connectivity. Be precise and structured.",
+      "userPrompt": "List ALL tools you have access to. For each tool, provide:\n1. The tool name (exact)\n2. A one-line description of what it does\n3. Its required parameters\n\nGroup the tools by category:\n- **Orchestra Data Plane** (tools from the 'orchestra' MCP like list_orchestrations, invoke_orchestration, etc.)\n- **Engine Built-in** (tools like orchestra_complete, orchestra_save_file, etc.)\n- **Other** (any tools that don't fit the above categories)\n\nOutput as a structured JSON object:\n{\n  \"totalToolCount\": <number>,\n  \"categories\": {\n    \"orchestraDataPlane\": [ { \"name\": \"...\", \"description\": \"...\", \"parameters\": [\"...\"] } ],\n    \"engineBuiltIn\": [ ... ],\n    \"other\": [ ... ]\n  },\n  \"mcpStatus\": \"connected\"\n}",
+      "mcps": ["orchestra"],
+      "model": "{{vars.defaultModel}}"
+    },
+    {
+      "name": "validate-global-mcps",
+      "type": "Prompt",
+      "dependsOn": [],
+      "systemPrompt": "You are a diagnostics assistant. Your job is to enumerate all tools available to you from the configured MCP servers. Be precise.",
+      "userPrompt": "List ALL tools you have access to. For each tool provide its exact name and a one-line description.\n\nOutput as JSON:\n{\n  \"mcpName\": \"<mcp-name>\",\n  \"toolCount\": <number>,\n  \"tools\": [ { \"name\": \"...\", \"description\": \"...\" } ],\n  \"status\": \"connected\"\n}",
+      "mcps": ["icm-readonly", "icm-full", "orchestra", "azdo", "azure", "powerreview", "debug-mcp"],
+      "model": "{{vars.defaultModel}}"
+    },
+    {
+      "name": "validate-template-resolution",
+      "type": "Transform",
+      "dependsOn": [],
+      "template": "Template resolution diagnostics:\n\n- server.url = {{server.url}}\n- vars.testValue = {{vars.testValue}}\n- vars.defaultModel = {{vars.defaultModel}}\n- orchestration.name = {{orchestration.name}}\n- orchestration.version = {{orchestration.version}}\n\nAll templates above should be resolved to their actual values.",
+      "contentType": "text/plain"
+    },
+    {
+      "name": "validate-list-orchestrations",
+      "type": "Prompt",
+      "dependsOn": ["validate-orchestra-mcp"],
+      "systemPrompt": "You are a diagnostics assistant. Use the Orchestra data plane tools to verify they work correctly.",
+      "userPrompt": "Use the list_orchestrations tool to list all registered orchestrations. Then output a JSON summary:\n{\n  \"orchestrationCount\": <number>,\n  \"orchestrations\": [ { \"id\": \"...\", \"name\": \"...\", \"version\": \"...\", \"stepCount\": <number> } ],\n  \"listToolWorking\": true\n}",
+      "mcps": ["orchestra"],
+      "model": "{{vars.defaultModel}}"
+    },
+    {
+      "name": "validate-engine-tools",
+      "type": "Prompt",
+      "dependsOn": [],
+      "systemPrompt": "You are a diagnostics assistant. Test the Orchestra engine built-in tools.",
+      "userPrompt": "Test the orchestra_save_file tool by saving a small test file with the following content:\n\n```json\n{\"diagnostic\": true, \"timestamp\": \"now\", \"message\": \"Engine tools are working correctly\"}\n```\n\nSave it with the filename 'debug-test-output.json'.\n\nThen confirm the save was successful. Output:\n{\n  \"saveFileWorking\": true,\n  \"savedFileName\": \"debug-test-output.json\"\n}",
+      "model": "{{vars.defaultModel}}"
+    },
+    {
+      "name": "generate-report",
+      "type": "Prompt",
+      "dependsOn": ["validate-orchestra-mcp", "validate-global-mcps", "validate-template-resolution", "validate-list-orchestrations", "validate-engine-tools"],
+      "systemPrompt": "You are a diagnostics report generator. Compile the results from all validation steps into a clear, structured health report.",
+      "userPrompt": "Compile a diagnostics report from all validation steps:\n\n**Orchestra MCP Connectivity:**\n{{validate-orchestra-mcp.output}}\n\n**Global MCP Connectivity (azdo):**\n{{validate-global-mcps.output}}\n\n**Template Resolution:**\n{{validate-template-resolution.output}}\n\n**List Orchestrations:**\n{{validate-list-orchestrations.output}}\n\n**Engine Tools:**\n{{validate-engine-tools.output}}\n\nGenerate a markdown health report with:\n1. A header: '## Orchestra Diagnostics Report'\n2. A summary table with pass/fail status for each check\n3. Details for any failures\n4. Total tool count across all MCPs\n5. Confirmation that self-referential MCP (orchestra data plane) is working\n6. List of registered orchestrations found\n7. Template resolution results\n8. Overall verdict: HEALTHY or UNHEALTHY",
+      "model": "{{vars.defaultModel}}"
+    }
+  ]
+}

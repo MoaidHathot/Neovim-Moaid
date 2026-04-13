@@ -1,0 +1,45 @@
+{
+  "id": "zts-978f5b",
+  "name": "ZTS",
+  "isActive": false,
+  "activatedAt": "2026-04-02T09:58:38.4681607+00:00",
+  "deactivatedAt": "2026-04-02T10:16:56.5753834+00:00",
+  "filter": {
+    "tags": [
+      "zts"
+    ],
+    "orchestrationIds": [],
+    "excludeOrchestrationIds": [],
+    "isWildcard": false
+  },
+  "schedule": {
+    "windows": [
+      {
+        "days": [
+          "Monday",
+          "Tuesday",
+          "Wednesday",
+          "Thursday",
+          "Friday"
+        ],
+        "startTime": "11:00",
+        "endTime": "15:00",
+        "isOvernight": false
+      },
+      {
+        "days": [
+          "Monday",
+          "Tuesday",
+          "Wednesday",
+          "Thursday",
+          "Friday"
+        ],
+        "startTime": "23:00",
+        "endTime": "02:00",
+        "isOvernight": true
+      }
+    ]
+  },
+  "createdAt": "2026-04-02T08:29:35.9928696+00:00",
+  "updatedAt": "2026-04-02T10:16:56.5753837+00:00"
+}

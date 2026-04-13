@@ -1,0 +1,11 @@
+// Error count over time — detects bursts vs steady degradation.
+// Cluster: target ZTS cluster (see cluster-mapping.md)
+// Database: Log
+// Parameters: {start}, {end}
+Log
+| where TIMESTAMP between (datetime({start}) .. datetime({end}))
+  and severityText == "Error"
+| extend env_properties = todynamic(env_properties)
+| extend ExceptionType = coalesce(tostring(['exception.type']), tostring(env_ex_type))
+| summarize ErrorCount = count() by bin(TIMESTAMP, 5m), ExceptionType
+| sort by TIMESTAMP asc

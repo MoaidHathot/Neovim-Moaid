@@ -1,0 +1,23 @@
+// Aggregate errors by exception type, source, and event name.
+// Cluster: target ZTS cluster (see cluster-mapping.md)
+// Database: Log
+// Parameters: {start}, {end}
+Log
+| where TIMESTAMP between (datetime({start}) .. datetime({end}))
+  and severityText == "Error"
+| extend env_properties = todynamic(env_properties)
+| extend ExceptionType = coalesce(tostring(['exception.type']), tostring(env_ex_type))
+| extend Source = tostring(env_properties.SourceContext)
+| extend EventName = tostring(env_name)
+| extend Message = extract(@"^([^\r\n]+)", 1, coalesce(body, tostring(env_properties.message)))
+// Strip GUIDs for clean grouping
+| extend CleanMessage = replace_regex(Message, @"\(?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\)?\.?\s*", "")
+// Strip timestamps for clean grouping
+| extend CleanMessage = replace_regex(CleanMessage, @"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}Z?\s*", "")
+| summarize
+    Count = count(),
+    SampleCorrelationId = take_any(correlationId),
+    FirstSeen = min(TIMESTAMP),
+    LastSeen = max(TIMESTAMP)
+  by ExceptionType, Source, EventName, CleanMessage
+| sort by Count desc

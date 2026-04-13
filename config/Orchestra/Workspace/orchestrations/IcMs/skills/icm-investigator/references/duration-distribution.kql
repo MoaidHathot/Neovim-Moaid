@@ -1,0 +1,24 @@
+// Request duration distribution for completed requests in a time window.
+// Useful for identifying timeout patterns (e.g., clustering at 58-60s = ARM timeout).
+// Cluster: target ZTS cluster (see cluster-mapping.md)
+// Database: Log
+// Parameters: {start}, {end}
+Log
+| where TIMESTAMP between (datetime({start}) .. datetime({end}))
+  and env_name has "RequestResponseLog"
+| extend env_properties = todynamic(env_properties)
+| extend StatusCode = toint(env_properties.StatusCode)
+| extend Duration = toreal(env_properties.Duration)
+| extend Path = tostring(env_properties.Path)
+| extend Method = tostring(env_properties.Method)
+| where isnotempty(Duration)
+| summarize
+    TotalRequests = count(),
+    AvgDuration = avg(Duration),
+    P50 = percentile(Duration, 50),
+    P90 = percentile(Duration, 90),
+    P95 = percentile(Duration, 95),
+    P99 = percentile(Duration, 99),
+    MaxDuration = max(Duration)
+  by StatusCode, bin(Duration, 1)
+| sort by StatusCode asc, Duration asc

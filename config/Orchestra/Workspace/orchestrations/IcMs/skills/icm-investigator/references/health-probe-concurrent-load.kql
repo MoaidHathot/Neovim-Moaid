@@ -1,0 +1,22 @@
+// Health probe concurrent load: find heavy API requests running alongside
+// slow/failed health probes to identify resource contention.
+//
+// Cluster: target ZTS cluster (see cluster-mapping.md)
+// Database: Log
+// Parameters:
+//   {start} — ISO-8601 start time (narrow: around the 499 window)
+//   {end}   — ISO-8601 end time
+//
+let _startTime = datetime({start});
+let _endTime = datetime({end});
+Log
+| where TIMESTAMP between (_startTime .. _endTime)
+  and env_name has "RequestResponseLog"
+| extend env_properties = todynamic(env_properties)
+| extend Path = tostring(env_properties.Path)
+| extend StatusCode = extract(@"StatusCode:\s*(\d+)", 1, body)
+| extend Duration = todouble(extract(@"Duration:\s*([\d.]+)", 1, body))
+| where Duration > 0.5 or StatusCode != "200"
+| extend IsHealthProbe = Path has "/health"
+| project TIMESTAMP, Path, StatusCode, Duration, IsHealthProbe, pod_name, Tenant, correlationId
+| sort by TIMESTAMP asc

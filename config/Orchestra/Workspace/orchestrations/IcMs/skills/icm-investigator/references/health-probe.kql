@@ -1,0 +1,43 @@
+// Health probe investigation: find /health endpoint requests, their status codes,
+// durations, and correlate with concurrent heavy API requests to identify contention.
+//
+// Cluster: target ZTS cluster (see cluster-mapping.md)
+// Database: Log
+// Parameters:
+//   {start} — ISO-8601 start time
+//   {end}   — ISO-8601 end time
+//
+// Health probe ICMs differ from HTTP error ICMs:
+// - 499 = client (LB/NGINX) disconnected before server responded (probe timeout)
+// - No application errors in logs (the request succeeded from the app's perspective)
+// - Root cause is typically resource contention from concurrent heavy API requests
+//
+// Investigation approach:
+// 1. Run this query to get probe status distribution and duration patterns
+// 2. Look at concurrent API requests (especially getGraph, setLabels, pipeline runs)
+// 3. Check for pod restarts or deployment rollouts
+//
+let _startTime = datetime({start});
+let _endTime = datetime({end});
+// --- Part 1: Health probe summary per 5-min bucket ---
+let HealthProbes = Log
+| where TIMESTAMP between (_startTime .. _endTime)
+  and env_name has "RequestResponseLog"
+| extend env_properties = todynamic(env_properties)
+| extend Path = tostring(env_properties.Path)
+| where Path has "/health"
+| extend StatusCode = extract(@"StatusCode:\s*(\d+)", 1, body)
+| extend Duration = todouble(extract(@"Duration:\s*([\d.]+)", 1, body));
+HealthProbes
+| summarize
+    Total = count(),
+    Count200 = countif(StatusCode == "200"),
+    Count499 = countif(StatusCode == "499"),
+    CountOther = countif(StatusCode !in ("200", "499")),
+    AvgDuration = avg(Duration),
+    P95Duration = percentile(Duration, 95),
+    P99Duration = percentile(Duration, 99),
+    MaxDuration = max(Duration),
+    SlowCount = countif(Duration > 0.5)
+  by bin(TIMESTAMP, 5m)
+| sort by TIMESTAMP asc

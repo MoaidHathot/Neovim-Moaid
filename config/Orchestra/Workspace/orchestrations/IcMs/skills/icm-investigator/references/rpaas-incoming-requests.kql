@@ -1,0 +1,15 @@
+// RPaaS Incoming Requests — cross-reference TIP test failures with RP-side incoming request logs.
+// Cluster: https://rpsaas.kusto.windows.net
+// Database: RPaaSProd
+// Parameters: {start}, {end}, {clientRequestId}
+// Use this after extracting x-ms-client-request-id from TIP test error messages (tip-test-errors.kql).
+// This shows the RP-side view: what ARM sent to the RP, and how the RP responded.
+let _start = datetime({start});
+let _end = datetime({end});
+let _clientRequestId = "{clientRequestId}";
+HttpIncomingRequests
+| where TIMESTAMP between (_start .. _end)
+| where providerNamespace =~ "MICROSOFT.ZEROTRUSTSEGMENTATION"
+| where clientRequestId == _clientRequestId
+| project TIMESTAMP, httpMethod, httpUrl, httpStatusCode, durationMs, correlationId, clientRequestId, subscriptionId, resourceGroup, providerNamespace, resourceType, exceptionType, exceptionMessage
+| sort by TIMESTAMP asc
