@@ -3,8 +3,8 @@
 	"hostBaseUrl": "http://localhost:5200",
 	"defaultModel": "claude-opus-4.6",
 	"scan": {
-		"directory": "./workspaces/",
-		"watch": false,
+		"directory": "./workspace/",
+		"watch": true,
 		"recursive": true
 	},
 	"shutdownTimeoutSeconds": 30,

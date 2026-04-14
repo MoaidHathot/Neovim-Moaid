@@ -2,7 +2,8 @@ name: oncall-handoff-generator
 description: |
   Generates a structured on-call handoff document at the end of an on-call shift. Correlates multiple sources: IcM incidents (active, mitigated, resolved during the shift), Zakira.Exchange investigation records (what YOU actually did), IcM acknowledgments and comments you made, and any ongoing issues requiring attention. Produces a handoff markdown file and ActionView entry.
 version: 1.0.0
-tags: ["oncall", "handoff", "ICM", "MSFT", "OCE"]
+tags: ["oncall", "handoff", "ICM", "MSFT", "OCE", "auto"]
+defaultModel: claude-opus-4.6
 
 inputs:
   shiftStartDate:
@@ -30,7 +31,6 @@ inputs:
     default: ""
 
 variables:
-  defaultModel: claude-opus-4.6
   oncallEngineer: Moaid Hathot
   zakiraInvestigatorCategory: icm-investigator-state
   zakiraOncallCategory: oncall-activity-log
@@ -77,7 +77,6 @@ mcps:
 steps:
   - name: prepare-shift-window
     type: Transform
-    dependsOn: []
     template: |
       Shift Window:
       - Start: {{param.shiftStartDate}}
@@ -117,7 +116,6 @@ steps:
 
       Discover all IcM incidents relevant to this on-call shift. Query for incidents created during the window, active at the start, and any that had activity during the window.
     mcps: [icm-readonly]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 900
 
   - name: fetch-investigation-records
@@ -146,7 +144,6 @@ steps:
 
       Search Zakira.Exchange (icm-investigator-state category) for investigation records for each incident. Also list all memories to find any investigations during the shift window that might have been for incidents we didn't discover via IcM.
     mcps: [zakira-investigator]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 300
 
   - name: fetch-oncall-activity-log
@@ -173,7 +170,6 @@ steps:
 
       Search Zakira.Exchange (oncall-activity-log category) for any activity log entries during this shift.
     mcps: [zakira-oncall]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 180
 
   - name: fetch-email-comms
@@ -202,8 +198,6 @@ steps:
 
       Search WorkIQ for emails related to on-call activities during this shift. I am {{vars.oncallEngineer}}.
     mcps: [workiq]
-    model: "{{vars.defaultModel}}"
-    timeoutSeconds: 600
 
   - name: generate-handoff-document
     type: Prompt
@@ -284,7 +278,6 @@ steps:
       {{fetch-email-comms.output}}
 
       Generate the handoff document. Save it as a markdown file.
-    model: "{{vars.defaultModel}}"
     reasoningLevel: Medium
     timeoutSeconds: 900
 
@@ -310,7 +303,6 @@ steps:
       Handoff directory: {{vars.handoffDir}}
 
       Read the handoff file and save a copy to the handoff directory.
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 120
 
   - name: create-actionview-entry
@@ -347,7 +339,6 @@ steps:
       {{save-handoff-to-disk.output}}
 
       Create the ActionView entry. Save as JSON.
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 120
 
   - name: submit-actionview-entry
@@ -368,7 +359,6 @@ steps:
 
       Read the file and invoke the actionview-submit orchestration to submit it.
     mcps: [orchestra]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 360
 
   - name: generate-summary
@@ -395,5 +385,4 @@ steps:
       {{submit-actionview-entry.output}}
 
       Generate a concise run summary.
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 60

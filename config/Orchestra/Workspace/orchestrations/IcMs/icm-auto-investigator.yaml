@@ -2,10 +2,10 @@ name: icm-auto-investigator
 description: |
   Automatically discovers active IcM incidents via the IcM MCP, determines which have not been investigated yet by checking Zakira.Exchange state, and invokes the icm-investigator orchestration for each uninvestigated incident. Produces an ActionView summary of all dispatched investigations.
 version: 1.0.0
-tags: ["ZTS", "MSFT", "OCE", "ICM"]
+tags: ["ZTS", "MSFT", "OCE", "ICM", "auto"]
+defaultModel: claude-opus-4.6
 
 variables:
-  defaultModel: claude-opus-4.6
   zakiraCategory: icm-investigator-state
   staleInvestigationMinutes: "920"
 
@@ -37,7 +37,6 @@ mcps:
 steps:
   - name: discover-incidents
     type: Prompt
-    dependsOn: []
     systemPrompt: |
       You are an IcM incident discovery agent. You use the IcM MCP tools to find active incidents that need attention.
 
@@ -68,8 +67,6 @@ steps:
       If no active incidents are found, call orchestra_complete with status 'success' and reason 'No active incidents found'.
       Otherwise output ONLY the JSON
     mcps: [icm-readonly]
-    model: "{{vars.defaultModel}}"
-    timeoutSeconds: 300
 
   - name: fetch-incident-details
     type: Prompt
@@ -95,8 +92,6 @@ steps:
 
       Return ONLY the JSON content, nothing else.
     mcps: [icm-readonly]
-    model: "{{vars.defaultModel}}"
-    timeoutSeconds: 600
 
   - name: check-investigation-state
     type: Prompt
@@ -144,7 +139,6 @@ steps:
 
       If incidentsToInvestigate is empty, call orchestra_complete. Otherwise output the JSON.
     mcps: [zakira]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 120
 
   - name: invoke-investigations
@@ -198,12 +192,10 @@ steps:
         ]
       }
     mcps: [orchestra, zakira]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 7200
 
   - name: fetch-action-view-schema
     type: Command
-    dependsOn: []
     command: dnx
     arguments:
       - ActionView.Cli
@@ -251,7 +243,6 @@ steps:
 
       Save the JSON using orchestra_save_file. Output ONLY the raw JSON.
     mcps: []
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 120
 
   - name: submit-action-view-entry
@@ -288,7 +279,6 @@ steps:
       4. For each skipped incident: ID, title, and reason for skipping
       5. Confirmation that ActionView entry was submitted
       6. Any errors or issues
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 60
 
 trigger:

@@ -2,7 +2,8 @@ name: pr-code-reviewer
 description: |
   Reviews a single Pull Request using four expert reviewers (.NET Expert, Principal Software Engineer, Security Expert, DurableTasksFramework Expert) each with subagents for documentation lookup, code analysis, and test coverage checks. Uses PowerReview MCP to create review sessions and leave draft comments. Correlates with WorkIQ for meeting notes, chats, emails, and documents related to the PR. Tracks PR review state via Zakira.Exchange. Produces an ActionView summary of all findings.
 version: 1.0.0
-tags: ["ZTS", "MSFT", "PR", "Code-Review"]
+tags: ["ZTS", "MSFT", "PR", "Code-Review", "auto"]
+defaultModel: claude-opus-4.6
 
 inputs:
   prData:
@@ -17,9 +18,9 @@ variables:
   repository: ZTS
   reviewerName: Moaid Hathot
   repoLocalPath: "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS"
-  defaultModel: claude-opus-4.6
   zakiraCategory: pr-code-review-state
-  skillsDir: "P:\\Github\\OrcStra-Uruk\\Skills"
+  skillsDirPowerReview: "./skills-powerreview"
+  skillsDirActionView: "./skills-actionview"
   promptsDir: "P:\\Github\\OrcStra-Uruk\\Prompts\\PR-Reviews"
 
 defaultRetryPolicy:
@@ -61,7 +62,6 @@ mcps:
 steps:
   - name: prepare-pr-data
     type: Transform
-    dependsOn: []
     template: "{{param.prData}}"
     parameters: [prData]
     contentType: text/plain
@@ -90,13 +90,7 @@ steps:
 
       Output confirmation of what was saved.
     mcps: [zakira]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 60
-    retry:
-      maxRetries: 2
-      backoffSeconds: 5
-      backoffMultiplier: 2.0
-      retryOnTimeout: true
 
   - name: fetch-pr-diff
     type: Prompt
@@ -118,8 +112,6 @@ steps:
     outputHandlerPrompt: |
       Ensure valid JSON. Keep all meaningful code changes intact. The prUrl should be the full Azure DevOps PR URL.
     mcps: [azdo]
-    model: "{{vars.defaultModel}}"
-    timeoutSeconds: 900
     retry:
       maxRetries: 3
       backoffSeconds: 10
@@ -163,13 +155,7 @@ steps:
 
       IMPORTANT: The workingDirectory field is critical -- it tells downstream agents where to find the source code for the PR branch.
     mcps: [powerreview]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 60
-    retry:
-      maxRetries: 2
-      backoffSeconds: 5
-      backoffMultiplier: 2.0
-      retryOnTimeout: true
 
   - name: fetch-work-items
     type: Prompt
@@ -190,7 +176,6 @@ steps:
     outputHandlerPrompt: |
       Return a concise context summary a reviewer can quickly read to understand the 'why' behind the changes.
     mcps: [azdo]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 600
 
   - name: workiq-context
@@ -233,8 +218,6 @@ steps:
         "additionalContext": "Any relevant context from communications that reviewers should know about"
       }
     mcps: [workiq, azdo]
-    model: "{{vars.defaultModel}}"
-    timeoutSeconds: 900
     retry:
       maxRetries: 2
       backoffSeconds: 10
@@ -259,6 +242,8 @@ steps:
 
       Perform your review following the instructions in your system prompt. For each issue found, use the PowerReview MCP CreateComment tool to leave a draft comment on the specific file and line range. Specify the prUrl from the session data.
 
+      IMPORTANT: When calling CreateComment or ReplyToThread, always pass agentName: ".NET Expert" so your comments are attributed to you.
+
       After leaving all comments, output a JSON summary:
       {
         "reviewer": ".NET Expert",
@@ -268,11 +253,9 @@ steps:
         "status": "approved|approved-with-suggestions|needs-work"
       }
     mcps: [powerreview]
-    model: "{{vars.defaultModel}}"
     reasoningLevel: High
-    timeoutSeconds: 900
     skillDirectories:
-      - "{{vars.skillsDir}}"
+      - "{{vars.skillsDirPowerReview}}"
     subagents:
       - name: dotnet-docs-checker
         displayName: Documentation Checker
@@ -349,6 +332,8 @@ steps:
 
       Perform your review following the instructions in your system prompt. For each issue found, use the PowerReview MCP CreateComment tool to leave a draft comment on the specific file and line range. Specify the prUrl from the session data.
 
+      IMPORTANT: When calling CreateComment or ReplyToThread, always pass agentName: "Principal Engineer" so your comments are attributed to you.
+
       After leaving all comments, output a JSON summary:
       {
         "reviewer": "Principal Software Engineer",
@@ -358,11 +343,10 @@ steps:
         "status": "approved|approved-with-suggestions|needs-work"
       }
     mcps: [powerreview]
-    model: "{{vars.defaultModel}}"
     reasoningLevel: High
     timeoutSeconds: 600
     skillDirectories:
-      - "{{vars.skillsDir}}"
+      - "{{vars.skillsDirPowerReview}}"
     subagents:
       - name: architecture-docs-checker
         displayName: Architecture Documentation Checker
@@ -437,6 +421,8 @@ steps:
 
       Perform your review following the instructions in your system prompt. For each issue found, use the PowerReview MCP CreateComment tool to leave a draft comment on the specific file and line range. Specify the prUrl from the session data.
 
+      IMPORTANT: When calling CreateComment or ReplyToThread, always pass agentName: "Security Expert" so your comments are attributed to you.
+
       After leaving all comments, output a JSON summary:
       {
         "reviewer": "Security Expert",
@@ -447,11 +433,10 @@ steps:
         "status": "approved|approved-with-suggestions|needs-work"
       }
     mcps: [powerreview]
-    model: "{{vars.defaultModel}}"
     reasoningLevel: High
     timeoutSeconds: 600
     skillDirectories:
-      - "{{vars.skillsDir}}"
+      - "{{vars.skillsDirPowerReview}}"
     subagents:
       - name: security-docs-checker
         displayName: Security Documentation Checker
@@ -536,6 +521,8 @@ steps:
 
       If it DOES touch DTFx code, perform your review following the instructions in your system prompt. For each issue found, use the PowerReview MCP CreateComment tool to leave a draft comment on the specific file and line range.
 
+      IMPORTANT: When calling CreateComment or ReplyToThread, always pass agentName: "DTFx Expert" so your comments are attributed to you.
+
       Output a JSON summary:
       {
         "reviewer": "DurableTasksFramework Expert",
@@ -546,11 +533,10 @@ steps:
         "status": "approved|approved-with-suggestions|needs-work"
       }
     mcps: [powerreview]
-    model: "{{vars.defaultModel}}"
     reasoningLevel: High
     timeoutSeconds: 600
     skillDirectories:
-      - "{{vars.skillsDir}}"
+      - "{{vars.skillsDirPowerReview}}"
     subagents:
       - name: dtfx-docs-checker
         displayName: Durable Tasks Documentation Checker
@@ -665,7 +651,6 @@ steps:
       }
 
       Use orchestra_save_file to save this consolidated report.
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 600
 
   - name: save-review-state
@@ -698,17 +683,10 @@ steps:
 
       Output confirmation of what was saved.
     mcps: [zakira]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 60
-    retry:
-      maxRetries: 2
-      backoffSeconds: 5
-      backoffMultiplier: 2.0
-      retryOnTimeout: true
 
   - name: fetch-action-view-schema
     type: Command
-    dependsOn: []
     command: dnx
     arguments:
       - ActionView.Cli
@@ -719,11 +697,13 @@ steps:
 
   - name: create-action-view-entry
     type: Prompt
-    dependsOn: [consolidate-reviews, fetch-action-view-schema]
+    dependsOn: [consolidate-reviews, fetch-action-view-schema, open-review-session]
     systemPrompt: |
-      You are an ActionView entry generator for PR reviews. You create structured JSON entries conforming to the ActionView schema. The entry type must be 'pr-review-summary' and source must be '{{orchestration.name}}'.
+      You are an ActionView entry generator for PR reviews. You create structured JSON entries conforming to the ActionView schema and the pr-review-summary template.
 
-      Your entries should be clear, scannable, and highlight the most important review findings. Use tables for reviewer summaries, sections for each reviewer's detailed findings, and alerts for critical security issues or blocking problems.
+      You have access to the PowerReview MCP server. Use it to fetch the individual draft comments (with their UUIDs) and file diffs needed for per-comment sections and action buttons.
+
+      Follow the instructions in the 'creating-review-actionview-entry' skill for the exact data collection steps, content block structure, action command templates, and verification checklist.
 
       IMPORTANT: Save the generated JSON entry using the orchestra_save_file tool.
     userPrompt: |
@@ -735,26 +715,40 @@ steps:
       Consolidated review:
       {{consolidate-reviews.output}}
 
-      Create an entry with:
-      1. type: 'pr-review-summary'
-      2. source: '{{orchestration.name}}'
-      3. title: 'PR Review: ' + PR title
-      4. subtitle: Overall status + comment count
-      5. severity: 'high' if needs-work or has critical issues, 'medium' if approved-with-suggestions, 'low' if approved
-      6. tags: ['pr-review', 'code-review', 'ZTS', the overall status]
-      7. content blocks:
+      Review session:
+      {{open-review-session.output}}
+
+      Follow the 'creating-review-actionview-entry' skill to build the entry. Key steps:
+
+      1. Use the prUrl from the review session to call ListCommentThreads to get all individual
+         draft comments with their UUIDs, file paths, line ranges, and author_name fields.
+      2. For each file that has draft comments, call GetFileDiff to get the unified diff.
+      3. Build the entry with type 'pr-review-summary', source '{{orchestration.name}}'.
+      4. Include:
          - Alert block if there are critical/blocking issues
-         - Summary table: Reviewer | Status | Comments | Critical Issues
-         - Section for each reviewer with their findings
-         - Section for requirements alignment (from WorkIQ context)
-         - Section for cross-cutting concerns
-         - Markdown block with the full executive summary
-      8. actions:
-         - 'Open PR' (style: primary)
-         - 'Dismiss' (style: default)
+         - Pull Request keyValue (repo, branch, author, files changed)
+         - Review Summary table: Reviewer | Status | Comments | Critical Issues
+         - Review Comments section with one nested section PER DRAFT COMMENT containing:
+           a) Details keyValue (Reviewer = draft.author_name, File, Lines, Severity, Draft ID)
+           b) Comment markdown (the draft body)
+           c) Code block with the relevant diff hunk (language: diff)
+           d) Actions: Approve and Delete with correct draft UUID and prUrl
+         - Optional expert sections from the consolidated review
+         - Full Review Report markdown with executive summary
+         - View PR link
+      5. Entry-level actions:
+         - 'Open PR' (primary)
+         - 'Approve All' (success, powerreview comment approve-all)
+         - 'Submit Review' (success, powerreview submit, onSuccess: archive)
+         - 'Approve PR' (success, powerreview vote --value approve)
+         - 'Wait for Author' (default, powerreview vote --value wait-for-author)
+         - 'Delete All' (danger, powerreview comment delete-all --author ai, onSuccess: archive)
+      6. Severity: high if needs-work/critical, medium if approved-with-suggestions, low if approved
 
       Save the JSON using orchestra_save_file. Output ONLY the raw JSON.
-    model: "{{vars.defaultModel}}"
+    mcps: [powerreview]
+    skillDirectories:
+      - "{{vars.skillsDirActionView}}"
     timeoutSeconds: 600
 
   - name: submit-action-view-entry
@@ -796,5 +790,4 @@ steps:
       6. Requirements alignment status
       7. Confirmation that review state was saved and ActionView entry submitted
       8. List of any errors or notes
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 60

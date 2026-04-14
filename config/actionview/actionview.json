@@ -1,5 +1,9 @@
 {
   "dataDirectory": "data",
+  "templates": {
+    "externalDirectory": "./templates",
+    "recursive": false
+  },
   "notifications": {
     "enabled": true
   },

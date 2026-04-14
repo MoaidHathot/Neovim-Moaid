@@ -2,10 +2,10 @@ name: meeting-prep-brief
 description: |
   Generates preparation briefs for upcoming meetings in the next 6 hours. Gathers context from WorkIQ (calendar, emails, Teams messages), Azure DevOps (PRs, work items), and IcM. Saves briefings as markdown files and posts summaries to ActionView. Runs every 6 hours.
 version: 1.0.0
-tags: ["productivity", "meetings", "WorkIQ", "MSFT"]
+tags: ["productivity", "meetings", "WorkIQ", "MSFT", "auto", "ZTS"]
+defaultModel: claude-opus-4.6
 
 variables:
-  defaultModel: claude-opus-4.6
   lookAheadHours: "6"
   briefingsDir: "C:\\Users\\moaid\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\Meeting Briefs"
   zakiraCategory: meeting-prep-state
@@ -55,7 +55,6 @@ trigger:
 steps:
   - name: discover-meetings
     type: Prompt
-    dependsOn: []
     systemPrompt: |
       You are a meeting discovery agent. Your job is to find all meetings scheduled in the upcoming time window using WorkIQ.
 
@@ -71,7 +70,6 @@ steps:
 
       If no meetings are found, call orchestra_complete to end early.
     mcps: [workiq]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 300
 
   - name: check-already-briefed
@@ -92,7 +90,6 @@ steps:
 
       Check Zakira.Exchange for each meeting. Determine which ones need new briefs.
     mcps: [zakira]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 120
 
   - name: gather-email-context
@@ -116,8 +113,6 @@ steps:
 
       Search WorkIQ for relevant emails for each meeting. Focus on recent threads that will help prepare for these meetings.
     mcps: [workiq]
-    model: "{{vars.defaultModel}}"
-    timeoutSeconds: 600
 
   - name: gather-teams-context
     type: Prompt
@@ -140,8 +135,6 @@ steps:
 
       Search WorkIQ for relevant Teams messages for each meeting.
     mcps: [workiq]
-    model: "{{vars.defaultModel}}"
-    timeoutSeconds: 600
 
   - name: gather-pr-workitem-context
     type: Prompt
@@ -166,8 +159,6 @@ steps:
 
       Search AzDO for relevant PRs and work items related to each meeting and its attendees.
     mcps: [azdo]
-    model: "{{vars.defaultModel}}"
-    timeoutSeconds: 600
 
   - name: gather-recent-meetings-context
     type: Prompt
@@ -187,8 +178,6 @@ steps:
 
       Search WorkIQ for previous occurrences of these meetings and any notes/transcripts from them. I need to know what was discussed previously.
     mcps: [workiq]
-    model: "{{vars.defaultModel}}"
-    timeoutSeconds: 600
 
   - name: generate-briefs
     type: Prompt
@@ -247,7 +236,6 @@ steps:
       {{gather-recent-meetings-context.output}}
 
       Generate a preparation brief for each meeting. Save each as a separate markdown file.
-    model: "{{vars.defaultModel}}"
     reasoningLevel: Medium
     timeoutSeconds: 900
 
@@ -273,7 +261,6 @@ steps:
       Briefings directory: {{vars.briefingsDir}}
 
       Read each brief file and save a copy to the briefings directory with a date-prefixed filename. Make sure the directory exists first.
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 120
 
   - name: mark-meetings-briefed
@@ -296,7 +283,6 @@ steps:
 
       Mark each briefed meeting in Zakira.Exchange.
     mcps: [zakira]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 120
 
   - name: create-actionview-entry
@@ -330,7 +316,6 @@ steps:
       {{save-briefs-to-disk.output}}
 
       Create an ActionView entry summarizing these meeting briefs. Save as JSON.
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 120
 
   - name: submit-actionview-entry
@@ -351,7 +336,6 @@ steps:
 
       Read the file and invoke the actionview-submit orchestration to submit it.
     mcps: [orchestra]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 360
 
   - name: generate-summary
@@ -381,5 +365,4 @@ steps:
 
       ActionView submission:
       {{submit-actionview-entry.output}}
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 60

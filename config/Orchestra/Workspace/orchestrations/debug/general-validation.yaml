@@ -2,11 +2,11 @@ name: debug
 description: |
   Diagnostics orchestration for validating MCP connectivity, tool availability, engine tools, template resolution, and orchestration invocation. Run this to verify the Orchestra setup is healthy.
 version: 1.0.0
-tags: ["debug", "diagnostics", "validation"]
+tags: ["debug", "diagnostics", "validation", "auto"]
+defaultModel: claude-opus-4.6
 
 variables:
   testValue: hello-from-variables
-  defaultModel: claude-opus-4.6
 
 defaultStepTimeoutSeconds: 420
 timeoutSeconds: 1600
@@ -19,7 +19,6 @@ mcps:
 steps:
   - name: validate-orchestra-mcp
     type: Prompt
-    dependsOn: []
     systemPrompt: |
       You are a diagnostics assistant. Your job is to enumerate all tools available to you and verify MCP connectivity. Be precise and structured.
     userPrompt: |
@@ -44,11 +43,9 @@ steps:
         "mcpStatus": "connected"
       }
     mcps: [orchestra]
-    model: "{{vars.defaultModel}}"
 
   - name: validate-global-mcps
     type: Prompt
-    dependsOn: []
     systemPrompt: |
       You are a diagnostics assistant. Your job is to enumerate all tools available to you from the configured MCP servers. Be precise.
     userPrompt: |
@@ -62,11 +59,9 @@ steps:
         "status": "connected"
       }
     mcps: [icm-readonly, icm-full, orchestra, azdo, azure, powerreview, debug-mcp]
-    model: "{{vars.defaultModel}}"
 
   - name: validate-template-resolution
     type: Transform
-    dependsOn: []
     template: |
       Template resolution diagnostics:
 
@@ -92,11 +87,9 @@ steps:
         "listToolWorking": true
       }
     mcps: [orchestra]
-    model: "{{vars.defaultModel}}"
 
   - name: validate-engine-tools
     type: Prompt
-    dependsOn: []
     systemPrompt: |
       You are a diagnostics assistant. Test the Orchestra engine built-in tools.
     userPrompt: |
@@ -113,7 +106,6 @@ steps:
         "saveFileWorking": true,
         "savedFileName": "debug-test-output.json"
       }
-    model: "{{vars.defaultModel}}"
 
   - name: generate-report
     type: Prompt
@@ -147,4 +139,3 @@ steps:
       6. List of registered orchestrations found
       7. Template resolution results
       8. Overall verdict: HEALTHY or UNHEALTHY
-    model: "{{vars.defaultModel}}"

@@ -1,0 +1,114 @@
+name: debug-m365-tools
+description: |
+  Discovers and lists all available tools from Microsoft 365 MCP servers
+  (Calendar, Copilot, Mail, Me). Each step connects to one MCP and enumerates
+  its tools with descriptions and parameters.
+version: 1.0.0
+tags: ["debug", "diagnostics", "m365", "mcp"]
+defaultModel: claude-opus-4.6
+
+variables:
+  tenantId: 72f988bf-86f1-41af-91ab-2d7cd011db47
+  m365Base: "https://agent365.svc.cloud.microsoft/agents/tenants/{{vars.tenantId}}/servers"
+
+mcps:
+  - name: m365-calendar
+    type: remote
+    endpoint: "{{vars.m365Base}}/mcp_CalendarTools"
+
+  - name: m365-copilot
+    type: remote
+    endpoint: "{{vars.m365Base}}/mcp_M365Copilot"
+
+  - name: m365-mail
+    type: remote
+    endpoint: "{{vars.m365Base}}/mcp_MailTools"
+
+  - name: m365-me
+    type: remote
+    endpoint: "{{vars.m365Base}}/mcp_MeServer"
+
+steps:
+  - name: list-calendar-tools
+    type: Prompt
+    systemPrompt: |
+      You are a diagnostics assistant. Enumerate all tools available to you
+      from the MCP server. Be precise and structured.
+    userPrompt: |
+      List ALL tools you have access to from the Calendar MCP.
+      For each tool provide its exact name, a one-line description,
+      and its required parameters.
+
+      Output as JSON:
+      {
+        "mcp": "m365-calendar",
+        "toolCount": <number>,
+        "tools": [
+          { "name": "...", "description": "...", "parameters": ["..."] }
+        ],
+        "status": "connected"
+      }
+    mcps: [m365-calendar]
+
+  - name: list-copilot-tools
+    type: Prompt
+    systemPrompt: |
+      You are a diagnostics assistant. Enumerate all tools available to you
+      from the MCP server. Be precise and structured.
+    userPrompt: |
+      List ALL tools you have access to from the M365 Copilot MCP.
+      For each tool provide its exact name, a one-line description,
+      and its required parameters.
+
+      Output as JSON:
+      {
+        "mcp": "m365-copilot",
+        "toolCount": <number>,
+        "tools": [
+          { "name": "...", "description": "...", "parameters": ["..."] }
+        ],
+        "status": "connected"
+      }
+    mcps: [m365-copilot]
+
+  - name: list-mail-tools
+    type: Prompt
+    systemPrompt: |
+      You are a diagnostics assistant. Enumerate all tools available to you
+      from the MCP server. Be precise and structured.
+    userPrompt: |
+      List ALL tools you have access to from the Mail MCP.
+      For each tool provide its exact name, a one-line description,
+      and its required parameters.
+
+      Output as JSON:
+      {
+        "mcp": "m365-mail",
+        "toolCount": <number>,
+        "tools": [
+          { "name": "...", "description": "...", "parameters": ["..."] }
+        ],
+        "status": "connected"
+      }
+    mcps: [m365-mail]
+
+  - name: list-me-tools
+    type: Prompt
+    systemPrompt: |
+      You are a diagnostics assistant. Enumerate all tools available to you
+      from the MCP server. Be precise and structured.
+    userPrompt: |
+      List ALL tools you have access to from the Me MCP.
+      For each tool provide its exact name, a one-line description,
+      and its required parameters.
+
+      Output as JSON:
+      {
+        "mcp": "m365-me",
+        "toolCount": <number>,
+        "tools": [
+          { "name": "...", "description": "...", "parameters": ["..."] }
+        ],
+        "status": "connected"
+      }
+    mcps: [m365-me]

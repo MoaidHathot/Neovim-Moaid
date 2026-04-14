@@ -2,10 +2,10 @@ name: meeting-action-items-extractor
 description: |
   Processes meeting transcripts to extract action items, decisions, follow-ups, and other trackable items. Searches WorkIQ for recent meeting transcripts, analyzes them with AI, deduplicates against previously extracted items via Zakira.Exchange, and saves results as structured markdown files plus ActionView notifications.
 version: 1.0.0
-tags: ["productivity", "meetings", "action-items", "WorkIQ", "MSFT"]
+tags: ["productivity", "meetings", "action-items", "WorkIQ", "MSFT", "auto", "ZTS"]
+defaultModel: claude-opus-4.6
 
 variables:
-  defaultModel: claude-opus-4.6
   lookBackHours: "8"
   actionItemsDir: "C:\\Users\\moaid\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\Meeting Action Items"
   zakiraCategory: meeting-action-items-state
@@ -53,7 +53,6 @@ trigger:
 steps:
   - name: discover-recent-meetings
     type: Prompt
-    dependsOn: []
     systemPrompt: |
       You are a meeting transcript discovery agent. Your job is to find meetings from the past {{vars.lookBackHours}} hours that have transcripts or recordings available.
 
@@ -70,8 +69,6 @@ steps:
 
       If no meetings with transcripts exist, call orchestra_complete to end early.
     mcps: [workiq]
-    model: "{{vars.defaultModel}}"
-    timeoutSeconds: 600
 
   - name: check-already-processed
     type: Prompt
@@ -92,7 +89,6 @@ steps:
 
       Check Zakira.Exchange to see which ones have already been processed.
     mcps: [zakira]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 180
 
   - name: extract-action-items
@@ -151,7 +147,6 @@ steps:
       {{check-already-processed.output}}
 
       I am {{vars.myName}} (alias: {{vars.myAlias}}). Extract all action items, decisions, follow-ups, questions, risks, and key information from each meeting transcript. Pay special attention to items assigned to me or that I committed to.
-    model: "{{vars.defaultModel}}"
     reasoningLevel: High
     timeoutSeconds: 1200
 
@@ -215,8 +210,6 @@ steps:
       {{extract-action-items.files}}
 
       I am {{vars.myName}}. Generate a markdown report for each meeting. Read the JSON files if needed using orchestra_read_file.
-    model: "{{vars.defaultModel}}"
-    timeoutSeconds: 600
 
   - name: save-reports-to-disk
     type: Prompt
@@ -240,7 +233,6 @@ steps:
       Action items directory: {{vars.actionItemsDir}}
 
       Copy each report to the action items directory.
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 120
 
   - name: mark-meetings-processed
@@ -263,7 +255,6 @@ steps:
 
       Mark each processed meeting in Zakira.Exchange.
     mcps: [zakira]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 120
 
   - name: create-actionview-entry
@@ -304,7 +295,6 @@ steps:
       {{save-reports-to-disk.output}}
 
       I am {{vars.myName}}. Create the ActionView entry. Highlight MY action items prominently. Save as JSON.
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 180
 
   - name: submit-actionview-entry
@@ -325,7 +315,6 @@ steps:
 
       Read the file and invoke the actionview-submit orchestration to submit it.
     mcps: [orchestra]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 360
 
   - name: generate-summary
@@ -355,5 +344,4 @@ steps:
       {{submit-actionview-entry.output}}
 
       Generate a concise run summary. Emphasize what I need to act on.
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 60

@@ -2,7 +2,8 @@ name: icm-investigator
 description: |
   Investigates a single IcM incident using KQL queries, playbook-driven analysis, and log correlation. Classifies the ICM type, runs the appropriate investigation playbook, queries Kusto clusters for evidence, and produces a structured investigation report. Tracks investigation state via Zakira.Exchange to avoid re-investigating already completed incidents.
 version: 1.0.0
-tags: ["ZTS", "MSFT", "OCE", "ICM"]
+tags: ["ZTS", "MSFT", "OCE", "ICM", "auto"]
+defaultModel: claude-opus-4.6
 
 inputs:
   incidentId:
@@ -15,7 +16,6 @@ inputs:
     required: true
 
 variables:
-  defaultModel: claude-opus-4.6
   zakiraCategory: icm-investigator-state
   skillsDir: "P:\\Github\\OrcStra-Uruk\\Skills\\icm-investigator"
   nugetSource: "https://pkgs.dev.azure.com/msazure/One/_packaging/ZTS/nuget/v3/index.json"
@@ -44,7 +44,6 @@ mcps:
 steps:
   - name: prepare-incident-data
     type: Transform
-    dependsOn: []
     template: |
       Incident ID: {{param.incidentId}}
 
@@ -81,7 +80,6 @@ steps:
 
       If proceeding, output the incident data unchanged.
     mcps: [zakira]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 60
 
   - name: mark-investigating
@@ -106,7 +104,6 @@ steps:
 
       Output confirmation.
     mcps: [zakira]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 60
 
   - name: investigate
@@ -144,7 +141,6 @@ steps:
 
       Save the final report using orchestra_save_file.
     mcps: [icm-readonly, azure]
-    model: "{{vars.defaultModel}}"
     reasoningLevel: High
     timeoutSeconds: 1800
     skillDirectories:
@@ -174,12 +170,10 @@ steps:
 
       Output confirmation of what was saved.
     mcps: [zakira]
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 60
 
   - name: fetch-action-view-schema
     type: Command
-    dependsOn: []
     command: dnx
     arguments:
       - ActionView.Cli
@@ -229,7 +223,6 @@ steps:
          - 'Dismiss' (style: default)
 
       Save the JSON using orchestra_save_file. Output ONLY the raw JSON.
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 120
 
   - name: submit-action-view-entry
@@ -273,5 +266,4 @@ steps:
       5. Recommendations
       6. Confirmation that investigation state was saved and ActionView entry submitted
       7. Any errors or notes
-    model: "{{vars.defaultModel}}"
     timeoutSeconds: 60

@@ -2,7 +2,8 @@ name: icm-tracker
 description: |
   Periodically checks tracked IcM incidents for status changes, new comments, and state updates. Reads a watchlist file, fetches current details for each incident via IcM MCP, compares against previously stored snapshots in Zakira.Exchange, and reports changes via ActionView. After acknowledging changes, invokes the icm-investigator orchestration asynchronously for each incident with changes. Runs hourly.
 version: 1.0.0
-tags: ["ZTS", "MSFT", "RP", "ICM"]
+tags: ["ZTS", "MSFT", "RP", "ICM", "auto"]
+defaultModel: claude-opus-4.6
 
 variables:
   watchlistPath: "C:\\Users\\moaid\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\ZTS\\Orchestration Data\\icm-watchlist.json.md"
@@ -27,7 +28,6 @@ mcps:
 steps:
   - name: load-watchlist
     type: Command
-    dependsOn: []
     command: pwsh
     arguments:
       - "-NoProfile"
@@ -47,7 +47,6 @@ steps:
 
       If the watchlist is empty (no incidents listed), call orchestra_complete with status 'success' and reason 'Watchlist is empty, no incidents to track'. If there ARE incidents in the list, output ONLY a JSON array of the incident IDs as strings, e.g. ["770343639", "760607426"]. No other text.
     mcps: []
-    model: claude-opus-4.6
     timeoutSeconds: 300
 
   - name: fetch-incident-details
@@ -76,7 +75,6 @@ steps:
 
       . **Always** return ONLY the JSON content that you fetched. Important, return the json content only (of the IcM that you fetched!), nothing more, nothing else
     mcps: [icm-readonly]
-    model: claude-opus-4.6
     timeoutSeconds: 600
 
   - name: load-previous-snapshots
@@ -100,7 +98,6 @@ steps:
 
       Output ONLY the JSON, no other text.
     mcps: [zakira]
-    model: claude-opus-4.6
     timeoutSeconds: 180
     retry:
       maxRetries: 2
@@ -167,7 +164,6 @@ steps:
 
       If hasChanges is false (no changes for any incident), use the orchestra_set_status tool with status 'no_action' and reason 'No changes detected for any tracked incident'. Still output the JSON.
     mcps: []
-    model: claude-opus-4.6
     timeoutSeconds: 600
 
   - name: save-snapshots
@@ -194,7 +190,6 @@ steps:
 
       After saving all snapshots, output a confirmation message listing which incidents were saved/updated.
     mcps: [zakira]
-    model: claude-opus-4.6
     timeoutSeconds: 500
     retry:
       maxRetries: 2
@@ -204,7 +199,6 @@ steps:
 
   - name: fetch-action-view-schema
     type: Command
-    dependsOn: []
     command: dnx
     arguments:
       - ActionView.Cli
@@ -254,7 +248,6 @@ steps:
 
       Respond with ONLY the raw JSON. No tools, no explanation, no markdown fences.
     mcps: []
-    model: claude-opus-4.6
     timeoutSeconds: 320
 
   - name: submit-action-view-entry
@@ -295,7 +288,6 @@ steps:
       5. How many investigations were invoked (and for which incidents)
       6. Note any errors or issues (or confirm none)
     mcps: []
-    model: claude-opus-4.6
     timeoutSeconds: 600
 
 trigger:

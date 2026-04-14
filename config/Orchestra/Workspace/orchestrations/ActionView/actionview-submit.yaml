@@ -1,8 +1,9 @@
 name: actionview-submit
 description: |
   Reusable orchestration for submitting entries to ActionView. Accepts pre-built entry JSON and an optional template name. Validates against the ActionView schema before submission.
-version: 1.0.0
-tags: ["utility", "actionview", "reusable"]
+version: 1.0.1
+tags: ["utility", "actionview", "reusable", "auto"]
+defaultModel: claude-opus-4.6
 
 inputs:
   entryJson:
@@ -23,9 +24,6 @@ inputs:
     required: false
     default: ""
 
-variables:
-  defaultModel: claude-opus-4.6
-
 defaultRetryPolicy:
   maxRetries: 2
   backoffSeconds: 3
@@ -38,24 +36,20 @@ timeoutSeconds: 600
 steps:
   - name: fetch-schema
     type: Command
-    dependsOn: []
     command: dnx
     arguments:
       - ActionView.Cli
       - "--yes"
       - "--"
       - schema
-    timeoutSeconds: 60
 
   - name: fetch-template
     type: Command
-    dependsOn: []
     command: pwsh
     arguments:
       - "-NoProfile"
       - "-Command"
       - "if ('{{param.template}}' -and '{{param.template}}' -ne '') { dnx ActionView.Cli --yes -- template show '{{param.template}}' } else { Write-Output 'NO_TEMPLATE' }"
-    timeoutSeconds: 60
 
   - name: prepare-entry
     type: Prompt
@@ -85,8 +79,6 @@ steps:
       {{param.entryJson}}
 
       Validate the entry against the schema. If a template was provided, merge any template defaults into the entry for fields that are missing. If groupId is non-empty, set it on the entry. Save the final JSON via orchestra_save_file.
-    model: "{{vars.defaultModel}}"
-    timeoutSeconds: 90
 
   - name: submit-entry
     type: Command
@@ -99,4 +91,3 @@ steps:
       - add
       - "--file"
       - "{{prepare-entry.files[0]}}"
-    timeoutSeconds: 60

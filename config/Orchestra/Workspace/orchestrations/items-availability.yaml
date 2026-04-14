@@ -2,7 +2,8 @@ name: items-availability
 description: |
   Tracks out-of-stock items from a watchlist file containing product links (Amazon, Walmart, etc.). Fetches each link periodically, checks whether the item is available, and creates an ActionView entry when items become available.
 version: 1.0.0
-tags: ["personal", "family", "shopping", "lily"]
+tags: ["personal", "family", "shopping", "lily", "auto"]
+defaultModel: claude-opus-4.6
 
 variables:
   watchlistPath: "C:\\Users\\moaid\\OneDrive\\Documents\\Obsidian Vault\\Family\\Lily\\Baby\\Tracking out of stock items.md"
@@ -18,7 +19,6 @@ mcps:
 steps:
   - name: load-watchlist
     type: Command
-    dependsOn: []
     command: pwsh
     arguments:
       - "-NoProfile"
@@ -88,7 +88,6 @@ steps:
 
       Output ONLY the JSON after checking all items, no other text.
     mcps: [playwright]
-    model: claude-opus-4.6
     timeoutSeconds: 600
 
   - name: check-if-any-available
@@ -105,12 +104,10 @@ steps:
 
       If at least one item IS available, output ONLY the word 'CONTINUE'. Nothing else.
     mcps: []
-    model: claude-opus-4.6
     timeoutSeconds: 60
 
   - name: fetch-action-view-schema
     type: Command
-    dependsOn: []
     command: dnx
     arguments:
       - ActionView.Cli
@@ -154,7 +151,6 @@ steps:
 
       Respond with ONLY the raw JSON. No tools other than orchestra_save_file, no explanation, no markdown fences.
     mcps: []
-    model: claude-opus-4.6
     timeoutSeconds: 300
 
   - name: submit-action-view-entry
