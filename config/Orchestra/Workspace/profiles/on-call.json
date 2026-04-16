@@ -1,5 +1,5 @@
 {
-  "id": "on-call-3004e1",
+  "id": "on-call",
   "name": "On-Call",
   "description": "OCE shfit",
   "isActive": false,
@@ -7,7 +7,7 @@
   "deactivatedAt": "2026-04-02T08:29:39.8094059+00:00",
   "filter": {
     "tags": [
-      "oce"
+		"oce"
     ],
     "orchestrationIds": [],
     "excludeOrchestrationIds": [],

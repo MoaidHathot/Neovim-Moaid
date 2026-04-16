@@ -6,7 +6,10 @@
   "deactivatedAt": "2026-04-02T10:16:56.5753834+00:00",
   "filter": {
     "tags": [
-      "zts"
+		"PR",
+		"RP",
+		"meetings",
+		"track"
     ],
     "orchestrationIds": [],
     "excludeOrchestrationIds": [],

@@ -2,7 +2,7 @@ name: icm-tracker
 description: |
   Periodically checks tracked IcM incidents for status changes, new comments, and state updates. Reads a watchlist file, fetches current details for each incident via IcM MCP, compares against previously stored snapshots in Zakira.Exchange, and reports changes via ActionView. After acknowledging changes, invokes the icm-investigator orchestration asynchronously for each incident with changes. Runs hourly.
 version: 1.0.0
-tags: ["ZTS", "MSFT", "RP", "ICM", "auto"]
+tags: ["ZTS", "MSFT", "Resource Provider", "ICM", "auto", "track"]
 defaultModel: claude-opus-4.6
 
 variables:
