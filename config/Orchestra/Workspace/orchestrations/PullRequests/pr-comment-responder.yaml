@@ -1,0 +1,613 @@
+name: pr-comment-responder
+description: |
+  Responds to reviewer comments on a single Pull Request created by me. Reads incoming comments from reviewers, analyzes code context, and uses a coordinator agent with specialized subagents (code-context-reader, code-fixer, docs-checker) to decide whether to reply, make code fixes, mark as won't fix, or resolve threads. Uses PowerReview MCP for all comment and code fix operations. Creates draft replies and code fix proposals that require user approval before submission. Produces an ActionView entry of type 'pr-comment-response' with per-comment approve/delete/reject actions. Tracks processed comment state via Zakira.Exchange.
+version: 1.0.0
+tags: ["ZTS", "MSFT", "PR", "Comment-Response", "auto"]
+defaultModel: claude-opus-4.6
+
+inputs:
+  prData:
+    type: string
+    description: |
+      JSON object containing the PR data with fields: id, title, createdBy, creationDate, sourceRefName, targetRefName, reviewers, url, newCommentThreadIds (optional), and latest iteration id
+    required: true
+
+variables:
+  organization: msazure
+  project: One
+  repository: ZTS
+  authorName: Moaid Hathot
+  repoLocalPath: "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS"
+  zakiraCategory: pr-comment-response-state
+  skillsDirPowerReview: "./skills-powerreview"
+  skillsDirActionView: "./skills-actionview"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 900
+timeoutSeconds: 3600
+
+mcps:
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - "--yes"
+      - "--"
+      - mcp
+      - "--category"
+      - "{{vars.zakiraCategory}}"
+
+  - name: workiq
+    type: local
+    command: npx
+    arguments:
+      - "-y"
+      - "@microsoft/workiq"
+      - mcp
+
+  - name: context7
+    type: local
+    command: npx
+    arguments:
+      - "-y"
+      - "@upstash/context7-mcp"
+
+steps:
+  - name: prepare-pr-data
+    type: Transform
+    template: "{{param.prData}}"
+    parameters: [prData]
+    contentType: text/plain
+
+  - name: open-review-session
+    type: Prompt
+    dependsOn: [prepare-pr-data]
+    systemPrompt: |
+      You are a PowerReview session manager. Open or retrieve the review session for the given PR so that agents can read comments, create replies, and make code fixes. Use the PowerReview MCP tools.
+
+      You need:
+      1. The PR URL (from the PR data)
+      2. The local repository path
+
+      Call the appropriate PowerReview tool to open/get the review session. If a session already exists, load it.
+
+      After opening the session, call GetWorkingDirectory to get the worktree path. This path tells downstream agents where the source code for the PR branch is checked out.
+    userPrompt: |
+      Open a PowerReview session for this PR:
+
+      PR Data:
+      {{prepare-pr-data.output}}
+
+      Local repo path: {{vars.repoLocalPath}}
+
+      Steps:
+      1. Use GetReviewSession to check for an existing session for the PR URL. If no session exists, use the open/create session tool with the PR URL and repo path.
+      2. Call GetWorkingDirectory to get the worktree filesystem path.
+
+      Output the combined session and working directory details as JSON:
+      {
+        "sessionId": "...",
+        "prUrl": "...",
+        "prTitle": "...",
+        "prAuthor": "...",
+        "sourceBranch": "...",
+        "targetBranch": "...",
+        "status": "...",
+        "workingDirectory": "<path from GetWorkingDirectory>",
+        "gitStrategy": "Worktree|Clone|Cwd",
+        "repoPath": "<main repo path>"
+      }
+
+      IMPORTANT: The workingDirectory and prUrl fields are critical -- downstream agents use them for all PowerReview tool calls and file access.
+    mcps: [powerreview]
+
+  - name: sync-and-load-comments
+    type: Prompt
+    dependsOn: [open-review-session]
+    systemPrompt: |
+      You are a comment thread analyst. Sync the latest threads from the remote provider and identify reviewer comments that need a response from the PR author.
+
+      Focus on:
+      - Threads with status 'Active' or 'Pending' (not resolved/closed threads)
+      - Comments from reviewers (NOT from the PR author '{{vars.authorName}}')
+      - Comments that don't already have a subsequent reply from the PR author or from an AI agent addressing them
+      - The most recent reviewer comment in each thread is typically the one needing a response
+
+      For each unaddressed comment, gather:
+      - The thread ID, file path, and line numbers
+      - The commenter's name
+      - The comment body
+      - The full thread context (all comments in the thread for conversation history)
+      - The file diff for context
+    userPrompt: |
+      Sync and analyze comment threads for this PR.
+
+      Session data:
+      {{open-review-session.output}}
+
+      Steps:
+      1. Call SyncThreads to fetch the latest threads from the remote provider
+      2. Call ListCommentThreads to get all threads and any existing drafts
+      3. For each Active/Pending thread, check if the latest comment is from a reviewer (not '{{vars.authorName}}') and has not been addressed
+      4. For threads with unaddressed comments, call GetFileDiff to get the relevant code context
+
+      Output a JSON object:
+      {
+        "prUrl": "...",
+        "totalThreads": <count>,
+        "unaddressedComments": [
+          {
+            "threadId": <id>,
+            "filePath": "...",
+            "lineStart": <line>,
+            "lineEnd": <line or null>,
+            "threadStatus": "Active|Pending",
+            "commenter": "reviewer display name",
+            "commentBody": "the reviewer's comment text",
+            "fullThread": [
+              { "author": "...", "body": "...", "date": "..." }
+            ],
+            "fileDiff": "unified diff for this file"
+          }
+        ],
+        "alreadyAddressed": [
+          { "threadId": <id>, "reason": "already has author reply|resolved|AI already replied" }
+        ]
+      }
+
+      If there are no unaddressed comments, call orchestra_complete with status 'success' and reason 'No new unaddressed reviewer comments found on this PR.'
+    mcps: [powerreview]
+
+  - name: fetch-pr-context
+    type: Prompt
+    dependsOn: [open-review-session, prepare-pr-data]
+    systemPrompt: |
+      You are an Azure DevOps assistant specialized in retrieving pull request context. Fetch the PR description, linked work items with full details, and any relevant metadata. This context helps downstream agents understand the intent behind the PR so they can give informed responses to reviewer comments.
+    userPrompt: |
+      Fetch the full context for this PR.
+
+      PR Data:
+      {{prepare-pr-data.output}}
+
+      Session:
+      {{open-review-session.output}}
+
+      Steps:
+      1. Fetch the PR description and metadata from Azure DevOps for PR in project '{{vars.project}}' repository '{{vars.repository}}'
+      2. Extract any linked work item IDs from the PR
+      3. For each linked work item, fetch its full details: title, description, acceptance criteria, state, assigned to
+      4. Produce a unified context summary
+
+      Output as JSON:
+      {
+        "prId": <id>,
+        "prTitle": "...",
+        "prDescription": "full PR description text",
+        "linkedWorkItems": [
+          {
+            "id": <work item id>,
+            "title": "...",
+            "description": "...",
+            "acceptanceCriteria": "...",
+            "state": "...",
+            "assignedTo": "..."
+          }
+        ],
+        "contextSummary": "2-3 paragraph summary of what this PR is meant to accomplish, the requirements it addresses, and any design decisions mentioned in the work items"
+      }
+    outputHandlerPrompt: |
+      Ensure valid JSON. Keep the contextSummary concise but informative -- a reviewer reading this should quickly understand the 'why' behind the PR changes.
+    mcps: [azdo]
+    retry:
+      maxRetries: 3
+      backoffSeconds: 10
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: workiq-context
+    type: Prompt
+    dependsOn: [fetch-pr-context, open-review-session]
+    systemPrompt: |
+      You are a contextual intelligence analyst. You use WorkIQ to search for additional context about this PR and its related work items across Microsoft 365 data (emails, Teams messages, meetings, documents).
+
+      WorkIQ accepts natural language queries about organizational communications. Simply ask questions like:
+      - 'Find emails about [topic]'
+      - 'What meetings discussed [feature name]?'
+      - 'Find Teams messages mentioning [keyword]'
+      - 'Who has been discussing [topic] recently?'
+      - 'Find documents related to [feature]'
+
+      No explicit authentication step is needed -- WorkIQ handles authentication automatically.
+
+      This context is critical for responding to reviewer comments accurately: if a reviewer questions a design decision, the discussions and meeting notes can provide the justification. If a reviewer asks about requirements, the work items and emails contain the answers.
+    userPrompt: |
+      Search for organizational context about this PR, its requirements, and any related discussions.
+
+      PR & Work Item Context:
+      {{fetch-pr-context.output}}
+
+      Session:
+      {{open-review-session.output}}
+
+      Steps:
+      1. Ask WorkIQ to find emails related to this PR's title, feature name, and linked work item titles
+      2. Ask WorkIQ about recent meetings (last 30 days) that discussed this feature or related topics
+      3. Ask WorkIQ to find Teams messages mentioning this PR, work items, or the feature being implemented
+      4. Ask WorkIQ for any documents or design specs related to this feature
+      5. Cross-reference the discussions with the PR description and work items to identify any decisions, agreements, or context that would help respond to reviewer comments
+
+      Produce a JSON report:
+      {
+        "relatedDiscussions": [
+          { "source": "chat|email|meeting|document", "summary": "...", "participants": [...], "date": "..." }
+        ],
+        "designDecisions": ["key design decisions found in discussions that explain why the PR is implemented this way"],
+        "requirementsContext": "summary of requirements from discussions that may not be in the work items",
+        "additionalContext": "any other relevant context from communications that would help respond to reviewer comments",
+        "relevantQuotes": ["direct quotes from discussions that could be cited in comment responses"]
+      }
+    mcps: [workiq, azdo]
+    retry:
+      maxRetries: 2
+      backoffSeconds: 10
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: respond-to-comments
+    type: Prompt
+    dependsOn: [sync-and-load-comments, open-review-session, fetch-pr-context, workiq-context]
+    systemPrompt: |
+      You are a PR comment response coordinator acting on behalf of the PR author '{{vars.authorName}}'. You read reviewer comments on a Pull Request and decide how to respond to each one, then execute the appropriate actions using PowerReview.
+
+      ## Your Role
+
+      You coordinate responses to reviewer comments. For each comment, you:
+      1. Understand what the reviewer is asking or pointing out
+      2. Analyze the code context (using the code-context-reader subagent if needed)
+      3. Decide on the appropriate action
+      4. Execute the action using PowerReview tools
+
+      ## Available Actions
+
+      - **Reply**: The comment is a question, clarification request, or discussion point. Draft a thoughtful reply.
+      - **Code Fix**: The comment identifies a legitimate code issue (bug, missing validation, bad pattern, etc.) that should be fixed. Use the code-fixer subagent to make changes and create a proposal.
+      - **Won't Fix / By Design**: The comment raises a valid point but the current approach is intentional or the change is out of scope. Draft a reply explaining why.
+      - **Resolve**: The comment has already been addressed by a previous iteration push or is no longer relevant. Reply acknowledging this and resolve the thread.
+
+      ## Decision Guidelines
+
+      - Be thoughtful and strategic. Not every comment requires a code change.
+      - If a reviewer asks a question, answer it clearly and concisely.
+      - If a reviewer suggests a minor improvement that makes sense, make the code fix.
+      - If a reviewer points out a bug, security issue, or correctness problem, ALWAYS make a code fix.
+      - If the current approach is intentional, explain the design reasoning respectfully -- use the PR description, work item context, and WorkIQ discussions to back up your explanation with concrete references to requirements, design decisions, or meeting outcomes.
+      - Consider the full thread history to understand the conversation context.
+      - When unsure about the right approach, use the docs-checker subagent to verify best practices.
+      - When making code fixes, ensure they don't introduce new issues -- use the code-context-reader to understand surrounding code first.
+      - Leverage the work item acceptance criteria and organizational discussions to inform your responses. If a reviewer's comment contradicts a documented decision, cite the relevant context.
+
+      ## Executing Actions
+
+      ### For replies (Reply, Won't Fix):
+      Call ReplyToThread with the prUrl, threadId, your reply body, and agentName "PR Author Assistant".
+
+      ### For code fixes:
+      1. First use the code-context-reader subagent to understand the code around the comment
+      2. Then delegate to the code-fixer subagent with the thread details, file path, line numbers, the reviewer's comment, and code context
+      3. The code-fixer will handle: PrepareFixWorktree, CreateFixBranch, make changes, commit, ReplyToThread, CreateProposal
+      4. Record the returned proposalId and replyDraftId
+
+      ### For resolving threads:
+      1. Call ReplyToThread explaining how the comment has been addressed
+      2. Call UpdateThreadStatus with the threadId and status 'fixed' or 'wontfix' as appropriate
+
+      ## Output Format
+
+      After processing all comments, output a JSON summary:
+      {
+        "totalProcessed": <count>,
+        "actions": {
+          "replies": <count>,
+          "codeFixes": <count>,
+          "wontFix": <count>,
+          "resolved": <count>
+        },
+        "responses": [
+          {
+            "threadId": <id>,
+            "commenter": "...",
+            "filePath": "...",
+            "lineStart": <line>,
+            "action": "reply|code-fix|wont-fix|resolve",
+            "replyDraftId": "draft UUID",
+            "proposalId": "proposal UUID" or null,
+            "summary": "Brief description of what was done"
+          }
+        ],
+        "errors": []
+      }
+    userPrompt: |
+      Respond to the following unaddressed reviewer comments on my PR.
+
+      Session data:
+      {{open-review-session.output}}
+
+      Unaddressed comments:
+      {{sync-and-load-comments.output}}
+
+      ## PR Description & Work Item Context
+      {{fetch-pr-context.output}}
+
+      ## Organizational Context (emails, chats, meetings, documents)
+      {{workiq-context.output}}
+
+      Process each unaddressed comment:
+      1. Read the comment and its full thread context carefully
+      2. Consider the PR description, work item requirements, and organizational discussions for relevant context
+      3. If the code context is not clear from the diff alone, use the code-context-reader subagent to read surrounding code
+      4. Decide the appropriate action (reply, code fix, won't fix, or resolve)
+      5. Execute the action using PowerReview tools or subagents
+      6. Track the results
+
+      When responding, draw on the work item context and organizational discussions where relevant. For example:
+      - If a reviewer asks "why was this done this way?", cite the relevant design decision from meetings or emails
+      - If a reviewer questions requirements, reference the work item acceptance criteria
+      - If a reviewer suggests an alternative approach that was already discussed and rejected, mention the discussion
+
+      Write responses as if you are the PR author ('{{vars.authorName}}'). Be professional, acknowledge valid feedback, and provide clear explanations.
+
+      IMPORTANT: When calling ReplyToThread, CreateComment, or any PowerReview tool that accepts agentName, always pass agentName: "PR Author Assistant".
+    mcps: [powerreview]
+    reasoningLevel: High
+    timeoutSeconds: 1800
+    skillDirectories:
+      - "{{vars.skillsDirPowerReview}}"
+    subagents:
+      - name: code-context-reader
+        displayName: Code Context Reader
+        description: |
+          Reads code files surrounding commented areas to understand the context and design intent of the code. Use this agent when you need to understand the codebase context before deciding how to respond to a reviewer comment. Provide the PR URL, file path, and line numbers.
+        prompt: |
+          You are a code context analyst with access to the repository through PowerReview MCP file access tools. Your job is to read and analyze code files to help the coordinator understand the context around reviewer comments.
+
+          Use these tools:
+          - ReadFile: to read file contents (supports offset/limit for large files)
+          - ListRepositoryFiles: to discover project structure and find related files
+          - GetFileDiff: to see the full diff for a specific file
+
+          The PR URL is available in the data passed to your parent agent. Use it with all PowerReview tool calls.
+
+          When asked about a specific file and line range:
+          1. Read the file using ReadFile, including at least 40 lines before and 40 lines after the commented area for context
+          2. Identify and read related files: interfaces implemented, base classes, callers of modified methods, corresponding test files
+          3. Use ListRepositoryFiles to discover the project structure around the changed file (list the directory to see sibling files)
+          4. Understand the design intent: why is the code written this way? What patterns does it follow?
+
+          Return your analysis as JSON:
+          {
+            "filePath": "the file analyzed",
+            "codeContext": "description of what the code does in the commented area",
+            "designIntent": "why the code appears to be written this way",
+            "relatedFiles": ["list of relevant related files discovered"],
+            "existingPatterns": ["patterns in the codebase that are relevant to this comment"],
+            "callers": ["methods/classes that call or depend on this code"],
+            "testCoverage": "whether tests exist for this code",
+            "recommendation": "whether a code change seems warranted and what it should do, based on the full context"
+          }
+        mcps: [powerreview]
+        infer: true
+
+      - name: code-fixer
+        displayName: Code Fixer
+        description: |
+          Makes targeted code changes in response to reviewer comments. Creates fix branches, modifies code, commits changes, creates draft replies, and registers proposals via PowerReview. Use this agent when a reviewer comment requires an actual code change. Provide the PR URL, thread ID, file path, line numbers, the reviewer's comment, and any code context from the code-context-reader.
+        prompt: |
+          You are a code fix specialist with access to the repository through PowerReview MCP tools. You make targeted, careful code changes in response to reviewer comments.
+
+          The PR URL is available in the data passed to your parent agent. Use it with all PowerReview tool calls.
+
+          When asked to fix code for a specific comment thread, follow these steps in order:
+
+          1. **Prepare the worktree** (idempotent -- safe to call multiple times):
+             Call PrepareFixWorktree(prUrl) to get the isolated fix worktree path.
+
+          2. **Create a fix branch** for this specific thread:
+             Call CreateFixBranch(prUrl, threadId) to create a branch named powerreview/fix/thread-{threadId}.
+
+          3. **Read the current code**:
+             Call ReadFile(prUrl, filePath) to see the exact current state of the file in the worktree.
+
+          4. **Make the code changes**:
+             Use your file editing tools to modify the file(s) in the worktree path returned by PrepareFixWorktree.
+             Be surgical -- change only what is needed to address the reviewer's comment.
+
+          5. **Commit the changes**:
+             Run git add and git commit in the worktree directory.
+
+          6. **Create a draft reply**:
+             Call ReplyToThread(prUrl, threadId, body, agentName: "PR Author Assistant") explaining what was fixed and why.
+             Note the returned draft id (UUID).
+
+          7. **Register the proposal**:
+             Call CreateProposal(prUrl, threadId, branchName, description, filesChanged, replyDraftId, agentName: "PR Author Assistant").
+             - branchName: the branch from step 2
+             - description: clear explanation of the fix
+             - filesChanged: comma-separated list of modified files
+             - replyDraftId: the UUID from step 6
+
+          Return the results as JSON:
+          {
+            "threadId": <id>,
+            "branchName": "powerreview/fix/thread-<id>",
+            "filesChanged": ["list of modified files"],
+            "proposalId": "proposal UUID",
+            "replyDraftId": "reply draft UUID",
+            "description": "what was fixed and why"
+          }
+
+          IMPORTANT:
+          - The fix worktree is isolated. Changes here do NOT affect the user's working directory.
+          - All changes are proposals that must be approved by the user before they are applied.
+          - Be conservative: fix only what the reviewer asked for, don't refactor surrounding code.
+        mcps: [powerreview]
+        infer: true
+
+      - name: docs-checker
+        displayName: Documentation Checker
+        description: |
+          Checks latest documentation for APIs, patterns, and best practices referenced in reviewer comments. Use this agent when a reviewer questions whether an API usage is correct, suggests a different pattern, or when you need to verify the right approach before responding.
+        prompt: |
+          You are a documentation researcher. Use the Context7 MCP to look up the latest documentation for APIs, frameworks, patterns, and best practices that are relevant to the reviewer's comment.
+
+          When asked to verify a specific API, pattern, or practice:
+          1. Search for the relevant documentation using Context7
+          2. Verify whether the current code usage is correct and current
+          3. Check for deprecations, breaking changes, or newer alternatives
+          4. Find official recommendations and best practice guidance
+
+          Return findings as JSON:
+          {
+            "topic": "what was looked up",
+            "currentUsageCorrect": true/false,
+            "documentation": "relevant documentation summary",
+            "recommendations": "what the official docs recommend",
+            "deprecations": "any deprecation warnings or migration notes",
+            "links": ["relevant documentation references"]
+          }
+        mcps: [context7]
+        infer: true
+
+  - name: create-action-view-entry
+    type: Prompt
+    dependsOn: [respond-to-comments, open-review-session]
+    systemPrompt: |
+      You are an ActionView entry generator for PR comment responses. You create structured JSON entries conforming to the pr-comment-response template.
+
+      You have access to the PowerReview MCP server. Use it to fetch the current state of drafts, proposals, and threads to build accurate per-response sections with correct UUIDs for action buttons.
+
+      Follow the instructions in the 'creating-comment-response-actionview-entry' skill for the exact data collection steps, content block structure, action command templates, and verification checklist.
+
+      IMPORTANT: Save the generated JSON entry using the orchestra_save_file tool. Output ONLY the raw JSON -- it will be validated and submitted by a downstream step.
+    userPrompt: |
+      Create an ActionView entry of type 'pr-comment-response' summarizing the comment responses.
+
+      Response results:
+      {{respond-to-comments.output}}
+
+      Review session:
+      {{open-review-session.output}}
+
+      Follow the 'creating-comment-response-actionview-entry' skill to build the entry. Key steps:
+
+      1. Call GetReviewSession to get PR metadata
+      2. Call ListCommentThreads to get all threads and draft replies with their UUIDs
+      3. Call ListProposals to get all proposals with their UUIDs
+      4. For each proposal, call GetProposalDiff to get the code diff
+      5. Build the entry with type 'pr-comment-response', source '{{orchestration.name}}'
+      6. Include:
+         - Alert block if there were errors processing any comments
+         - Pull Request keyValue (Repository, Branch, Author, PR URL)
+         - Response Summary table: Action | Count (Replies, Code Fixes, Won't Fix, Total)
+         - Comment Responses section with one nested section PER addressed comment containing:
+           a) Details keyValue (Thread ID, Commenter, File, Lines, Action, Agent, Reply Draft ID, Proposal ID)
+           b) Original Comment markdown (the reviewer's comment as blockquote)
+           c) AI Response markdown (the draft reply text)
+           d) Proposed Fix code block (if code fix, language: diff)
+           e) Per-response actions: Approve Reply + Delete Reply (always); Approve Proposal + Reject Proposal (only for code fixes)
+         - Optional Proposed Code Fixes section (table listing all proposals)
+         - Summary markdown
+         - View PR link
+      7. Entry-level actions:
+         - 'Open PR' (primary)
+         - 'Approve All Replies' (success)
+         - 'Submit Replies' (success, onSuccess: archive)
+         - 'Approve All Proposals' (success)
+         - 'Apply All Proposals' (success)
+         - 'Delete All' (danger, onSuccess: archive)
+      8. Severity: medium if code fixes exist, low if only replies, high if errors occurred
+
+      Save the JSON using orchestra_save_file. Output ONLY the raw JSON.
+    mcps: [powerreview]
+    skillDirectories:
+      - "{{vars.skillsDirActionView}}"
+
+  - name: submit-action-view-entry
+    type: Prompt
+    dependsOn: [create-action-view-entry]
+    systemPrompt: |
+      You are an orchestration invoker. Invoke the 'actionview-submit' orchestration to validate and submit the ActionView entry.
+    userPrompt: |
+      Use invoke_orchestration to invoke 'actionview-submit' with mode 'sync' and the following parameters:
+      - entryJson: the entry JSON below
+      - template: pr-comment-response
+
+      Entry JSON:
+      {{create-action-view-entry.output}}
+    mcps: [orchestra]
+
+  - name: update-tracking-state
+    type: Prompt
+    dependsOn: [respond-to-comments]
+    systemPrompt: |
+      You are a state persistence assistant. Update Zakira.Exchange to record that comments on this PR have been processed, so the tracker knows not to re-process the same threads.
+
+      Merge the newly processed thread IDs with any existing processedThreadIds list. Set status to 'idle' to indicate processing is complete and the tracker can check again on its next run.
+    userPrompt: |
+      Update the tracking state for this PR after processing comments.
+
+      PR Data:
+      {{prepare-pr-data.output}}
+
+      Response results:
+      {{respond-to-comments.output}}
+
+      Steps:
+      1. First, call get_memory with the PR ID as key to retrieve any existing state (including existing processedThreadIds)
+      2. Merge the thread IDs from this run's responses into the existing processedThreadIds list (union, no duplicates)
+      3. Update Zakira.Exchange using edit_memory (or create_memory if no entry exists):
+         - key: the PR ID
+         - data: JSON with:
+           - "status": "idle"
+           - "lastProcessedAt": <current timestamp>
+           - "processedThreadIds": <merged list of all processed thread IDs>
+           - "lastRunSummary": <brief summary: "X comments addressed (Y replies, Z code fixes)">
+           - "lastRunOrchestrationId": "{{orchestration.runId}}"
+         - reason: 'Comment response run completed by pr-comment-responder'
+         - tags: ['comment-response', 'processed']
+
+      Output confirmation of what was saved.
+    mcps: [zakira]
+
+  - name: generate-summary
+    type: Prompt
+    dependsOn: [respond-to-comments, update-tracking-state, submit-action-view-entry]
+    systemPrompt: |
+      You are a reporting assistant. Produce a clear, concise markdown summary of the PR comment response orchestration run.
+    userPrompt: |
+      Create a final markdown summary of this comment response run.
+
+      Response results:
+      {{respond-to-comments.output}}
+
+      State update:
+      {{update-tracking-state.output}}
+
+      ActionView submission:
+      {{submit-action-view-entry.output}}
+
+      Produce a polished markdown report:
+      1. Header: '## PR Comment Response Summary' with orchestration run info
+      2. PR title and link
+      3. Total comments addressed
+      4. Breakdown by action type: replies, code fixes, won't fix, resolved
+      5. For each response: thread ID, file, commenter, action taken, brief summary of the response
+      6. Number of proposals pending user approval
+      7. Number of draft replies pending user approval
+      8. Confirmation that tracking state was updated and ActionView entry was submitted
+      9. Any errors or issues encountered

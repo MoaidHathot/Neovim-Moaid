@@ -1,0 +1,257 @@
+name: pr-comment-tracker
+description: |
+  Discovers active Pull Requests created by me in Azure DevOps, checks for new reviewer comments/threads using PowerReview, and invokes the pr-comment-responder orchestration for each PR that has unaddressed comments. Tracks which comments have been processed via Zakira.Exchange to avoid duplicate responses. Runs on an hourly schedule.
+version: 1.0.0
+tags: ["ZTS", "MSFT", "PR", "Comment-Response", "auto"]
+defaultModel: claude-opus-4.6
+
+variables:
+  organization: msazure
+  project: One
+  repository: ZTS
+  authorName: Moaid Hathot
+  repoLocalPath: "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS"
+  zakiraCategory: pr-comment-response-state
+  staleRespondingMinutes: "75"
+
+defaultRetryPolicy:
+  maxRetries: 3
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 1500
+timeoutSeconds: 7200
+
+mcps:
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - "--yes"
+      - "--"
+      - mcp
+      - "--category"
+      - "{{vars.zakiraCategory}}"
+
+  - name: orchestra
+    type: remote
+    endpoint: "{{server.url}}/mcp/data"
+
+steps:
+  - name: fetch-my-prs
+    type: Prompt
+    systemPrompt: |
+      You are an Azure DevOps assistant. Query for active pull requests created by a specific author. Return structured data only -- no commentary.
+    userPrompt: |
+      Using the Azure DevOps tools, list all active (open) pull requests in project '{{vars.project}}' repository '{{vars.repository}}' that were CREATED BY '{{vars.authorName}}'.
+
+      For each PR, return: id, title, createdBy (author display name), creationDate, sourceRefName, targetRefName, reviewers (array of display names and vote status), url (full Azure DevOps PR URL), and the latest iteration id.
+
+      Return ONLY a JSON array. If no PRs found, return [].
+    outputHandlerPrompt: |
+      Ensure the output is a valid JSON array. Strip any markdown fences. If empty, return [].
+    mcps: [azdo]
+    retry:
+      maxRetries: 3
+      backoffSeconds: 10
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: gate-no-prs
+    type: Prompt
+    dependsOn: [fetch-my-prs]
+    systemPrompt: |
+      You are a gate checker. If the input is an empty JSON array, call orchestra_complete with status 'success' and reason 'No active PRs created by {{vars.authorName}} found. Nothing to check.'. Otherwise, pass the data through unchanged.
+    userPrompt: |
+      Check if there are any PRs to process:
+
+      {{fetch-my-prs.output}}
+
+      If the array is empty, call orchestra_complete. Otherwise, output the array as-is.
+
+  - name: check-for-new-comments
+    type: Prompt
+    dependsOn: [gate-no-prs]
+    systemPrompt: |
+      You are a comment tracking manager. You use PowerReview to sync and check comment threads on PRs, and Zakira.Exchange to track which comments have already been processed.
+
+      ## State in Zakira.Exchange
+
+      For each PR, the tracking state is stored with key = PR ID:
+      - status: 'idle' (default) or 'responding' (orchestration running) or 'failed'
+      - lastProcessedAt: timestamp of last successful processing
+      - processedThreadIds: array of thread IDs that have been addressed
+      - respondedAt: timestamp when the 'responding' status was set
+
+      ## Decision Logic
+
+      For each PR:
+      1. Open or get the PowerReview review session (use GetReviewSession; if no session exists, open one with the PR URL and repo path)
+      2. Call SyncThreads to fetch the latest threads from the remote
+      3. Call ListCommentThreads to get all threads
+      4. Check Zakira.Exchange for last known state (get_memory with PR ID as key)
+
+      A PR needs comment processing if:
+      a. There are Active threads with comments from reviewers (not from the PR author '{{vars.authorName}}') that do not already have a reply from the author or an AI agent
+      b. Those thread IDs are NOT in the processedThreadIds list from Zakira
+      c. OR the state is 'responding' but respondedAt is older than {{vars.staleRespondingMinutes}} minutes (stale/crashed)
+      d. OR the state is 'failed' (retry)
+
+      A PR should be SKIPPED if:
+      a. All Active threads with reviewer comments have been addressed (all in processedThreadIds or have author/AI replies)
+      b. No new reviewer comments since lastProcessedAt
+      c. State is 'responding' and respondedAt is within the last {{vars.staleRespondingMinutes}} minutes
+
+      If ALL PRs should be skipped, call orchestra_complete with status 'success' and reason explaining why.
+    userPrompt: |
+      Check for new reviewer comments on each of my PRs:
+
+      {{gate-no-prs.output}}
+
+      For each PR:
+      1. Use PowerReview GetReviewSession to check for an existing session. If no session exists, open one with the PR URL and repo path '{{vars.repoLocalPath}}'.
+      2. Call SyncThreads to get the latest threads
+      3. Call ListCommentThreads to see all threads
+      4. Check Zakira.Exchange (get_memory with PR ID as key)
+      5. Identify threads with new/unaddressed reviewer comments
+      6. Apply the decision logic from your instructions
+
+      Output a JSON object:
+      {
+        "prsToProcess": [
+          {
+            ...original PR data...,
+            "newCommentThreadIds": [list of thread IDs with new/unaddressed comments],
+            "totalNewComments": <count>,
+            "processReason": "new-comments|stale-responding|failed-retry|first-time"
+          }
+        ],
+        "prsSkipped": [
+          { "id": ..., "title": "...", "reason": "..." }
+        ]
+      }
+
+      If prsToProcess is empty, call orchestra_complete. Otherwise output the JSON.
+    mcps: [zakira, powerreview]
+
+  - name: invoke-responders
+    type: Prompt
+    dependsOn: [check-for-new-comments]
+    systemPrompt: |
+      You are an orchestration coordinator. You invoke the pr-comment-responder orchestration for each PR that has new reviewer comments to address, then track outcomes.
+
+      For each PR:
+      1. First, update Zakira.Exchange to mark the PR as 'responding' with the current timestamp
+      2. Invoke pr-comment-responder with the PR data as the 'prData' parameter
+      3. Use synchronous mode so you can detect success or failure
+      4. If the invocation fails or times out, update Zakira.Exchange to set the PR state to 'failed'
+
+      Do NOT update Zakira for successful runs -- the pr-comment-responder orchestration handles its own state updates.
+    userPrompt: |
+      The following PRs have new reviewer comments to address:
+
+      {{check-for-new-comments.output}}
+
+      For each PR in 'prsToProcess':
+      1. Update Zakira.Exchange: create/edit memory with key = PR ID, data = { "status": "responding", "respondedAt": "<current timestamp>", "orchestrationRunId": "{{orchestration.runId}}" }, reason = 'Comment response started by pr-comment-tracker'
+      2. Use invoke_orchestration to invoke 'pr-comment-responder' with mode 'sync' and timeoutSeconds 3600
+      3. Pass the PR data as the 'prData' parameter -- serialize the full PR object as a JSON string (include the newCommentThreadIds so the responder knows which threads to focus on)
+      4. After invocation completes, check whether it succeeded or failed
+      5. For failed invocations, update Zakira.Exchange with status 'failed' and the error
+
+      After all invocations complete, output a JSON summary:
+      {
+        "totalPRsProcessed": <count>,
+        "succeeded": <count>,
+        "failed": <count>,
+        "results": [
+          { "prId": ..., "prTitle": "...", "executionId": "...", "status": "succeeded|failed", "summary": "...", "error": null | "..." }
+        ]
+      }
+    mcps: [orchestra, zakira]
+
+  - name: create-action-view-entry
+    type: Prompt
+    dependsOn: [invoke-responders, check-for-new-comments]
+    systemPrompt: |
+      You are an ActionView entry generator for PR comment tracking runs. You create structured JSON entries. The entry type must be 'pr-comment-tracker-run' and source must be '{{orchestration.name}}'.
+
+      Your entries should give the user a clear overview of what the comment tracker discovered and dispatched: how many PRs had new comments, how many were processed, and the outcomes.
+
+      IMPORTANT: Save the generated JSON entry using the orchestra_save_file tool. Output ONLY the raw JSON -- it will be validated and submitted by a downstream step.
+    userPrompt: |
+      Create an ActionView entry summarizing this PR comment tracking run.
+
+      Comment check results (PRs found, skipped, and queued):
+      {{check-for-new-comments.output}}
+
+      Responder invocation results:
+      {{invoke-responders.output}}
+
+      Create an entry with:
+      1. type: 'pr-comment-tracker-run'
+      2. source: '{{orchestration.name}}'
+      3. title: 'PR Comment Tracker Run' with count of PRs processed
+      4. subtitle: Summary like 'X PRs with new comments, Y processed, Z failed'
+      5. severity: 'high' if any processing failed, 'medium' if PRs were processed, 'low' if all skipped
+      6. tags: ['pr-response', 'comment-tracker', 'ZTS']
+      7. content blocks:
+         - Alert block if any processing failed (so the user knows retries are pending)
+         - A summary table: PR ID | Title | New Comments | Action | Outcome
+           - Action: 'processed', 'skipped (no new comments)', 'skipped (responding in progress)', etc.
+           - Outcome: 'succeeded', 'failed', 'N/A' for skipped
+         - A section 'Skipped PRs' listing why each was skipped (if any)
+         - A section 'Processing Results' with per-PR outcome details (if any were processed)
+         - A section 'Failed' listing errors and noting they will be retried (if any failed)
+      8. actions:
+         - 'View PRs' (style: primary)
+         - 'Dismiss' (style: default)
+
+      Save the JSON using orchestra_save_file. Output ONLY the raw JSON.
+
+  - name: submit-action-view-entry
+    type: Prompt
+    dependsOn: [create-action-view-entry]
+    systemPrompt: |
+      You are an orchestration invoker. Invoke the 'actionview-submit' orchestration to validate and submit the ActionView entry.
+    userPrompt: |
+      Use invoke_orchestration to invoke 'actionview-submit' with mode 'sync' and the following parameters:
+      - entryJson: the entry JSON below
+
+      Entry JSON:
+      {{create-action-view-entry.output}}
+    mcps: [orchestra]
+
+  - name: generate-summary
+    type: Prompt
+    dependsOn: [invoke-responders, check-for-new-comments, submit-action-view-entry]
+    systemPrompt: |
+      You are a reporting assistant. Produce a clear, concise markdown summary of the PR comment tracking orchestration run.
+    userPrompt: |
+      Create a final markdown summary of this PR comment tracking run.
+
+      Comment check results:
+      {{check-for-new-comments.output}}
+
+      Processing results:
+      {{invoke-responders.output}}
+
+      ActionView submission:
+      {{submit-action-view-entry.output}}
+
+      Produce a polished markdown report:
+      1. Header: '## PR Comment Tracker Summary' with orchestration run info
+      2. How many PRs were found that I created
+      3. How many had new reviewer comments and were dispatched for processing
+      4. How many were skipped (no new comments, already responding) and why
+      5. Outcomes of each processing run (succeeded vs failed)
+      6. Any PRs that failed and will be retried on the next run
+      7. Confirmation that ActionView entry was submitted
+      8. Any errors or issues encountered during the run
+
+trigger:
+  type: scheduler
+  enabled: true
+  intervalSeconds: 3600

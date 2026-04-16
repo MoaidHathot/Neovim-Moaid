@@ -3,7 +3,7 @@ return {
 	-- All business logic (auth, provider, git) is handled by the `powerreview` CLI tool.
 	-- CLI config lives at $XDG_CONFIG_HOME/PowerReview/config.json
 	{
-		dir = "P:\\Github\\PowerReview.nvim",
+		dir = "P:\\Github\\PowerReview",
 		name = "power-review.nvim",
 		dependencies = {
 			"MunifTanjim/nui.nvim",
