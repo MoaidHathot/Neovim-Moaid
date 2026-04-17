@@ -179,13 +179,14 @@ Include if there were errors, conflicts, or comments that couldn't be addressed:
 }
 ```
 
-#### 2. PR metadata (keyValue)
+#### 2. PR metadata (keyValue, required)
 
 ```json
 {
   "type": "keyValue",
   "label": "Pull Request",
   "pairs": {
+    "PR Title": "<PR title>",
     "Repository": "<org>/<project>/<repo>",
     "Branch": "<source_branch> -> <target_branch>",
     "Author": "<PR author name>",
@@ -268,7 +269,25 @@ Format the original comment as a blockquote with the commenter's name and thread
 }
 ```
 
-**d) code "Proposed Fix"** (optional -- only for code fix actions):
+**d) code "Code Context"** (required -- the code around the commented area):
+
+Always include the code diff or snippet around the lines the reviewer commented on. This lets the user see the relevant code without leaving ActionView. Use `GetFileDiff` to get the unified diff and extract the hunk covering the commented line range.
+
+```json
+{
+  "type": "code",
+  "label": "Code Context",
+  "language": "diff",
+  "filename": "src/main.cs",
+  "body": "@@ -38,8 +38,8 @@\n     public async Task<string> GetUserName(int id)\n     {\n         var user = await _repo.FindAsync(id);\n-        return user.Name;\n+        return user.Name; // reviewer flagged: potential NullReferenceException"
+}
+```
+
+Extract the relevant hunk from the full file diff that covers the commented line range (+/- a few lines of context). If the diff is short, include the entire file diff. Use `language: "diff"` for unified diffs.
+
+**e) code "Proposed Fix"** (optional -- only for code fix actions):
+
+When the AI made a code change proposal, include the proposal diff showing exactly what was changed. Call `GetProposalDiff` to get this.
 
 ```json
 {
@@ -280,7 +299,7 @@ Format the original comment as a blockquote with the commenter's name and thread
 }
 ```
 
-**e) Per-response actions:**
+**f) Per-response actions:**
 
 Include only the actions relevant to this response. If it's just a reply (no proposal), include only "Approve Reply" and "Delete Reply". If it has a proposal, include all four.
 
@@ -398,6 +417,13 @@ Include only the actions relevant to this response. If it's just a reply (no pro
     },
     {
       "type": "code",
+      "label": "Code Context",
+      "language": "diff",
+      "filename": "src/main.cs",
+      "body": "@@ -38,8 +38,8 @@\n     public async Task<string> GetUserName(int id)\n     {\n         var user = await _repo.FindAsync(id);\n-        return user.Name;\n+        return user.Name; // potential NullReferenceException"
+    },
+    {
+      "type": "code",
       "label": "Proposed Fix",
       "language": "diff",
       "filename": "src/main.cs",
@@ -505,8 +531,8 @@ This is a convenience view. The per-response sections already contain the diffs 
       "style": "primary",
       "command": {
         "type": "cli",
-        "program": "cmd.exe",
-        "args": ["/c", "start", "<prUrl>"]
+        "program": "pwsh",
+        "args": ["-NoProfile", "-Command", "Start-Process '<prUrl>'"]
       },
       "onSuccess": "keep"
     },
@@ -624,11 +650,11 @@ Entry Checklist:
 - [ ] type is "pr-comment-response"
 - [ ] source is the orchestration name
 - [ ] title includes the PR title
-- [ ] PR metadata keyValue block is present with PR URL
+- [ ] PR metadata keyValue block is present with PR Title, Repository, Branch, Author, and PR URL
 - [ ] Response Summary table has correct counts
 - [ ] Every addressed comment has its own nested section
-- [ ] Every nested section has Details (keyValue), Original Comment (markdown), and AI Response (markdown)
-- [ ] Code fix sections include the Proposed Fix (code block with diff)
+- [ ] Every nested section has Details (keyValue), Original Comment (markdown), AI Response (markdown), and Code Context (code block with diff)
+- [ ] Code fix sections additionally include the Proposed Fix (code block with proposal diff)
 - [ ] Every nested section has the correct actions (reply-only: 2 buttons, code fix: 4 buttons)
 - [ ] All action commands use the correct prUrl, draft UUID, and proposal UUID
 - [ ] Entry-level actions include: Open PR, Approve All Replies, Submit Replies, Approve All Proposals, Apply All Proposals, Delete All

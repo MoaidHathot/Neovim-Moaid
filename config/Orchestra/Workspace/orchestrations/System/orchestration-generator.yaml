@@ -1,0 +1,317 @@
+# yaml-language-server: $schema=../schemas/orchestration.schema.json
+name: generate-orchestration
+description: >
+  Meta-orchestration that generates Orchestra orchestration files from natural
+  language descriptions. Uses a pre-computed knowledge base (SKILL.md) for fast,
+  accurate generation. Subagents validate user intent and enforce best practices
+  during generation. Dedicated steps handle file saving and optional registration.
+version: 2.0.0
+tags: [meta, generator, tooling, system]
+
+inputs:
+  description:
+    type: string
+    description: >
+      Natural language description of what the orchestration should do. Be
+      specific about: what steps are needed, what triggers to use, what
+      tools/MCPs are required, and what the expected inputs/outputs are.
+    required: true
+  register:
+    type: boolean
+    description: >
+      Whether to register the generated orchestration in Orchestra after
+      creation. When true, the orchestration file is saved and registered
+      via the Orchestra control plane.
+    required: false
+    default: "false"
+  outputPath:
+    type: string
+    description: >
+      File path where the generated orchestration file should be saved.
+      If not provided, the file is saved only to the orchestration's temp
+      directory.
+    required: false
+
+mcps:
+  - name: orchestra-control
+    type: remote
+    endpoint: "{{server.url}}/mcp/control"
+
+  - name: filesystem
+    type: local
+    command: npx
+    arguments:
+      - "-y"
+      - "@anthropic/mcp-server-filesystem"
+      - "{{workingDirectory}}"
+
+steps:
+  # ── Step 1: Generate the orchestration ─────────────────────────────────
+  - name: generate
+    type: Prompt
+    model: claude-opus-4.6
+    parameters:
+      - description
+    mcps:
+      - orchestra-control
+    skillDirectories:
+      - ./skills/orchestration-authoring
+    systemPrompt: |
+      You are an expert Orchestra orchestration author. Your job is to generate
+      valid, production-quality Orchestra orchestration YAML files based on user
+      descriptions.
+
+      IMPORTANT RULES:
+      1. Output ONLY valid YAML. Do not include markdown fences, explanations,
+         or commentary in your final output.
+      2. Use the knowledge from your loaded skills to ensure correctness. Only
+         use documented properties — never invent fields.
+      3. Use 'claude-opus-4.6' as the default model unless the user specifies
+         otherwise.
+      4. Use kebab-case for orchestration and step names, camelCase for
+         variables and inputs.
+      5. Design efficient DAGs: parallelize independent steps, use fan-out/fan-in
+         where appropriate.
+      6. Include meaningful system prompts and user prompts that give the LLM
+         clear instructions.
+      7. Use typed `inputs` (not legacy `parameters` arrays) for
+         orchestration-level inputs.
+      8. Add appropriate `description` fields to inputs for documentation.
+
+      You have two subagents available to help you produce the best result:
+
+      - **intent-validator**: Delegate to this subagent to verify the generated
+        orchestration accurately reflects the user's original description.
+        It will flag missing features, misunderstood requirements, and gaps.
+      - **best-practices-expert**: Delegate to this subagent to review the
+        orchestration for best practices compliance (DAG efficiency, naming,
+        prompt quality, error handling, etc.).
+
+      WORKFLOW:
+      1. Analyze the user's description and design the orchestration.
+      2. Draft the YAML.
+      3. Delegate to both subagents for review.
+      4. Incorporate their feedback and iterate until both approve.
+      5. Output the final YAML — nothing else.
+
+      Think carefully about which patterns best fit the user's needs:
+      fan-out/fan-in for parallel work, loop/checker for iterative refinement,
+      subagents for multi-expert delegation, gates for conditional early exit, etc.
+    userPrompt: |
+      Generate an Orchestra orchestration based on this description:
+
+      {{param.description}}
+    subagents:
+      - name: intent-validator
+        displayName: Intent Validator
+        description: >
+          Validates that the generated orchestration accurately reflects the
+          user's original intent and requirements. Delegate to this agent
+          after drafting the orchestration to check for completeness.
+        prompt: |
+          You are an intent validation specialist for Orchestra orchestrations.
+          Your role is to compare a generated orchestration against the user's
+          original description and ensure they match precisely.
+
+          When asked to review, check for:
+          1. Every feature/capability mentioned in the description is
+             represented in the orchestration steps.
+          2. The flow of steps logically achieves what the user described.
+          3. No steps are missing that would be needed to fulfill the
+             description.
+          4. The inputs capture all the parameters the user would need.
+          5. The triggers (if any) match what the user described.
+          6. Edge cases and error handling are considered.
+
+          Be specific about any mismatches. Quote the relevant part of the
+          user's description and explain what is missing or wrong.
+
+          If everything matches, respond with:
+          "INTENT MATCH: The orchestration accurately reflects the user's
+          requirements."
+
+          If there are issues, respond with:
+          "INTENT MISMATCH:" followed by specific items that need fixing.
+        infer: true
+
+      - name: best-practices-expert
+        displayName: Best Practices Expert
+        description: >
+          Reviews Orchestra orchestrations for best practices compliance,
+          including efficient DAG design, proper error handling, meaningful
+          prompts, and adherence to Orchestra conventions. Delegate to this
+          agent to get a quality review.
+        prompt: |
+          You are an Orchestra best practices expert. Your role is to review
+          generated orchestrations and ensure they follow best practices.
+
+          When asked to review, check for:
+          1. DAG Efficiency — Are independent steps parallelized? Is
+             fan-out/fan-in used where appropriate?
+          2. Naming Conventions — kebab-case for step/orchestration names,
+             camelCase for variables/inputs.
+          3. Prompt Quality — Are system prompts clear and specific? Do user
+             prompts provide sufficient context?
+          4. Error Handling — Are retry policies configured for steps that
+             may fail? Are timeouts set appropriately?
+          5. Input Validation — Are input types correct? Are required fields
+             marked? Are defaults sensible?
+          6. MCP Usage — Are MCPs correctly referenced? Are they necessary
+             for the described functionality?
+          7. Step Types — Is the correct step type used for each operation?
+             (e.g., Transform for simple interpolation, not Prompt)
+          8. Security — No hardcoded secrets, proper use of variables and
+             inputs.
+          9. Subagent Design — If subagents are used, do they have clear,
+             non-overlapping responsibilities?
+          10. Loop/Checker — If used, are exit patterns clear? Are
+              maxIterations reasonable?
+          11. Common Mistakes — Check against the common mistakes documented
+              in SKILL.md (e.g., using parameters instead of inputs, wrong
+              casing, circular dependsOn, inventing properties).
+
+          If everything looks good, respond with:
+          "BEST PRACTICES: APPROVED"
+
+          If there are issues, respond with:
+          "BEST PRACTICES: NEEDS IMPROVEMENT:" followed by specific,
+          actionable suggestions.
+        infer: true
+    outputHandlerPrompt: >
+      Extract ONLY the raw YAML orchestration content from the input.
+      Remove any markdown formatting, code fences, explanations, or
+      surrounding text. Return the pure YAML content and nothing else.
+
+  # ── Step 2: Validate the generated orchestration ───────────────────────
+  - name: validate
+    type: Prompt
+    dependsOn:
+      - generate
+    model: claude-opus-4.6
+    skillDirectories:
+      - ./skills/orchestration-authoring
+    systemPrompt: |
+      You are an Orchestra orchestration validator. Review the generated
+      orchestration YAML for structural and semantic correctness. Check:
+
+      1. All required fields are present (name, description, steps, and for
+         Prompt steps: systemPrompt/systemPromptFile, userPrompt/userPromptFile,
+         model).
+      2. Step names are unique and in kebab-case.
+      3. dependsOn references exist as step names.
+      4. No circular dependencies.
+      5. Template expressions use correct syntax: {{expression}}.
+      6. mcps on steps are string arrays referencing defined MCP names.
+      7. Loop targets are dependencies of the checker step.
+      8. Mutual exclusion rules respected (systemPrompt vs systemPromptFile,
+         userPrompt vs userPromptFile, etc.).
+      9. Input types are valid (string, boolean, number).
+      10. No invented/undocumented properties.
+
+      If valid, respond with: VALID
+      Followed by the orchestration YAML unchanged.
+
+      If invalid, respond with: INVALID
+      Followed by the specific issues found and a corrected version of the YAML.
+    userPrompt: |
+      Validate this orchestration:
+
+      {{generate.output}}
+    outputHandlerPrompt: >
+      Extract ONLY the raw YAML orchestration content from the input.
+      If the input contains VALID or INVALID markers, skip them and return
+      only the YAML content. Remove any markdown formatting, code fences,
+      explanations, or surrounding text. Return the pure YAML content and
+      nothing else.
+    loop:
+      target: generate
+      maxIterations: 2
+      exitPattern: "VALID"
+
+  # ── Step 3: Save the orchestration file ────────────────────────────────
+  - name: save-orchestration
+    type: Prompt
+    dependsOn:
+      - validate
+    model: claude-opus-4.6
+    parameters:
+      - outputPath
+    mcps:
+      - filesystem
+    systemPrompt: |
+      You are a file management assistant. Your job is to save the
+      orchestration content you receive.
+
+      INSTRUCTIONS:
+      1. ALWAYS save the orchestration content using `orchestra_save_file`
+         with extension "yaml". This stores it in the orchestration's temp
+         directory and returns the file path.
+      2. If an output path is provided (not empty), ALSO save a copy to
+         that exact path using the filesystem MCP tools. Create any
+         parent directories if needed.
+      3. If no output path is provided, only perform step 1.
+
+      Output the file path(s) where the orchestration was saved.
+    userPrompt: |
+      Save the following orchestration content.
+
+      Output path: {{param.outputPath}}
+
+      Content:
+      {{validate.output}}
+
+  # ── Step 4: Conditionally register the orchestration ───────────────────
+  - name: register-orchestration
+    type: Prompt
+    dependsOn:
+      - save-orchestration
+    model: claude-opus-4.6
+    parameters:
+      - register
+    mcps:
+      - orchestra-control
+    systemPrompt: |
+      You are an orchestration registration assistant.
+
+      Check whether registration was requested.
+
+      If registration is NOT requested (register is false or not provided):
+      - Call `orchestra_set_status` with status "no_action" and a message
+        explaining that registration was not requested.
+      - Do NOT attempt registration.
+
+      If registration IS requested (register is true):
+      - The previous step saved the orchestration file. The file path is in
+        the input below.
+      - Use the `register_orchestration` MCP tool with the saved file path
+        to register the orchestration.
+      - Report the registration result including the orchestration ID and
+        status.
+    userPrompt: |
+      Registration requested: {{param.register}}
+
+      Saved file information:
+      {{save-orchestration.output}}
+
+  # ── Step 5: Format the final output ────────────────────────────────────
+  - name: format-output
+    type: Transform
+    dependsOn:
+      - save-orchestration
+      - register-orchestration
+    template: |
+      # Orchestration Generated Successfully
+
+      **Run ID:** {{orchestration.runId}}
+
+      ## File Location
+      {{save-orchestration.output}}
+
+      ## Registration
+      {{register-orchestration.output}}
+
+      ## Generated Orchestration
+      ```yaml
+      {{validate.output}}
+      ```
+

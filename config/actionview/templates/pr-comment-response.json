@@ -14,8 +14,8 @@
     {
       "type": "keyValue",
       "label": "Pull Request",
-      "required": false,
-      "description": "PR metadata. Expected keys: Repository, Branch (source -> target), Author, PR URL."
+      "required": true,
+      "description": "PR metadata. Expected keys: PR Title, Repository, Branch (source -> target), Author, PR URL."
     },
     {
       "type": "table",
@@ -49,6 +49,12 @@
             "label": "AI Response",
             "required": false,
             "description": "The AI's draft reply text. This is submitted as a reply on the comment thread when approved."
+          },
+          {
+            "type": "code",
+            "label": "Code Context",
+            "required": true,
+            "description": "The code diff or snippet around the commented area. Always include this to show what code the reviewer commented on. For code fix actions, also include the proposed fix diff. Use language 'diff' for unified diffs or the file's language for code snippets."
           },
           {
             "type": "code",
@@ -97,7 +103,7 @@
     {
       "type": "link",
       "label": "View PR",
-      "required": false,
+      "required": true,
       "description": "Link to the pull request on Azure DevOps or GitHub."
     }
   ],

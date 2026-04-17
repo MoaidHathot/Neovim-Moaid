@@ -332,8 +332,8 @@ These are the buttons at the top/bottom of the entry:
       "style": "primary",
       "command": {
         "type": "cli",
-        "program": "cmd.exe",
-        "args": ["/c", "start", "<prUrl>"]
+        "program": "pwsh",
+        "args": ["-NoProfile", "-Command", "Start-Process '<prUrl>'"]
       },
       "onSuccess": "keep"
     },

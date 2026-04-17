@@ -1,0 +1,84 @@
+{
+  "proxy": {
+    "serverInfo": {
+      "name": "m365 MCP Proxies",
+      "version": "1.0.0",
+      "instructions": "Proxies multiple Microsoft 365 MCP servers using interactive browser authentication with a pre-authorized public client ID. Each backend is exposed on its own HTTP endpoint."
+    },
+    "routing": {
+      "mode": "perServer",
+      "basePath": "/mcp"
+    }
+  },
+  "mcp": {
+    "calendar": {
+      "type": "http",
+      "title": "Microsoft 365 Calendar",
+      "description": "Calendar tools for events, meetings, and scheduling",
+      "url": "https://agent365.svc.cloud.microsoft/agents/tenants/${CORP_TENANT_ID}/servers/mcp_CalendarTools",
+      "enabled": true,
+      "auth": {
+        "type": "InteractiveBrowser",
+        "credentialGroup": "m365",
+        "deferConnection": true,
+        "azureAd": {
+          "clientId": "${VSCODE_CLIENT_ID}",
+          "tenantId": "${CORP_TENANT_ID}",
+          "scopes": ["${VSCODE_AUDIENCE}/.default"]
+        }
+      }
+    },
+    "m365-copilot": {
+      "type": "http",
+      "title": "Microsoft 365 Copilot",
+      "description": "M365 Copilot tools and capabilities",
+      "url": "https://agent365.svc.cloud.microsoft/agents/tenants/${CORP_TENANT_ID}/servers/mcp_M365Copilot",
+      "enabled": true,
+      "auth": {
+        "type": "InteractiveBrowser",
+        "credentialGroup": "m365",
+        "deferConnection": true,
+        "azureAd": {
+          "clientId": "${VSCODE_CLIENT_ID}",
+          "tenantId": "${CORP_TENANT_ID}",
+          "scopes": ["${VSCODE_AUDIENCE}/.default"]
+        }
+      }
+    },
+    "mail": {
+      "type": "http",
+      "title": "Microsoft 365 Mail",
+      "description": "Email tools for reading, composing, and managing messages",
+      "url": "https://agent365.svc.cloud.microsoft/agents/tenants/${CORP_TENANT_ID}/servers/mcp_MailTools",
+      "enabled": true,
+      "auth": {
+        "type": "InteractiveBrowser",
+        "credentialGroup": "m365",
+        "deferConnection": true,
+        "azureAd": {
+          "clientId": "${VSCODE_CLIENT_ID}",
+          "tenantId": "${CORP_TENANT_ID}",
+          "scopes": ["${VSCODE_AUDIENCE}/.default"]
+        }
+      }
+    },
+    "me": {
+      "type": "http",
+      "title": "Microsoft 365 Me",
+      "description": "User profile and personal information tools",
+      "url": "https://agent365.svc.cloud.microsoft/agents/tenants/${CORP_TENANT_ID}/servers/mcp_MeServer",
+      "enabled": true,
+      "auth": {
+        "type": "InteractiveBrowser",
+        "credentialGroup": "m365",
+        "deferConnection": true,
+        "azureAd": {
+          "clientId": "${VSCODE_CLIENT_ID}",
+          "tenantId": "${CORP_TENANT_ID}",
+          "scopes": ["${VSCODE_AUDIENCE}/.default"]
+        }
+      }
+    }
+  }
+}
+

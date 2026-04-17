@@ -58,6 +58,10 @@ mcps:
       - "-y"
       - "@upstash/context7-mcp"
 
+  - name: orchestra
+    type: remote
+    endpoint: "{{server.url}}/mcp/data"
+
 steps:
   - name: prepare-pr-data
     type: Transform
@@ -273,6 +277,8 @@ steps:
       3. Decide on the appropriate action
       4. Execute the action using PowerReview tools
 
+      CRITICAL: You MUST address EVERY unaddressed comment and thread. Do not skip any. Every single reviewer comment must receive a response -- whether that is a reply, a code fix, a won't-fix explanation, or a resolution. If you encounter an error processing a comment, log it and move on to the next, but attempt all of them.
+
       ## Available Actions
 
       - **Reply**: The comment is a question, clarification request, or discussion point. Draft a thoughtful reply.
@@ -347,13 +353,14 @@ steps:
       ## Organizational Context (emails, chats, meetings, documents)
       {{workiq-context.output}}
 
-      Process each unaddressed comment:
+      Process EVERY unaddressed comment -- do not skip any:
       1. Read the comment and its full thread context carefully
       2. Consider the PR description, work item requirements, and organizational discussions for relevant context
       3. If the code context is not clear from the diff alone, use the code-context-reader subagent to read surrounding code
       4. Decide the appropriate action (reply, code fix, won't fix, or resolve)
       5. Execute the action using PowerReview tools or subagents
       6. Track the results
+      7. Move to the next comment -- repeat until ALL comments have been addressed
 
       When responding, draw on the work item context and organizational discussions where relevant. For example:
       - If a reviewer asks "why was this done this way?", cite the relevant design decision from meetings or emails
@@ -483,9 +490,20 @@ steps:
         mcps: [context7]
         infer: true
 
+  - name: fetch-template
+    type: Command
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - template
+      - show
+      - pr-comment-response
+
   - name: create-action-view-entry
     type: Prompt
-    dependsOn: [respond-to-comments, open-review-session]
+    dependsOn: [respond-to-comments, open-review-session, fetch-template]
     systemPrompt: |
       You are an ActionView entry generator for PR comment responses. You create structured JSON entries conforming to the pr-comment-response template.
 
@@ -493,44 +511,51 @@ steps:
 
       Follow the instructions in the 'creating-comment-response-actionview-entry' skill for the exact data collection steps, content block structure, action command templates, and verification checklist.
 
+      The template definition below is the runtime source of truth. Ensure your entry satisfies every required content block and expected action defined in the template.
+
       IMPORTANT: Save the generated JSON entry using the orchestra_save_file tool. Output ONLY the raw JSON -- it will be validated and submitted by a downstream step.
     userPrompt: |
       Create an ActionView entry of type 'pr-comment-response' summarizing the comment responses.
 
-      Response results:
+      ## pr-comment-response Template Definition
+      {{fetch-template.output}}
+
+      ## Response Results
       {{respond-to-comments.output}}
 
-      Review session:
+      ## Review Session
       {{open-review-session.output}}
 
-      Follow the 'creating-comment-response-actionview-entry' skill to build the entry. Key steps:
+      Follow the 'creating-comment-response-actionview-entry' skill to build the entry. Ensure the entry satisfies all required blocks from the template above. Key steps:
 
-      1. Call GetReviewSession to get PR metadata
+      1. Call GetReviewSession to get PR metadata (title, URL, branches, author)
       2. Call ListCommentThreads to get all threads and draft replies with their UUIDs
       3. Call ListProposals to get all proposals with their UUIDs
-      4. For each proposal, call GetProposalDiff to get the code diff
-      5. Build the entry with type 'pr-comment-response', source '{{orchestration.name}}'
-      6. Include:
+      4. For each file with addressed comments, call GetFileDiff to get the code diff for the Code Context block
+      5. For each proposal, call GetProposalDiff to get the proposed fix diff
+      6. Build the entry with type 'pr-comment-response', source '{{orchestration.name}}'
+      7. Include:
          - Alert block if there were errors processing any comments
-         - Pull Request keyValue (Repository, Branch, Author, PR URL)
+         - Pull Request keyValue (REQUIRED: PR Title, Repository, Branch, Author, PR URL)
          - Response Summary table: Action | Count (Replies, Code Fixes, Won't Fix, Total)
          - Comment Responses section with one nested section PER addressed comment containing:
            a) Details keyValue (Thread ID, Commenter, File, Lines, Action, Agent, Reply Draft ID, Proposal ID)
            b) Original Comment markdown (the reviewer's comment as blockquote)
            c) AI Response markdown (the draft reply text)
-           d) Proposed Fix code block (if code fix, language: diff)
-           e) Per-response actions: Approve Reply + Delete Reply (always); Approve Proposal + Reject Proposal (only for code fixes)
+           d) Code Context code block (REQUIRED: diff hunk around the commented lines, language: diff)
+           e) Proposed Fix code block (if code fix: the proposal diff, language: diff)
+           f) Per-response actions: Approve Reply + Delete Reply (always); Approve Proposal + Reject Proposal (only for code fixes)
          - Optional Proposed Code Fixes section (table listing all proposals)
          - Summary markdown
-         - View PR link
-      7. Entry-level actions:
-         - 'Open PR' (primary)
+         - View PR link (REQUIRED)
+      8. Entry-level actions:
+         - 'Open PR' (primary, use pwsh Start-Process with the PR URL)
          - 'Approve All Replies' (success)
          - 'Submit Replies' (success, onSuccess: archive)
          - 'Approve All Proposals' (success)
          - 'Apply All Proposals' (success)
          - 'Delete All' (danger, onSuccess: archive)
-      8. Severity: medium if code fixes exist, low if only replies, high if errors occurred
+      9. Severity: medium if code fixes exist, low if only replies, high if errors occurred
 
       Save the JSON using orchestra_save_file. Output ONLY the raw JSON.
     mcps: [powerreview]

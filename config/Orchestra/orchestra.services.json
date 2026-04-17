@@ -1,0 +1,14 @@
+{
+  "services": [
+    {
+      "name": "m365-remote-mcps",
+      "type": "process",
+      "command": "dnx",
+      "arguments": ["mcpproxy", "--yes", "--", "-t", "http", "-c", "${XDG_CONFIG_HOME}/orchestra/m365.proxy.json", "-p", "5113"],
+      "runAt": "beforeStart",
+      "timeoutSeconds": 120,
+      "required": true
+    }
+  ]
+}
+
