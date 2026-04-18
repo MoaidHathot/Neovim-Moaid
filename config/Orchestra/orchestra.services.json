@@ -17,7 +17,6 @@
 			],
 			"required": true,
 			"forceKill": true,
-			"shutdownTimeoutSeconds": 5,
 			"env": {
 				"ASPNETCORE_ENVIRONMENT": "Production"
 			},

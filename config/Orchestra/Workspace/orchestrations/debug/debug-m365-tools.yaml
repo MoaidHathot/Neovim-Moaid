@@ -14,6 +14,7 @@ steps:
     systemPrompt: |
       You are a diagnostics assistant. Enumerate all tools available to you
       from the MCP server. Be precise and structured.
+      If the Calendar tools do not exist, fail!
     userPrompt: |
       List ALL tools you have access to from the Calendar MCP.
       For each tool provide its exact name, a one-line description,
@@ -35,6 +36,7 @@ steps:
     systemPrompt: |
       You are a diagnostics assistant. Enumerate all tools available to you
       from the MCP server. Be precise and structured.
+      If the copilot tools do not exist, fail!
     userPrompt: |
       List ALL tools you have access to from the M365 Copilot MCP.
       For each tool provide its exact name, a one-line description,
@@ -56,6 +58,7 @@ steps:
     systemPrompt: |
       You are a diagnostics assistant. Enumerate all tools available to you
       from the MCP server. Be precise and structured.
+      If the mail tools do not exist, fail!
     userPrompt: |
       List ALL tools you have access to from the Mail MCP.
       For each tool provide its exact name, a one-line description,
@@ -77,6 +80,7 @@ steps:
     systemPrompt: |
       You are a diagnostics assistant. Enumerate all tools available to you
       from the MCP server. Be precise and structured.
+      If the me tools do not exist, fail!
     userPrompt: |
       List ALL tools you have access to from the Me MCP.
       For each tool provide its exact name, a one-line description,

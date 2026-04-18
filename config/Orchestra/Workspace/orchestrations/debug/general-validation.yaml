@@ -1,4 +1,4 @@
-name: debug
+name: debug-general-validation
 description: |
   Diagnostics orchestration for validating MCP connectivity, tool availability, engine tools, template resolution, and orchestration invocation. Run this to verify the Orchestra setup is healthy.
 version: 1.0.0
@@ -7,6 +7,7 @@ defaultModel: claude-opus-4.6
 
 variables:
   testValue: hello-from-variables
+  defaultModel: claude-opus-4.6
 
 defaultStepTimeoutSeconds: 420
 timeoutSeconds: 1600
