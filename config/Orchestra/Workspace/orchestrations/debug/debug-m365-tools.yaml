@@ -6,6 +6,7 @@ description: |
 version: 1.0.0
 tags: ["debug", "diagnostics", "m365", "mcp"]
 defaultModel: claude-opus-4.6
+defaultStepTimeoutSeconds: 120
 
 steps:
   - name: list-calendar-tools

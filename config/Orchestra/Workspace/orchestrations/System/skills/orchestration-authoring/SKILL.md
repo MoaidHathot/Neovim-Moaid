@@ -27,7 +27,7 @@ Orchestrations are single JSON or YAML objects. Three fields are required: `name
 | `trigger` | TriggerConfig | No | Manual | How the orchestration is triggered |
 | `mcps` | Mcp[] | No | [] | Inline MCP server definitions |
 | `defaultModel` | string | No | null | Default model for all Prompt steps. Steps can override. |
-| `defaultSystemPromptMode` | string | No | null | `"append"` or `"replace"` for all Prompt steps |
+| `defaultSystemPromptMode` | string | No | null | `"append"`, `"replace"`, or `"customize"` for all Prompt steps |
 | `defaultRetryPolicy` | RetryPolicy | No | null | Default retry for all steps |
 | `defaultStepTimeoutSeconds` | int | No | null | Default per-step timeout |
 | `timeoutSeconds` | int | No | 3600 | Orchestration-level timeout (0 to disable) |
@@ -80,12 +80,75 @@ Calls an LLM.
 | `outputHandlerPromptFile` | string | No | null |
 | `reasoningLevel` | string | No | null |
 | `systemPromptMode` | string | No | null |
+| `systemPromptSections` | object | No | null |
+| `infiniteSessions` | object | No | null |
+| `attachments` | Attachment[] | No | [] |
 | `mcps` | string[] | No | [] |
 | `loop` | LoopConfig | No | null |
 | `subagents` | Subagent[] | No | [] |
 | `skillDirectories` | string[] | No | [] |
 
 *Mutual exclusion: use `systemPrompt` OR `systemPromptFile`, not both. Same for `userPrompt`/`userPromptFile`, `inputHandlerPrompt`/`inputHandlerPromptFile`, `outputHandlerPrompt`/`outputHandlerPromptFile`.
+
+### System Prompt Modes
+
+- **`append`** (default): Your system prompt is added to the SDK's built-in prompts, preserving coding capabilities.
+- **`replace`**: Your system prompt completely replaces the SDK's built-in prompts.
+- **`customize`**: Selectively override individual sections of the built-in prompt. Use with `systemPromptSections`.
+
+### System Prompt Section Overrides (`systemPromptSections`)
+
+Used with `systemPromptMode: "customize"`. Keys are section identifiers, values are override objects:
+
+| Section Key | Description |
+|---|---|
+| `identity` | Agent identity |
+| `tone` | Communication style |
+| `tool_efficiency` | Tool usage instructions |
+| `environment_context` | Workspace/environment context |
+| `code_change_rules` | Rules for code changes |
+| `guidelines` | General guidelines |
+| `safety` | Safety instructions |
+| `tool_instructions` | Tool-specific instructions |
+| `custom_instructions` | Custom user instructions |
+| `last_instructions` | Final priority instructions |
+
+Each section override:
+| Property | Type | Required | Description |
+|---|---|---|---|
+| `action` | string | Yes | `"replace"`, `"remove"`, `"append"`, or `"prepend"` |
+| `content` | string | No | Content for replace/append/prepend (ignored for remove) |
+
+### Infinite Sessions (`infiniteSessions`)
+
+Controls automatic context compaction for long-running steps.
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | true (SDK default) | Enable/disable infinite sessions |
+| `backgroundCompactionThreshold` | number (0-1) | 0.80 | Context utilization ratio at which background compaction begins |
+| `bufferExhaustionThreshold` | number (0-1) | 0.95 | Context utilization ratio at which the session blocks until compaction completes |
+
+### Image Attachments (`attachments`)
+
+Send images to the LLM alongside the prompt for vision/analysis tasks.
+
+Each attachment has a `type`:
+
+**File attachment** (`type: "file"`): reads an image from disk.
+| Property | Type | Required | Description |
+|---|---|---|---|
+| `type` | string | Yes | `"file"` |
+| `path` | string | Yes | Absolute path to image file. Supports template expressions. |
+| `displayName` | string | No | Display name for the attachment |
+
+**Blob attachment** (`type: "blob"`): inline base64-encoded image data.
+| Property | Type | Required | Description |
+|---|---|---|---|
+| `type` | string | Yes | `"blob"` |
+| `data` | string | Yes | Base64-encoded image data. Supports template expressions. |
+| `mimeType` | string | Yes | MIME type (e.g., `"image/png"`, `"image/jpeg"`) |
+| `displayName` | string | No | Display name for the attachment |
 
 ### Http Step (type: "Http")
 
@@ -424,6 +487,53 @@ variables:
   artifactPath: "/artifacts/{{vars.appName}}/{{orchestration.runId}}"
 ```
 
+### 11. Customize System Prompt with Section Overrides
+Surgically control specific sections while preserving others.
+```yaml
+- name: code-review
+  type: Prompt
+  systemPrompt: Review the code for accessibility.
+  systemPromptMode: customize
+  systemPromptSections:
+    tone:
+      action: replace
+      content: Be direct and structured.
+    code_change_rules:
+      action: remove  # Read-only, no modifications
+    guidelines:
+      action: append
+      content: |
+        - Follow WCAG 2.1 AA guidelines.
+        - Flag contrast ratio violations.
+  userPrompt: "{{code-step.output}}"
+```
+
+### 12. Image Attachments for Vision Analysis
+Send images from files or prior step output.
+```yaml
+- name: analyze-screenshot
+  type: Prompt
+  systemPrompt: Analyze this UI for accessibility issues.
+  userPrompt: Describe what you see and identify problems.
+  attachments:
+    - type: file
+      path: "{{param.imagePath}}"
+      displayName: "Screenshot"
+```
+
+### 13. Infinite Sessions for Long-Running Tasks
+Control context compaction thresholds per step.
+```yaml
+- name: large-refactor
+  type: Prompt
+  systemPrompt: Refactor the entire module.
+  userPrompt: "{{gather-code.output}}"
+  infiniteSessions:
+    enabled: true
+    backgroundCompactionThreshold: 0.85
+    bufferExhaustionThreshold: 0.97
+```
+
 ## Registering Orchestrations
 
 Orchestrations can be registered in Orchestra via:
@@ -447,6 +557,9 @@ Orchestrations can be registered in Orchestra via:
 10. **`dependsOn` references step names**, not types or indices.
 11. **`mcps` on steps is an array of strings** (MCP names), not MCP definition objects.
 12. **Script steps require `shell`**. It has no default -- always specify it (e.g., `"pwsh"`, `"bash"`).
+13. **`systemPromptSections` requires `systemPromptMode: "customize"`**. Section overrides are ignored with `append` or `replace`.
+14. **Image attachments require a vision-capable model** (e.g., `claude-opus-4.6`, `gpt-4o`). Non-vision models will not understand the images.
+15. **`infiniteSessions` thresholds are ratios (0.0-1.0)**, not token counts. `0.80` means 80% of context used.
 
 ## Naming Conventions
 

@@ -12,6 +12,7 @@ Real-world examples demonstrating common orchestration patterns. All examples us
 - [Multi-Agent with Subagents](#multi-agent-with-subagents)
 - [Webhook with Synchronous Response](#webhook-with-synchronous-response)
 - [Meta-Orchestration (Generates Orchestrations)](#meta-orchestration-generates-orchestrations)
+- [Advanced: Customize Mode, Image Attachments, Infinite Sessions](#advanced-customize-mode-image-attachments-infinite-sessions)
 
 ---
 
@@ -581,3 +582,101 @@ steps:
 ```
 
 This example demonstrates: typed inputs, MCP definitions (local + remote), skill directories, subagents, loop/checker pattern, output handlers, engine tools (`orchestra_save_file`, `orchestra_set_status`), Transform step, template expressions, and multi-step DAG with dependencies.
+
+---
+
+## Advanced: Customize Mode, Image Attachments, Infinite Sessions
+
+Demonstrates `systemPromptMode: customize` with section overrides, image attachments from file paths, and infinite session configuration:
+
+```yaml
+name: ui-accessibility-audit
+description: >
+  Analyzes UI mockups for accessibility issues using vision capabilities,
+  generates accessible React components, and reviews them in read-only mode.
+defaultModel: claude-opus-4.6
+
+steps:
+  - name: analyze-ui
+    type: Prompt
+    parameters:
+      - mockupPath
+    systemPrompt: |
+      You are a senior UX engineer specializing in accessibility audits.
+      Analyze UI screenshots for WCAG 2.1 AA compliance violations.
+    systemPromptMode: customize
+    systemPromptSections:
+      tone:
+        action: replace
+        content: >
+          Be direct. Use severity ratings: [CRITICAL], [WARNING], [SUGGESTION].
+      code_change_rules:
+        action: remove
+      guidelines:
+        action: append
+        content: |
+          - Reference WCAG success criteria by number.
+          - Flag contrast ratios below 4.5:1 for normal text.
+    userPrompt: Analyze the attached UI mockup for accessibility issues.
+    attachments:
+      - type: file
+        path: "{{param.mockupPath}}"
+        displayName: "UI Mockup"
+    infiniteSessions:
+      enabled: true
+      backgroundCompactionThreshold: 0.80
+
+  - name: generate-components
+    type: Prompt
+    dependsOn: [analyze-ui]
+    systemPrompt: Generate accessible React components that fix all findings.
+    systemPromptMode: customize
+    systemPromptSections:
+      guidelines:
+        action: append
+        content: |
+          - Include aria-label and role attributes.
+          - Add keyboard event handlers for interactive elements.
+    userPrompt: |
+      Based on this analysis, generate accessible React components:
+
+      {{analyze-ui.output}}
+    infiniteSessions:
+      enabled: true
+      backgroundCompactionThreshold: 0.85
+      bufferExhaustionThreshold: 0.97
+
+  - name: code-review
+    type: Prompt
+    dependsOn: [generate-components]
+    systemPrompt: Review the generated code for accessibility compliance.
+    systemPromptMode: customize
+    systemPromptSections:
+      code_change_rules:
+        action: replace
+        content: >
+          READ-ONLY mode. Do NOT create or modify files. Only analyze and report.
+    userPrompt: |
+      Review this code. Rate each component: PASS, NEEDS_WORK, or FAIL.
+
+      {{generate-components.output}}
+    infiniteSessions:
+      enabled: false  # Short task
+
+  - name: report
+    type: Transform
+    dependsOn: [analyze-ui, generate-components, code-review]
+    template: |
+      # Accessibility Audit Report
+
+      ## Analysis
+      {{analyze-ui.output}}
+
+      ## Components
+      {{generate-components.output}}
+
+      ## Review
+      {{code-review.output}}
+```
+
+This example demonstrates: `systemPromptMode: customize` with section overrides (`replace`, `remove`, `append`), image attachments via file path with template expressions, infinite sessions with custom thresholds (enabled/disabled per step), and read-only enforcement via `code_change_rules` replacement. Session hooks automatically capture a structured audit log for every step, visible in the portal's Audit Log trace section.

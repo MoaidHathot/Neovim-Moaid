@@ -50,6 +50,7 @@ config/.copilot
 config/configstore
 config/nushell
 config/k9s
+config/Orchestra/.orchestra.pids.json
 
 tags
 test.sh

@@ -59,7 +59,7 @@ steps:
 | `trigger` | `TriggerConfig` | No | Manual | How the orchestration is triggered. Defaults to manual (on-demand). |
 | `mcps` | `Mcp[]` | No | `[]` | Inline MCP (Model Context Protocol) server definitions available to steps. |
 | `defaultModel` | `string` | No | `null` | Default model for all Prompt steps. Steps can override. |
-| `defaultSystemPromptMode` | `string` | No | `null` | Default system prompt mode for all Prompt steps. Values: `"append"` or `"replace"`. |
+| `defaultSystemPromptMode` | `string` | No | `null` | Default system prompt mode for all Prompt steps. Values: `"append"`, `"replace"`, or `"customize"`. |
 | `defaultRetryPolicy` | `RetryPolicy` | No | `null` | Default retry policy applied to all steps unless overridden at the step level. |
 | `defaultStepTimeoutSeconds` | `int` | No | `null` | Default per-step timeout in seconds. Individual steps can override this. |
 | `timeoutSeconds` | `int` | No | `3600` | Maximum time in seconds for the entire orchestration run. Set to `0` or `null` to disable. |
@@ -134,7 +134,10 @@ Sends a prompt to an LLM and captures the response as output. Supports input/out
 | `outputHandlerPrompt` | `string` | No | `null` | An LLM prompt that post-processes the main LLM output. |
 | `outputHandlerPromptFile` | `string` | No | `null` | Path to file containing the output handler prompt. Mutually exclusive with `outputHandlerPrompt`. |
 | `reasoningLevel` | `string` | No | `null` | Controls the model's extended thinking. Values: `"Low"`, `"Medium"`, `"High"`. |
-| `systemPromptMode` | `string` | No | `null` | How the system prompt interacts with the SDK's built-in prompts. `"append"` adds to them; `"replace"` removes them. |
+| `systemPromptMode` | `string` | No | `null` | How the system prompt interacts with the SDK's built-in prompts. `"append"` adds to them; `"replace"` removes them; `"customize"` selectively overrides individual sections. |
+| `systemPromptSections` | `object` | No | `null` | Section-level overrides when using `"customize"` mode. See [System Prompt Section Overrides](#system-prompt-section-overrides). |
+| `infiniteSessions` | `object` | No | `null` | Configuration for infinite sessions (automatic context compaction). See [Infinite Sessions](#infinite-sessions). |
+| `attachments` | `Attachment[]` | No | `[]` | Image attachments to send with the prompt. See [Image Attachments](#image-attachments). |
 | `mcps` | `string[]` | No | `[]` | Names of MCP servers (defined at orchestration level or in `mcp.json`) to attach as tools for this step. |
 | `loop` | `LoopConfig` | No | `null` | Loop/checker configuration for iterative refinement. |
 | `subagents` | `Subagent[]` | No | `[]` | Subagent definitions for multi-agent delegation. |
@@ -145,6 +148,96 @@ Sends a prompt to an LLM and captures the response as output. Supports input/out
 > - Exactly one of `userPrompt` or `userPromptFile` is required.
 > - `inputHandlerPrompt` and `inputHandlerPromptFile` are mutually exclusive.
 > - `outputHandlerPrompt` and `outputHandlerPromptFile` are mutually exclusive.
+
+#### System Prompt Section Overrides
+
+Used when `systemPromptMode` is `"customize"`. The `systemPromptSections` object allows surgical control over individual sections of the SDK's built-in system prompt while preserving the rest.
+
+Keys are section identifiers:
+
+| Section Key | Description |
+|---|---|
+| `identity` | Agent identity and role |
+| `tone` | Communication style and formatting |
+| `tool_efficiency` | Instructions for efficient tool usage |
+| `environment_context` | Workspace and environment context |
+| `code_change_rules` | Rules governing code modifications |
+| `guidelines` | General behavioral guidelines |
+| `safety` | Safety and content policy instructions |
+| `tool_instructions` | Tool-specific usage instructions |
+| `custom_instructions` | Custom user-provided instructions |
+| `last_instructions` | Final priority instructions (applied last) |
+
+Each section override value:
+
+| Property | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `action` | `string` | **Yes** | -- | One of: `"replace"`, `"remove"`, `"append"`, `"prepend"`. |
+| `content` | `string` | No | `null` | The content to use for `replace`, `append`, or `prepend`. Ignored for `remove`. |
+
+Example:
+```yaml
+systemPromptMode: customize
+systemPromptSections:
+  tone:
+    action: replace
+    content: "Be concise and direct. Use bullet points."
+  code_change_rules:
+    action: remove  # Read-only step, no code modifications
+  guidelines:
+    action: append
+    content: "\n- Always cite sources.\n- Follow WCAG 2.1 AA."
+```
+
+#### Infinite Sessions
+
+The `infiniteSessions` object controls automatic context compaction for long-running Prompt steps that may exceed the model's context window.
+
+| Property | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `enabled` | `bool` | No | `true` (SDK default) | Whether infinite sessions are enabled. Set to `false` for short tasks where compaction is unnecessary. |
+| `backgroundCompactionThreshold` | `number` | No | `0.80` | Context utilization ratio (0.0-1.0) at which background compaction begins. |
+| `bufferExhaustionThreshold` | `number` | No | `0.95` | Context utilization ratio (0.0-1.0) at which the session blocks until compaction completes. |
+
+Example:
+```yaml
+infiniteSessions:
+  enabled: true
+  backgroundCompactionThreshold: 0.85
+  bufferExhaustionThreshold: 0.97
+```
+
+#### Image Attachments
+
+The `attachments` array allows sending images to the LLM alongside the prompt. Requires a vision-capable model. Each attachment is an object with a `type` discriminator.
+
+**File Attachment** (`type: "file"`):
+
+| Property | Type | Required | Description |
+|---|---|---|---|
+| `type` | `string` | **Yes** | Must be `"file"`. |
+| `path` | `string` | **Yes** | Absolute path to the image file. Supports template expressions (e.g., `{{param.imagePath}}`). |
+| `displayName` | `string` | No | Human-readable name for the attachment. |
+
+**Blob Attachment** (`type: "blob"`):
+
+| Property | Type | Required | Description |
+|---|---|---|---|
+| `type` | `string` | **Yes** | Must be `"blob"`. |
+| `data` | `string` | **Yes** | Base64-encoded image data. Supports template expressions (e.g., `{{screenshot-step.output}}`). |
+| `mimeType` | `string` | **Yes** | MIME type of the image (e.g., `"image/png"`, `"image/jpeg"`). |
+| `displayName` | `string` | No | Human-readable name for the attachment. |
+
+Example:
+```yaml
+attachments:
+  - type: file
+    path: "{{param.mockupPath}}"
+    displayName: "UI Mockup"
+  - type: blob
+    data: "{{screenshot-step.output}}"
+    mimeType: "image/png"
+```
 
 ---
 
@@ -374,7 +467,7 @@ Template expressions use `{{expression}}` syntax and are supported in prompts, U
 `Prompt`, `Http`, `Transform`, `Command`, `Script` (case-insensitive)
 
 ### System Prompt Mode
-`Append` (adds to SDK built-in prompts), `Replace` (removes SDK built-in prompts)
+`Append` (adds to SDK built-in prompts), `Replace` (removes SDK built-in prompts), `Customize` (selectively override individual sections)
 
 ### Reasoning Level
 `Low`, `Medium`, `High`
