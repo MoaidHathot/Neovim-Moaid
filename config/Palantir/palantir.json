@@ -1,0 +1,64 @@
+{
+  "presets": {
+    "build-ok": {
+      "title": "Build Succeeded",
+      "audio": "default",
+      "duration": "short",
+      "attribution": "Via Build Pipeline"
+    },
+    "build-fail": {
+      "title": "Build Failed",
+      "audio": "alarm",
+      "duration": "long",
+      "scenario": "reminder",
+      "attribution": "Via Build Pipeline"
+    },
+    "deploy": {
+      "scenario": "reminder",
+      "audio": "mail",
+      "duration": "long",
+      "attribution": "Via CI/CD"
+    },
+    "urgent": {
+      "scenario": "alarm",
+      "audio": "alarm",
+      "loop": true,
+      "duration": "long"
+    },
+    "ping": {
+      "audio": "im",
+      "duration": "short"
+    },
+    "email": {
+      "audio": "mail",
+      "duration": "short"
+    },
+    "timer": {
+      "scenario": "alarm",
+      "audio": "alarm2",
+      "loop": true,
+      "duration": "long",
+      "title": "Timer"
+    },
+    "download": {
+      "progressValue": "indeterminate",
+      "progressStatus": "Downloading...",
+      "duration": "long"
+    },
+    "silent": {
+      "silent": true,
+      "duration": "short"
+    },
+    "opencode": {
+      "title": "OpenCode",
+      "audio": "im",
+      "attribution": "OpenCode"
+    },
+    "opencode-action": {
+      "title": "OpenCode",
+      "audio": "reminder",
+      "duration": "long",
+      "attribution": "OpenCode"
+    }
+  }
+}

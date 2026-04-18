@@ -7,27 +7,6 @@ version: 1.0.0
 tags: ["debug", "diagnostics", "m365", "mcp"]
 defaultModel: claude-opus-4.6
 
-variables:
-  tenantId: 72f988bf-86f1-41af-91ab-2d7cd011db47
-  m365Base: "https://agent365.svc.cloud.microsoft/agents/tenants/{{vars.tenantId}}/servers"
-
-mcps:
-  - name: m365-calendar
-    type: remote
-    endpoint: "{{vars.m365Base}}/mcp_CalendarTools"
-
-  - name: m365-copilot
-    type: remote
-    endpoint: "{{vars.m365Base}}/mcp_M365Copilot"
-
-  - name: m365-mail
-    type: remote
-    endpoint: "{{vars.m365Base}}/mcp_MailTools"
-
-  - name: m365-me
-    type: remote
-    endpoint: "{{vars.m365Base}}/mcp_MeServer"
-
 steps:
   - name: list-calendar-tools
     type: Prompt
@@ -48,7 +27,7 @@ steps:
         ],
         "status": "connected"
       }
-    mcps: [m365-calendar]
+    mcps: [calendar]
 
   - name: list-copilot-tools
     type: Prompt
@@ -90,7 +69,7 @@ steps:
         ],
         "status": "connected"
       }
-    mcps: [m365-mail]
+    mcps: [mail]
 
   - name: list-me-tools
     type: Prompt
@@ -111,4 +90,4 @@ steps:
         ],
         "status": "connected"
       }
-    mcps: [m365-me]
+    mcps: [me]

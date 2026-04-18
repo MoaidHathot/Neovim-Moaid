@@ -16,6 +16,7 @@ inputs:
       specific about: what steps are needed, what triggers to use, what
       tools/MCPs are required, and what the expected inputs/outputs are.
     required: true
+    multiline: true
   register:
     type: boolean
     description: >

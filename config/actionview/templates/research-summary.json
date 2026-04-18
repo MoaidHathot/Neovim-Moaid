@@ -1,0 +1,73 @@
+{
+  "type": "research-summary",
+  "description": "Results from an AI agent orchestration that researches a topic using multiple agents and sub-agents, then returns a consolidated answer.",
+  "defaults": {
+    "icon": "brain",
+    "severity": "medium",
+    "tags": ["ai", "research"]
+  },
+  "contentTemplate": [
+    {
+      "type": "alert",
+      "label": "Status",
+      "required": false
+    },
+    {
+      "type": "keyValue",
+      "label": "Research Overview",
+      "required": true,
+      "requiredKeys": ["Query", "Confidence"],
+      "keyAliases": {
+        "question": "Query",
+        "prompt": "Query",
+        "topic": "Query",
+        "score": "Confidence",
+        "confidence_level": "Confidence",
+        "agent_count": "Agents Used",
+        "num_agents": "Agents Used",
+        "total_agents": "Agents Used",
+        "time": "Duration",
+        "elapsed": "Duration",
+        "total_time": "Duration",
+        "sources_count": "Sources Consulted",
+        "num_sources": "Sources Consulted",
+        "model": "Model",
+        "llm": "Model"
+      }
+    },
+    {
+      "type": "markdown",
+      "label": "Answer",
+      "required": true
+    },
+    {
+      "type": "section",
+      "title": "Agent Activity",
+      "titleAliases": ["Agent Trace", "Agent Execution", "Orchestration Details", "Agent Log"],
+      "required": false
+    },
+    {
+      "type": "section",
+      "title": "Sources",
+      "titleAliases": ["References", "Citations", "Sources Consulted", "Evidence"],
+      "required": false
+    },
+    {
+      "type": "section",
+      "title": "Reasoning",
+      "titleAliases": ["Analysis", "Reasoning Chain", "Thought Process", "Chain of Thought"],
+      "required": false
+    },
+    {
+      "type": "markdown",
+      "label": "Raw Output",
+      "required": false
+    }
+  ],
+  "expectedActions": [
+    { "label": "Accept", "style": "success" },
+    { "label": "Research Further", "style": "primary" },
+    { "label": "Reject", "style": "danger" }
+  ]
+}
+

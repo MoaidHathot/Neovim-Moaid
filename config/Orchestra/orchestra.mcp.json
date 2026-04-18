@@ -1,6 +1,26 @@
 {
 	"mcps": [
 		{
+			"name": "calendar",
+			"type": "Remote",
+			"endpoint": "http://localhost:5113/mcp/calendar"
+		},
+		{
+			"name": "mail",
+			"type": "Remote",
+			"endpoint": "http://localhost:5113/mcp/mail"
+		},
+		{
+			"name": "m365-copilot",
+			"type": "Remote",
+			"endpoint": "http://localhost:5113/mcp/m365-copilot"
+		},
+		{
+			"name": "me",
+			"type": "Remote",
+			"endpoint": "http://localhost:5113/mcp/me"
+		},
+		{
 			"name": "icm-full",
 			"type": "local",
 			"command": "dnx",
@@ -67,26 +87,6 @@
 				"--file",
 				"P:\\Github\\Orchestra\\playground\\mcp\\McpDebug.cs"
 			]
-		},
-		{
-			"name": "calendar",
-			"type": "Remote",
-			"endpoint": "http://localhost:5113/mcp/calendar"
-		},
-		{
-			"name": "mail",
-			"type": "Remote",
-			"endpoint": "http://localhost:5113/mcp/mail"
-		},
-		{
-			"name": "m365-copilot",
-			"type": "Remote",
-			"endpoint": "http://localhost:5113/mcp/m365-copilot"
-		},
-		{
-			"name": "me",
-			"type": "Remote",
-			"endpoint": "http://localhost:5113/mcp/me"
 		}
 	]
 }
