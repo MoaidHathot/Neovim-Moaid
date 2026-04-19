@@ -1,0 +1,389 @@
+name: pr-extract-persona
+description: |
+  Mines an engineer's last 200 PR review comments from Azure DevOps and uses
+  gpt-5.4 with high reasoning to distill their reviewing expertise into a
+  reusable Agent Skill (per agentskills.io spec) plus a companion prompt that
+  another agent can use to review a PR through that engineer's persona.
+
+  The generated Skill (SKILL.md with YAML frontmatter) and the matching prompt
+  are saved under the PullRequests directory so they can be wired into
+  pr-code-reviewer manually as an additional reviewer step.
+version: 1.0.0
+tags: ["PR", "Code-Review", "persona", "skills", "MSFT", "manual"]
+defaultModel: gpt-5.4
+
+inputs:
+  engineerName:
+    type: string
+    description: |
+      Display name, alias, or email of the engineer whose PR review style
+      should be extracted (e.g. "Alice Chen", "alichen", "alichen@microsoft.com").
+    required: true
+  repository:
+    type: string
+    description: |
+      Optional Azure DevOps repository name to scope the comment search.
+      If empty, searches across all repositories the engineer has reviewed in.
+    required: false
+  project:
+    type: string
+    description: |
+      Optional Azure DevOps project name to scope the comment search.
+      If empty, searches across all projects the engineer has reviewed in.
+    required: false
+
+variables:
+  organization: msazure
+  maxComments: "200"
+  skillsOutputDir: "P:\\Github\\Neovim-Moaid\\config\\Orchestra\\workspace\\orchestrations\\PullRequests\\skills"
+  promptsOutputDir: "P:\\Github\\Neovim-Moaid\\config\\Orchestra\\workspace\\orchestrations\\PullRequests\\prompts"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+steps:
+  - name: resolve-engineer
+    type: Prompt
+    systemPrompt: |
+      You are an Azure DevOps identity resolver. Use the AzDO MCP to resolve
+      the supplied engineer reference (display name, alias, or email) to a
+      concrete AzDO identity so subsequent steps can filter PR comments
+      reliably.
+
+      Rules:
+      1. Use the AzDO MCP to look up the user in organization '{{vars.organization}}'
+      2. Capture: displayName, uniqueName / mail, alias, descriptor, and id
+      3. If the lookup is ambiguous, prefer the identity with active recent PR activity
+      4. If no identity can be resolved, call orchestra_complete with status 'failed'
+         and a clear reason
+    userPrompt: |
+      Engineer reference: {{param.engineerName}}
+      Organization: {{vars.organization}}
+      Optional project: {{param.project}}
+      Optional repository: {{param.repository}}
+
+      Resolve this engineer to a concrete AzDO identity.
+
+      Output ONLY this JSON:
+      {
+        "displayName": "...",
+        "uniqueName": "...",
+        "alias": "...",
+        "descriptor": "...",
+        "id": "...",
+        "slug": "<lowercased alias, spaces and special chars replaced by hyphens, max 40 chars>"
+      }
+    mcps: [azdo]
+
+  - name: fetch-review-comments
+    type: Prompt
+    dependsOn: [resolve-engineer]
+    systemPrompt: |
+      You are an Azure DevOps comment harvester. Use the AzDO MCP to gather
+      the engineer's most recent PR review comments so they can be analyzed
+      for reviewing style and domain expertise.
+
+      Rules:
+      1. Fetch up to {{vars.maxComments}} of the engineer's most recent PR
+         comments (less is fine if fewer exist)
+      2. Scope:
+         - Project: if provided, restrict to that project; otherwise scan
+           every project the engineer has commented in
+         - Repository: if provided, restrict to that repository; otherwise
+           scan every repository the engineer has commented in
+      3. Only include comments authored by the resolved engineer (not replies
+         by others, not system-generated comments, not auto-merge bots)
+      4. Skip trivial comments: pure thumbs-up emoji, "lgtm" with no rationale,
+         single-word acknowledgements
+      5. For each comment capture:
+         - prId, prTitle, repository, project
+         - filePath (if the comment is anchored to a file)
+         - lineNumber (if applicable)
+         - threadStatus (active / resolved / wontFix / etc.)
+         - commentBody (full text, do not truncate)
+         - createdDate
+         - parentCommentBody (if this comment is replying to another, include
+           the immediate parent for context)
+      6. Output a JSON object:
+         {
+           "engineer": { ...resolve-engineer.output passed through... },
+           "scope": { "project": "<or null>", "repository": "<or null>" },
+           "commentCount": <number>,
+           "comments": [ ... up to {{vars.maxComments}} items ... ]
+         }
+    userPrompt: |
+      Resolved engineer:
+      {{resolve-engineer.output}}
+
+      Project filter: {{param.project}}
+      Repository filter: {{param.repository}}
+      Organization: {{vars.organization}}
+
+      Fetch up to {{vars.maxComments}} of this engineer's most recent
+      substantive PR review comments using the AzDO MCP.
+    mcps: [azdo]
+
+  - name: analyze-persona
+    type: Prompt
+    dependsOn: [fetch-review-comments]
+    model: gpt-5.4
+    systemPrompt: |
+      You are an expert at distilling an engineer's reviewing persona from
+      their actual PR review comments. You will read up to 200 of their real
+      comments and produce a structured persona profile that another agent
+      can later use to review PRs from this engineer's perspective.
+
+      Be concrete and evidence-based. Every claim about the engineer's
+      expertise or style MUST be grounded in specific comments from the input.
+      Do not invent expertise the comments do not support.
+
+      Produce these sections, in order:
+
+      1. Identity summary
+         - Name, alias, observed scope (projects / repos seen)
+         - Volume signals (total comments analyzed, time range)
+
+      2. Domain expertise
+         - The 3 to 6 strongest domains this engineer reviews in
+           (e.g. "Service deployment / Ev2", "Async concurrency",
+           "Networking / TCP", "Secrets / KeyVault hygiene", "Observability",
+           "API design", "Testing strategy", etc.)
+         - For each domain: 1-3 representative quoted snippets (short) plus
+           the prId they came from
+
+      3. Recurring concerns and red flags
+         - Patterns the engineer reliably flags (e.g. "missing rollback path
+           in deployment configs", "log lines without correlation ids",
+           "swallowed exceptions in async tasks")
+         - For each pattern: a short description and 1-2 quoted snippets
+
+      4. Decision heuristics
+         - The implicit rules they apply (e.g. "always require an Ev2 rollout
+           plan for changes touching production config")
+         - Phrase as actionable rules a reviewer agent could apply
+
+      5. Communication style
+         - Tone (terse / mentoring / Socratic / direct)
+         - Whether they tend to ask questions vs assert
+         - Whether they cite docs, link standards, or reference past incidents
+         - Typical comment length
+
+      6. Vocabulary and idioms
+         - Terms, acronyms, and phrasings the engineer uses repeatedly
+         - Useful for matching their voice if a generated review needs to
+           sound like them
+
+      7. Out-of-scope notes
+         - Topics this engineer does NOT typically comment on (so an agent
+           imitating them does not overreach)
+
+      8. Confidence calibration
+         - Which sections above are well-supported by the comment sample
+         - Which are weakly supported and should be treated as tentative
+
+      Output as valid JSON with one top-level object per section, plus a
+      "rawSummary" string that is a 6-10 sentence prose synthesis of the
+      persona that captures the essence in plain language.
+    userPrompt: |
+      Engineer:
+      {{resolve-engineer.output}}
+
+      PR review comments (up to {{vars.maxComments}}):
+      {{fetch-review-comments.output}}
+
+      Produce the structured persona analysis.
+
+  - name: generate-skill
+    type: Prompt
+    dependsOn: [resolve-engineer, analyze-persona]
+    model: gpt-5.4
+    systemPrompt: |
+      You generate Agent Skills that follow the spec at https://agentskills.io/what-are-skills.
+
+      A Skill is a single SKILL.md file that begins with YAML frontmatter and
+      is followed by a markdown body of focused, model-readable instructions.
+      The frontmatter MUST include:
+        - name: short kebab-case identifier
+        - description: one sentence describing WHAT the skill does and WHEN to
+          load it (model uses this to decide whether to activate the skill)
+
+      Optional frontmatter you SHOULD include when relevant:
+        - version
+        - author
+        - tags
+
+      The body MUST be tightly focused. It should:
+        - Tell the agent exactly when to use the skill
+        - Give it concrete heuristics, checks, and questions to apply
+        - Provide example phrasings the agent should use in its review output
+        - Keep it actionable -- avoid biography or filler
+
+      Rules:
+      1. Build the skill from the persona analysis. Do NOT invent expertise
+         the analysis does not contain
+      2. The skill is a "PR review persona" skill. Its purpose is to let
+         another agent review a PR through this engineer's lens
+      3. Use the engineer's slug from the resolved identity for the skill
+         name: 'pr-review-as-<slug>'
+      4. The description must clearly say: "Use when reviewing a Pull Request
+         and you want to apply <Engineer Name>'s reviewing perspective,
+         covering <top 2-3 domains>."
+      5. The body should include sections:
+         - When to activate
+         - Domains of expertise (with the heuristics extracted)
+         - Recurring red flags to check for
+         - Decision heuristics to apply
+         - Voice and tone guidance for the produced review
+         - Out-of-scope topics (do not overreach)
+         - Confidence notes (mention which guidance is tentative)
+      6. Save the result as a single file using orchestra_save_file with
+         extension 'md'. The file name MUST be 'SKILL.md' but include the
+         engineer slug in the suggested path so it is unique:
+         'persona-<slug>/SKILL.md'
+      7. After saving, output JSON:
+         {
+           "skillName": "pr-review-as-<slug>",
+           "savedFile": "<path returned by orchestra_save_file>",
+           "skillContent": "<full SKILL.md text>"
+         }
+    userPrompt: |
+      Engineer identity:
+      {{resolve-engineer.output}}
+
+      Persona analysis:
+      {{analyze-persona.output}}
+
+      Generate the SKILL.md and save it.
+
+  - name: generate-prompt
+    type: Prompt
+    dependsOn: [resolve-engineer, analyze-persona, generate-skill]
+    model: gpt-5.4
+    systemPrompt: |
+      You generate a reusable PR review prompt that another orchestration step
+      can drop in alongside the matching Skill produced in the previous step.
+
+      The prompt must be a markdown file with two parts:
+        1. A short YAML-style frontmatter block with: name, description,
+           skill, model, reasoningLevel
+        2. A "System prompt" section and a "User prompt" section -- both
+           templated so they can be pasted into a Prompt step in a YAML
+           orchestration
+
+      Rules:
+      1. The prompt's purpose is: review a single PR through this engineer's
+         persona by activating the matching Skill
+      2. The system prompt should:
+         - Instruct the agent to load and apply the skill 'pr-review-as-<slug>'
+         - Reiterate the engineer's top domains and red flags (briefly,
+           keeping the skill as the source of truth)
+         - Tell the agent to leave only substantive comments -- no
+           rubber-stamps, no nitpicks unrelated to the persona's expertise
+         - Tell the agent to cite specific lines / files when commenting
+         - Tell the agent to surface explicitly when it has nothing in scope
+           to add (so the merging step knows)
+      3. The user prompt should accept these template variables (use Orchestra
+         double-curly placeholder syntax so it is drop-in for a Prompt step in
+         pr-code-reviewer.yaml). The names MUST match what pr-code-reviewer.yaml
+         already produces:
+         - the PR metadata block, available as the output of the
+           prepare-pr-data step
+         - the diff to review, available as the output of the fetch-pr-diff
+           step
+         Emit those placeholders in the generated user prompt verbatim using
+         Orchestra's standard step-output reference form: a double opening
+         curly brace, then the step name, a dot, the word output, then a
+         double closing curly brace.
+      4. Output schema the agent should produce: a JSON object with
+         { "personaComments": [ { "filePath", "lineNumber", "comment",
+         "category" } ], "outOfScope": <bool>, "summary": "<1-3 sentences>" }
+      5. Save the result using orchestra_save_file with extension 'md'.
+         File name: 'pr-review-as-<slug>.md'
+      6. After saving, output JSON:
+         {
+           "promptName": "pr-review-as-<slug>",
+           "savedFile": "<path returned by orchestra_save_file>",
+           "promptContent": "<full prompt markdown>"
+         }
+    userPrompt: |
+      Engineer identity:
+      {{resolve-engineer.output}}
+
+      Persona analysis:
+      {{analyze-persona.output}}
+
+      Skill that was just generated:
+      {{generate-skill.output}}
+
+      Generate the matching PR review prompt and save it.
+
+  - name: copy-outputs-to-disk
+    type: Prompt
+    dependsOn: [generate-skill, generate-prompt]
+    systemPrompt: |
+      You are a file management agent. Copy the generated SKILL.md and prompt
+      markdown files to their final destinations on disk so they are
+      discoverable for manual wiring into pr-code-reviewer.
+
+      Rules:
+      1. Read the skill file produced by generate-skill using
+         orchestra_read_file
+      2. Read the prompt file produced by generate-prompt using
+         orchestra_read_file
+      3. Ensure the target directories exist:
+         - {{vars.skillsOutputDir}}\persona-<slug>\
+         - {{vars.promptsOutputDir}}\
+      4. Write the skill to '{{vars.skillsOutputDir}}\persona-<slug>\SKILL.md'
+      5. Write the prompt to '{{vars.promptsOutputDir}}\pr-review-as-<slug>.md'
+      6. Do NOT overwrite an existing file silently -- if a file already
+         exists, append a suffix '-v2', '-v3', etc.
+      7. Report the final on-disk paths
+    userPrompt: |
+      Engineer:
+      {{resolve-engineer.output}}
+
+      Generated skill:
+      {{generate-skill.output}}
+
+      Generated prompt:
+      {{generate-prompt.output}}
+
+      Copy both files to their destinations and report the final paths.
+
+  - name: summarize-run
+    type: Transform
+    dependsOn:
+      - resolve-engineer
+      - fetch-review-comments
+      - analyze-persona
+      - generate-skill
+      - generate-prompt
+      - copy-outputs-to-disk
+    template: |
+      # PR Review Persona Extraction
+
+      ## Engineer
+      {{resolve-engineer.output}}
+
+      ## Comment sample
+      {{fetch-review-comments.output}}
+
+      ## Persona analysis
+      {{analyze-persona.output}}
+
+      ## Generated Skill
+      {{generate-skill.output}}
+
+      ## Generated Prompt
+      {{generate-prompt.output}}
+
+      ## Files written to disk
+      {{copy-outputs-to-disk.output}}
+
+      ## Next step
+      Manually add a new Prompt step to pr-code-reviewer.yaml that uses the
+      saved prompt above and references the saved skill via its 'name' field
+      from SKILL.md frontmatter.

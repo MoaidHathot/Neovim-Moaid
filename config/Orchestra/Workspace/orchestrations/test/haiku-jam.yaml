@@ -5,12 +5,11 @@ tags: ["demo", "subagents", "manual", "test"]
 trigger:
   type: manual
 defaultModel: gpt-5.4
-timeoutSeconds: 600
+timeoutSeconds: 900
 
 steps:
   - name: compose-haiku
     type: Prompt
-    timeoutSeconds: 300
     reasoningLevel: Medium
     systemPrompt: |
       You are a poetry workshop facilitator.
