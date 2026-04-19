@@ -3,7 +3,7 @@ description: |
   Tracks out-of-stock items from a watchlist file containing product links (Amazon, Walmart, etc.). Fetches each link periodically, checks whether the item is available, and creates an ActionView entry when items become available.
 version: 1.0.0
 tags: ["personal", "family", "shopping", "lily", "auto"]
-defaultModel: claude-opus-4.6
+defaultModel: gpt-5.4
 
 variables:
   watchlistPath: "C:\\Users\\moaid\\OneDrive\\Documents\\Obsidian Vault\\Family\\Lily\\Baby\\Tracking out of stock items.md"

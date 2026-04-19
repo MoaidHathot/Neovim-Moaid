@@ -3,7 +3,7 @@ description: |
   Responds to reviewer comments on a single Pull Request created by me. Reads incoming comments from reviewers, analyzes code context, and uses a coordinator agent with specialized subagents (code-context-reader, code-fixer, docs-checker) to decide whether to reply, make code fixes, mark as won't fix, or resolve threads. Uses PowerReview MCP for all comment and code fix operations. Creates draft replies and code fix proposals that require user approval before submission. Produces an ActionView entry of type 'pr-comment-response' with per-comment approve/delete/reject actions. Tracks processed comment state via Zakira.Exchange.
 version: 1.0.0
 tags: ["ZTS", "MSFT", "PR", "Comment-Response", "auto"]
-defaultModel: claude-opus-4.6
+defaultModel: gpt-5.4
 
 inputs:
   prData:

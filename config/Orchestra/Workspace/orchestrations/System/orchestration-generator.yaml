@@ -32,6 +32,14 @@ inputs:
       If not provided, the file is saved only to the orchestration's temp
       directory.
     required: false
+  workingDirectory:
+    type: string
+    description: >
+      Working directory for filesystem access. The filesystem MCP server
+      is restricted to this directory. Should include any paths that the
+      orchestration needs to write to (e.g., the parent of outputPath).
+    required: false
+    default: "."
 
 mcps:
   - name: orchestra-control
@@ -44,13 +52,13 @@ mcps:
     arguments:
       - "-y"
       - "@anthropic/mcp-server-filesystem"
-      - "{{workingDirectory}}"
+      - "{{param.workingDirectory}}"
 
 steps:
   # ── Step 1: Generate the orchestration ─────────────────────────────────
   - name: generate
     type: Prompt
-    model: claude-opus-4.6
+    model: gpt-5.4
     parameters:
       - description
     mcps:
@@ -67,7 +75,7 @@ steps:
          or commentary in your final output.
       2. Use the knowledge from your loaded skills to ensure correctness. Only
          use documented properties — never invent fields.
-      3. Use 'claude-opus-4.6' as the default model unless the user specifies
+      3. Use 'gpt-5.4' as the default model unless the user specifies
          otherwise.
       4. Use kebab-case for orchestration and step names, camelCase for
          variables and inputs.
@@ -188,7 +196,7 @@ steps:
     type: Prompt
     dependsOn:
       - generate
-    model: claude-opus-4.6
+    model: gpt-5.4
     skillDirectories:
       - ./skills/orchestration-authoring
     systemPrompt: |
@@ -201,7 +209,7 @@ steps:
       2. Step names are unique and in kebab-case.
       3. dependsOn references exist as step names.
       4. No circular dependencies.
-      5. Template expressions use correct syntax: {{expression}}.
+      5. Template expressions use correct syntax with double curly braces and a namespace prefix (e.g., param.name, vars.name, stepName.output).
       6. mcps on steps are string arrays referencing defined MCP names.
       7. Loop targets are dependencies of the checker step.
       8. Mutual exclusion rules respected (systemPrompt vs systemPromptFile,
@@ -234,7 +242,7 @@ steps:
     type: Prompt
     dependsOn:
       - validate
-    model: claude-opus-4.6
+    model: gpt-5.4
     parameters:
       - outputPath
     mcps:
@@ -266,7 +274,7 @@ steps:
     type: Prompt
     dependsOn:
       - save-orchestration
-    model: claude-opus-4.6
+    model: gpt-5.4
     parameters:
       - register
     mcps:

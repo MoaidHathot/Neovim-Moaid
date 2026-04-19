@@ -3,7 +3,7 @@ description: |
   Automatically discovers active IcM incidents via the IcM MCP, determines which have not been investigated yet by checking Zakira.Exchange state, and invokes the icm-investigator orchestration for each uninvestigated incident. Produces an ActionView summary of all dispatched investigations.
 version: 1.0.0
 tags: ["ZTS", "MSFT", "OCE", "ICM", "auto"]
-defaultModel: claude-opus-4.6
+defaultModel: gpt-5.4
 
 variables:
   zakiraCategory: icm-investigator-state

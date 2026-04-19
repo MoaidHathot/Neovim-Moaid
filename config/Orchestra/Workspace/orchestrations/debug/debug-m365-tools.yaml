@@ -2,10 +2,10 @@ name: debug-m365-tools
 description: |
   Discovers and lists all available tools from Microsoft 365 MCP servers
   (Calendar, Copilot, Mail, Me). Each step connects to one MCP and enumerates
-  its tools with descriptions and parameters.
+  its tools with descriptions and parameters (both required and optional).
 version: 1.0.0
 tags: ["debug", "diagnostics", "m365", "mcp"]
-defaultModel: claude-opus-4.6
+defaultModel: gpt-5.4
 defaultStepTimeoutSeconds: 120
 
 steps:
@@ -13,19 +13,29 @@ steps:
     type: Prompt
     systemPrompt: |
       You are a diagnostics assistant. Enumerate all tools available to you
-      from the MCP server. Be precise and structured.
+      from the MCP server. Be precise, exhaustive, and structured.
       If the Calendar tools do not exist, fail!
     userPrompt: |
       List ALL tools you have access to from the Calendar MCP.
       For each tool provide its exact name, a one-line description,
-      and its required parameters.
+      and ALL parameters (both required and optional).
+
+      Do NOT omit optional parameters. Include every parameter declared in
+      the tool's input schema. For each parameter include its name, type,
+      whether it is required, and its description.
 
       Output as JSON:
       {
         "mcp": "m365-calendar",
         "toolCount": <number>,
         "tools": [
-          { "name": "...", "description": "...", "parameters": ["..."] }
+          {
+            "name": "...",
+            "description": "...",
+            "parameters": [
+              { "name": "...", "type": "...", "required": true, "description": "..." }
+            ]
+          }
         ],
         "status": "connected"
       }
@@ -35,19 +45,29 @@ steps:
     type: Prompt
     systemPrompt: |
       You are a diagnostics assistant. Enumerate all tools available to you
-      from the MCP server. Be precise and structured.
+      from the MCP server. Be precise, exhaustive, and structured.
       If the copilot tools do not exist, fail!
     userPrompt: |
       List ALL tools you have access to from the M365 Copilot MCP.
       For each tool provide its exact name, a one-line description,
-      and its required parameters.
+      and ALL parameters (both required and optional).
+
+      Do NOT omit optional parameters. Include every parameter declared in
+      the tool's input schema. For each parameter include its name, type,
+      whether it is required, and its description.
 
       Output as JSON:
       {
         "mcp": "m365-copilot",
         "toolCount": <number>,
         "tools": [
-          { "name": "...", "description": "...", "parameters": ["..."] }
+          {
+            "name": "...",
+            "description": "...",
+            "parameters": [
+              { "name": "...", "type": "...", "required": true, "description": "..." }
+            ]
+          }
         ],
         "status": "connected"
       }
@@ -57,19 +77,29 @@ steps:
     type: Prompt
     systemPrompt: |
       You are a diagnostics assistant. Enumerate all tools available to you
-      from the MCP server. Be precise and structured.
+      from the MCP server. Be precise, exhaustive, and structured.
       If the mail tools do not exist, fail!
     userPrompt: |
       List ALL tools you have access to from the Mail MCP.
       For each tool provide its exact name, a one-line description,
-      and its required parameters.
+      and ALL parameters (both required and optional).
+
+      Do NOT omit optional parameters. Include every parameter declared in
+      the tool's input schema. For each parameter include its name, type,
+      whether it is required, and its description.
 
       Output as JSON:
       {
         "mcp": "m365-mail",
         "toolCount": <number>,
         "tools": [
-          { "name": "...", "description": "...", "parameters": ["..."] }
+          {
+            "name": "...",
+            "description": "...",
+            "parameters": [
+              { "name": "...", "type": "...", "required": true, "description": "..." }
+            ]
+          }
         ],
         "status": "connected"
       }
@@ -79,19 +109,29 @@ steps:
     type: Prompt
     systemPrompt: |
       You are a diagnostics assistant. Enumerate all tools available to you
-      from the MCP server. Be precise and structured.
+      from the MCP server. Be precise, exhaustive, and structured.
       If the me tools do not exist, fail!
     userPrompt: |
       List ALL tools you have access to from the Me MCP.
       For each tool provide its exact name, a one-line description,
-      and its required parameters.
+      and ALL parameters (both required and optional).
+
+      Do NOT omit optional parameters. Include every parameter declared in
+      the tool's input schema. For each parameter include its name, type,
+      whether it is required, and its description.
 
       Output as JSON:
       {
         "mcp": "m365-me",
         "toolCount": <number>,
         "tools": [
-          { "name": "...", "description": "...", "parameters": ["..."] }
+          {
+            "name": "...",
+            "description": "...",
+            "parameters": [
+              { "name": "...", "type": "...", "required": true, "description": "..." }
+            ]
+          }
         ],
         "status": "connected"
       }

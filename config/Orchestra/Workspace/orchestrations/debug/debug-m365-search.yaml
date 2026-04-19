@@ -1,0 +1,85 @@
+name: debug-m365-search
+description: |
+  Compares search results between the WorkIQ MCP and the m365-chat MCP for
+  the same query. Each step performs a search using its respective tool so
+  the outputs can be compared side by side.
+version: 1.0.0
+tags: ["debug", "diagnostics", "m365", "search"]
+defaultModel: gpt-5.4
+defaultStepTimeoutSeconds: 300
+
+mcps:
+  - name: workiq
+    type: local
+    command: npx
+    arguments:
+      - "-y"
+      - "@microsoft/workiq"
+      - mcp
+
+inputs:
+  query:
+    type: string
+    description: The search query to run against both WorkIQ and m365-chat.
+    required: true
+    multiline: true
+
+steps:
+  - name: search-workiq
+    type: Prompt
+    systemPrompt: |
+      You are a diagnostics search agent. Perform a search using ONLY the
+      WorkIQ MCP. Do not call any other tools.
+    userPrompt: |
+      Search query:
+      {{param.query}}
+
+      Use WorkIQ to search for this query across calendar, emails, and Teams
+      messages. Return the raw tool result followed by a short JSON summary:
+      {
+        "tool": "workiq",
+        "query": "<query>",
+        "resultCount": <number>,
+        "results": [
+          { "type": "...", "title": "...", "snippet": "...", "source": "..." }
+        ]
+      }
+    mcps: [workiq]
+
+  - name: search-m365-chat
+    type: Prompt
+    systemPrompt: |
+      You are a diagnostics search agent. Perform a search using ONLY the
+      m365-chat MCP. Do not call any other tools.
+    userPrompt: |
+      Search query:
+      {{param.query}}
+
+      Use m365-chat to search for this query. Return the raw tool result
+      followed by a short JSON summary:
+      {
+        "tool": "m365-chat",
+        "query": "<query>",
+        "resultCount": <number>,
+        "results": [
+          { "type": "...", "title": "...", "snippet": "...", "source": "..." }
+        ]
+      }
+    mcps: [m365-copilot]
+
+  - name: compare-results
+    type: Transform
+    dependsOn:
+      - search-workiq
+      - search-m365-chat
+    template: |
+      # Search Comparison: WorkIQ vs m365-chat
+
+      ## Query
+      {{param.query}}
+
+      ## WorkIQ result
+      {{search-workiq.output}}
+
+      ## m365-chat result
+      {{search-m365-chat.output}}

@@ -8,6 +8,14 @@
     "routing": {
       "mode": "perServer",
       "basePath": "/mcp"
+    },
+    "cors": {
+      "enabled": true,
+      "allowAnyLocalhost": true,
+      "allowedMethods": ["GET", "POST", "DELETE", "OPTIONS"],
+      "allowedHeaders": ["Content-Type", "Authorization", "Mcp-Session-Id", "Mcp-Protocol-Version", "Last-Event-ID"],
+      "exposedHeaders": ["Mcp-Session-Id"],
+      "preflightMaxAgeSeconds": 600
     }
   },
   "mcp": {

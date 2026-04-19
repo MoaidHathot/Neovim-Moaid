@@ -3,7 +3,7 @@ description: |
   Generates a structured on-call handoff document at the end of an on-call shift. Correlates multiple sources: IcM incidents (active, mitigated, resolved during the shift), Zakira.Exchange investigation records (what YOU actually did), IcM acknowledgments and comments you made, and any ongoing issues requiring attention. Produces a handoff markdown file and ActionView entry.
 version: 1.0.0
 tags: ["oncall", "handoff", "ICM", "MSFT", "OCE", "auto"]
-defaultModel: claude-opus-4.6
+defaultModel: gpt-5.4
 
 inputs:
   shiftStartDate:

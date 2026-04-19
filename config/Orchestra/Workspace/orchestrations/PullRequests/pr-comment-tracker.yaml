@@ -3,7 +3,7 @@ description: |
   Discovers active Pull Requests created by me in Azure DevOps, checks for new reviewer comments/threads using PowerReview, and invokes the pr-comment-responder orchestration for each PR that has unaddressed comments. Tracks which comments have been processed via Zakira.Exchange to avoid duplicate responses. Runs on an hourly schedule.
 version: 1.0.0
 tags: ["ZTS", "MSFT", "PR", "Comment-Response", "auto"]
-defaultModel: claude-opus-4.6
+defaultModel: gpt-5.4
 
 variables:
   organization: msazure

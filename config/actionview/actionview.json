@@ -1,5 +1,6 @@
 {
   "dataDirectory": "data",
+  "listenUrl": "http://localhost:5180",
   "templates": {
     "externalDirectory": "./templates",
     "recursive": false
@@ -10,7 +11,7 @@
       "enabled": true,
       "duration": null,
       "attribution": "ActionView",
-      "launchUrl": "http://localhost:5173",
+      "launchUrl": "http://localhost:5180",
       "image": null,
       "audio": null,
       "silent": false,

@@ -23,7 +23,22 @@
 			"readiness": {
 				"stdoutPattern": "Now listening on",
 				"healthCheckUrl": "http://localhost:5113/mcp",
-				"timeoutSeconds": 10
+				"timeoutSeconds": 3
+			}
+		},
+		{
+			"name": "ActionView",
+			"type": "process",
+			"command": "dnx",
+			"arguments": [
+				"ActionView.Api",
+				"--yes"
+			],
+			"required": false,
+			"forceKill": true,
+			"readiness": {
+				"stdoutPattern": "Now listening on",
+				"timeoutSeconds": 3
 			}
 		}
 	]

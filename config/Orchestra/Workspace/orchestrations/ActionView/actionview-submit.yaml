@@ -3,7 +3,7 @@ description: |
   Reusable orchestration for submitting entries to ActionView. Accepts pre-built entry JSON and an optional template name. Validates against the ActionView schema before submission.
 version: 1.0.1
 tags: ["utility", "actionview", "reusable", "auto"]
-defaultModel: claude-opus-4.6
+defaultModel: gpt-5.4
 
 inputs:
   entryJson:

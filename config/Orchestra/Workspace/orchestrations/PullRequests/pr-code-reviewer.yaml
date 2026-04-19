@@ -3,7 +3,7 @@ description: |
   Reviews a single Pull Request using four expert reviewers (.NET Expert, Principal Software Engineer, Security Expert, DurableTasksFramework Expert) each with subagents for documentation lookup, code analysis, and test coverage checks. Uses PowerReview MCP to create review sessions and leave draft comments. Correlates with WorkIQ for meeting notes, chats, emails, and documents related to the PR. Tracks PR review state via Zakira.Exchange. Produces an ActionView summary of all findings.
 version: 1.0.0
 tags: ["ZTS", "MSFT", "PR", "Code-Review", "auto"]
-defaultModel: claude-opus-4.6
+defaultModel: gpt-5.4
 
 inputs:
   prData:

@@ -1,0 +1,101 @@
+name: debug-m365-meeting
+description: |
+  Compares the Calendar MCP's ListEvents and ListCalendarView tools by listing
+  events for the 6 hours starting at the current orchestration run time.
+  First resolves the user's timezone via GetUserDateAndTimeZoneSettings,
+  then runs ListEvents and ListCalendarView in parallel for the same window
+  so the outputs can be compared side by side.
+version: 1.0.0
+tags: ["debug", "diagnostics", "m365", "calendar"]
+defaultModel: gpt-5.4
+defaultStepTimeoutSeconds: 180
+
+steps:
+  - name: get-timezone
+    type: Prompt
+    systemPrompt: |
+      You are a diagnostics assistant. Call the Calendar MCP tool
+      GetUserDateAndTimeZoneSettings to resolve the user's current
+      date, time, and IANA timezone. Do not call any other tools.
+    userPrompt: |
+      Use GetUserDateAndTimeZoneSettings to fetch the user's timezone settings.
+
+      Then output ONLY a JSON object with these fields:
+      {
+        "currentDateTime": "<ISO-8601 in the user's local timezone, e.g. 2026-04-19T14:30:00>",
+        "windowEndDateTime": "<currentDateTime + 6 hours, same format>",
+        "timeZone": "<IANA name, e.g. America/Los_Angeles>"
+      }
+
+      Do not include any other text. Just the JSON object.
+    mcps: [calendar]
+
+  - name: list-events
+    type: Prompt
+    dependsOn: [get-timezone]
+    systemPrompt: |
+      You are a diagnostics assistant. Call the Calendar MCP tool ListEvents
+      to enumerate events that fall within the supplied 6-hour window.
+      Do not call any other tools.
+    userPrompt: |
+      Use ListEvents to list all calendar events between
+      currentDateTime and windowEndDateTime from this timezone payload:
+
+      {{get-timezone.output}}
+
+      Output the raw tool result followed by a short JSON summary:
+      {
+        "tool": "ListEvents",
+        "windowStart": "<currentDateTime>",
+        "windowEnd": "<windowEndDateTime>",
+        "timeZone": "<IANA>",
+        "eventCount": <number>,
+        "events": [
+          { "subject": "...", "start": "...", "end": "...", "organizer": "..." }
+        ]
+      }
+    mcps: [calendar]
+
+  - name: list-calendar-view
+    type: Prompt
+    dependsOn: [get-timezone]
+    systemPrompt: |
+      You are a diagnostics assistant. Call the Calendar MCP tool
+      ListCalendarView to enumerate events that fall within the supplied
+      6-hour window. Do not call any other tools.
+    userPrompt: |
+      Use ListCalendarView to list all calendar events between
+      currentDateTime and windowEndDateTime from this timezone payload:
+
+      {{get-timezone.output}}
+
+      Output the raw tool result followed by a short JSON summary:
+      {
+        "tool": "ListCalendarView",
+        "windowStart": "<currentDateTime>",
+        "windowEnd": "<windowEndDateTime>",
+        "timeZone": "<IANA>",
+        "eventCount": <number>,
+        "events": [
+          { "subject": "...", "start": "...", "end": "...", "organizer": "..." }
+        ]
+      }
+    mcps: [calendar]
+
+  - name: compare-results
+    type: Transform
+    dependsOn:
+      - get-timezone
+      - list-events
+      - list-calendar-view
+    template: |
+      # Calendar MCP Comparison: ListEvents vs ListCalendarView
+
+      ## Window
+      {{get-timezone.output}}
+
+      ## ListEvents result
+      {{list-events.output}}
+
+      ## ListCalendarView result
+      {{list-calendar-view.output}}

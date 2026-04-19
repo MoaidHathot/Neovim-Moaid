@@ -1,0 +1,48 @@
+name: haiku-jam
+description: Simple sub-agent demo. A writer drafts a haiku about autumn while a critic reviews it, then the result is formatted as a small report.
+version: "1.0.0"
+tags: ["demo", "subagents", "manual", "test"]
+trigger:
+  type: manual
+defaultModel: gpt-5.4
+timeoutSeconds: 600
+
+steps:
+  - name: compose-haiku
+    type: Prompt
+    timeoutSeconds: 300
+    reasoningLevel: Medium
+    systemPrompt: |
+      You are a poetry workshop facilitator.
+      Coordinate your sub-agents to produce one polished haiku about autumn.
+
+      Produce these sections:
+      1. Final haiku (5-7-5 syllables, three lines)
+      2. Writer's notes (one or two sentences on imagery)
+      3. Critic's verdict (APPROVED or REVISE, with one sentence of reasoning)
+    userPrompt: |
+      Theme: autumn.
+      Draft a haiku, get a quick critique, and present the final version.
+    subagents:
+      - name: haiku-writer
+        displayName: Haiku Writer
+        description: Drafts an autumn haiku in classic 5-7-5 form.
+        prompt: |
+          Write one haiku about autumn in strict 5-7-5 syllable form.
+          Return only the haiku and a single sentence describing the imagery you chose.
+      - name: haiku-critic
+        displayName: Haiku Critic
+        description: Reviews the haiku for syllable count and imagery.
+        prompt: |
+          Review the proposed haiku.
+          Confirm 5-7-5 syllables and comment on whether the imagery feels fresh.
+          End with exactly one of: APPROVED or REVISE, plus one sentence of reasoning.
+
+  - name: format-result
+    type: Transform
+    dependsOn:
+      - compose-haiku
+    template: |
+      # Haiku Jam Result
+
+      {{compose-haiku.output}}

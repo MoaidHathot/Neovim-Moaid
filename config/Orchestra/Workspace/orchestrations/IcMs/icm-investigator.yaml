@@ -3,7 +3,7 @@ description: |
   Investigates a single IcM incident using KQL queries, playbook-driven analysis, and log correlation. Classifies the ICM type, runs the appropriate investigation playbook, queries Kusto clusters for evidence, and produces a structured investigation report. Tracks investigation state via Zakira.Exchange to avoid re-investigating already completed incidents.
 version: 1.0.0
 tags: ["ZTS", "MSFT", "OCE", "ICM", "auto"]
-defaultModel: claude-opus-4.6
+defaultModel: gpt-5.4
 
 inputs:
   incidentId:

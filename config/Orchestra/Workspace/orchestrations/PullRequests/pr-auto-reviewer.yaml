@@ -3,7 +3,7 @@ description: |
   Discovers Pull Requests assigned to me in Azure DevOps that need review. Filters out self-authored PRs, checks review state via Zakira.Exchange and PowerReview session existence to determine which PRs need review. Invokes the pr-code-reviewer orchestration for each PR that needs review, and tracks invocation outcomes (marking failed reviews so they are retried on the next run).
 version: 1.0.0
 tags: ["ZTS", "MSFT", "PR", "Code-Review", "auto"]
-defaultModel: claude-opus-4.6
+defaultModel: gpt-5.4
 
 variables:
   organization: msazure

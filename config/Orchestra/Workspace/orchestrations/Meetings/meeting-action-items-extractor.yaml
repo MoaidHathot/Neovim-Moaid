@@ -3,7 +3,7 @@ description: |
   Processes meeting transcripts to extract action items, decisions, follow-ups, and other trackable items. Searches WorkIQ for recent meeting transcripts, analyzes them with AI, deduplicates against previously extracted items via Zakira.Exchange, and saves results as structured markdown files plus ActionView notifications.
 version: 1.0.0
 tags: ["productivity", "meetings", "action-items", "WorkIQ", "MSFT", "auto", "ZTS"]
-defaultModel: claude-opus-4.6
+defaultModel: gpt-5.4
 
 variables:
   lookBackHours: "8"

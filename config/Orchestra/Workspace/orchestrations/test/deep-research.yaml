@@ -1,0 +1,469 @@
+name: deep-research-orchestration
+description: Multi-step deep research orchestration that scopes a topic, searches the web in parallel, fetches pages, stress-tests findings, and produces a sourced report.
+version: "1.0.0"
+tags: ["research", "utils", "manual"]
+trigger:
+  type: manual
+defaultModel: gpt-5.4
+timeoutSeconds: 14400
+defaultRetryPolicy:
+  maxRetries: 1
+  backoffSeconds: 2
+  backoffMultiplier: 2
+  retryOnTimeout: true
+inputs:
+  researchRequest:
+    type: string
+    description: Multiline description of the topic, question, or problem to research.
+    required: true
+    multiline: true
+mcps:
+  - name: web-search
+    type: remote
+    endpoint: "{{env.WEB_SEARCH_MCP_ENDPOINT}}"
+    headers:
+      Authorization: "Bearer {{env.WEB_SEARCH_MCP_TOKEN}}"
+  - name: web-fetch
+    type: remote
+    endpoint: "{{env.WEB_FETCH_MCP_ENDPOINT}}"
+    headers:
+      Authorization: "Bearer {{env.WEB_FETCH_MCP_TOKEN}}"
+steps:
+  - name: validate-and-scope
+    type: Prompt
+    timeoutSeconds: 300
+    reasoningLevel: Medium
+    systemPrompt: |
+      You are a research intake analyst.
+      Convert the user's request into a precise research brief.
+
+      Produce these sections:
+      1. Research objective
+      2. Key sub-questions
+      3. Search plan
+      4. Source quality criteria
+      5. Known risks and blind spots
+
+      If the request is too vague to support meaningful research, explain what is missing and call orchestra_complete with status "failed".
+    userPrompt: |
+      Research request:
+      {{param.researchRequest}}
+    subagents:
+      - name: scope-analyst
+        displayName: Scope Analyst
+        description: Tightens the research scope and identifies ambiguity.
+        prompt: |
+          Review the research request, identify ambiguity, and define the exact scope that must be answered.
+      - name: query-designer
+        displayName: Query Designer
+        description: Designs strong search queries and source categories.
+        prompt: |
+          Turn the research request into high-signal internet search queries, alternate phrasings,
+          and source categories to prioritize.
+
+  - name: search-authoritative-sources
+    type: Prompt
+    dependsOn:
+      - validate-and-scope
+    timeoutSeconds: 900
+    reasoningLevel: High
+    mcps:
+      - web-search
+    retry:
+      maxRetries: 1
+      backoffSeconds: 2
+      backoffMultiplier: 2
+      retryOnTimeout: true
+    systemPrompt: |
+      You are a primary-source researcher.
+      Use internet search to find authoritative and primary sources for the scoped brief.
+
+      Requirements:
+      - prioritize official documents, primary data, standards bodies, peer-reviewed material, and first-party publications
+      - search broadly first, then refine
+      - return at most 8 high-value sources
+      - for each source, explain why it matters and what question it helps answer
+
+      Produce these sections:
+      1. Search summary
+      2. Prioritized authoritative sources
+      3. Coverage gaps still remaining
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+    subagents:
+      - name: primary-source-scout
+        displayName: Primary Source Scout
+        description: Finds official and primary sources.
+        prompt: |
+          Use internet search to find the most authoritative primary sources for the scoped brief.
+        mcps:
+          - web-search
+      - name: standards-scout
+        displayName: Standards Scout
+        description: Finds formal standards, papers, and institutional references.
+        prompt: |
+          Look for standards bodies, formal papers, institutional publications, and official references.
+        mcps:
+          - web-search
+
+  - name: search-broad-coverage
+    type: Prompt
+    dependsOn:
+      - validate-and-scope
+    timeoutSeconds: 900
+    reasoningLevel: High
+    mcps:
+      - web-search
+    retry:
+      maxRetries: 1
+      backoffSeconds: 2
+      backoffMultiplier: 2
+      retryOnTimeout: true
+    systemPrompt: |
+      You are a coverage researcher.
+      Use internet search to find context, competing views, historical background, and high-quality secondary sources.
+
+      Requirements:
+      - look for diverse viewpoints and context
+      - return at most 8 high-value sources
+      - highlight what these sources add beyond the primary-source lane
+      - surface overlooked angles and likely counterarguments
+
+      Produce these sections:
+      1. Search summary
+      2. Prioritized contextual sources
+      3. Counterpoints and missing angles
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+    subagents:
+      - name: context-scout
+        displayName: Context Scout
+        description: Finds contextual and explanatory sources.
+        prompt: |
+          Find high-quality contextual sources that help explain the topic and its background.
+        mcps:
+          - web-search
+      - name: dissent-scout
+        displayName: Dissent Scout
+        description: Looks for disagreement, criticism, and alternative views.
+        prompt: |
+          Find credible disagreement, criticism, or alternative interpretations relevant to the research brief.
+        mcps:
+          - web-search
+
+  - name: normalize-source-list
+    type: Transform
+    dependsOn:
+      - search-authoritative-sources
+      - search-broad-coverage
+    template: |
+      # Authoritative Sources
+      {{search-authoritative-sources.output}}
+
+      # Broad Coverage Sources
+      {{search-broad-coverage.output}}
+
+  - name: fetch-key-pages
+    type: Prompt
+    dependsOn:
+      - validate-and-scope
+      - normalize-source-list
+    timeoutSeconds: 1200
+    reasoningLevel: High
+    mcps:
+      - web-fetch
+    retry:
+      maxRetries: 1
+      backoffSeconds: 2
+      backoffMultiplier: 2
+      retryOnTimeout: true
+    systemPrompt: |
+      You are an evidence extraction specialist.
+      Fetch and read the most important pages from the normalized source list.
+
+      Requirements:
+      - fetch at most 10 pages that matter most for answering the research question
+      - extract concrete claims, dates, definitions, and data points
+      - keep exact source URLs tied to every extracted item
+      - note staleness, weak sourcing, and credibility concerns
+      - separate direct evidence from interpretation
+
+      Produce these sections:
+      1. Extracted evidence by source
+      2. Strongest supported claims
+      3. Credibility concerns
+      4. Remaining evidence gaps
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+
+      Source list:
+      {{normalize-source-list.output}}
+    subagents:
+      - name: evidence-extractor
+        displayName: Evidence Extractor
+        description: Pulls concrete evidence from fetched pages.
+        prompt: |
+          Read fetched pages carefully and extract the evidence that directly answers the research brief.
+        mcps:
+          - web-fetch
+      - name: source-auditor
+        displayName: Source Auditor
+        description: Checks source credibility and evidence quality.
+        prompt: |
+          Evaluate whether the fetched pages are current, trustworthy, and strong enough to support major claims.
+        mcps:
+          - web-fetch
+
+  - name: search-counterevidence
+    type: Prompt
+    dependsOn:
+      - validate-and-scope
+      - normalize-source-list
+    timeoutSeconds: 900
+    reasoningLevel: High
+    mcps:
+      - web-search
+      - web-fetch
+    retry:
+      maxRetries: 1
+      backoffSeconds: 2
+      backoffMultiplier: 2
+      retryOnTimeout: true
+    systemPrompt: |
+      You are a skeptical researcher.
+      Search for contradictions, counter-evidence, and unresolved gaps.
+
+      Requirements:
+      - look for reputable evidence that challenges the current likely conclusion
+      - fetch pages before relying on conflicting claims
+      - examine at most 6 counter-evidence sources
+      - surface unresolved uncertainty clearly
+
+      Produce these sections:
+      1. Contradictions and counter-evidence
+      2. Claims that remain uncertain
+      3. Missing research needed before synthesis
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+
+      Source list:
+      {{normalize-source-list.output}}
+    subagents:
+      - name: contradiction-hunter
+        displayName: Contradiction Hunter
+        description: Searches for disagreements and counter-evidence.
+        prompt: |
+          Look for reputable evidence that challenges, narrows, or contradicts the likely conclusion.
+        mcps:
+          - web-search
+          - web-fetch
+      - name: gap-analyst
+        displayName: Gap Analyst
+        description: Finds the most important unanswered questions.
+        prompt: |
+          Identify what is still missing before the research can be considered deep and trustworthy.
+        mcps:
+          - web-search
+
+  - name: normalize-evidence-pack
+    type: Transform
+    dependsOn:
+      - fetch-key-pages
+      - search-counterevidence
+    template: |
+      # Extracted Evidence
+      {{fetch-key-pages.output}}
+
+      # Counter-Evidence And Gaps
+      {{search-counterevidence.output}}
+
+  - name: research-dossier
+    type: Prompt
+    dependsOn:
+      - validate-and-scope
+      - normalize-source-list
+      - normalize-evidence-pack
+    timeoutSeconds: 1800
+    reasoningLevel: High
+    mcps:
+      - web-search
+      - web-fetch
+    infiniteSessions:
+      enabled: true
+      backgroundCompactionThreshold: 0.8
+      bufferExhaustionThreshold: 0.95
+    systemPrompt: |
+      You are the lead research coordinator.
+      Build a complete research dossier from the scoped brief, normalized source list, and normalized evidence pack.
+
+      On any rerun triggered by review feedback, treat the latest feedback as mandatory.
+      Address every item under Missing coverage, Required evidence, Open questions, and Revision guidance one by one.
+      Perform only the targeted additional search and page fetches needed to close those gaps, then rewrite the full dossier.
+
+      Requirements:
+      - answer the actual research request directly
+      - cover the important sub-questions
+      - keep source citations with URLs for every material claim
+      - distinguish facts, interpretations, and open questions
+      - surface contradictions and unresolved uncertainty
+      - do not claim confidence that the evidence does not support
+      - keep the final source index to the 12 most important sources
+
+      Produce these sections:
+      1. Coverage summary
+      2. Findings by sub-question
+      3. Key conclusions with citations
+      4. Contradictions and uncertainties
+      5. Remaining gaps
+      6. Source index
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+
+      Normalized source list:
+      {{normalize-source-list.output}}
+
+      Normalized evidence pack:
+      {{normalize-evidence-pack.output}}
+    subagents:
+      - name: synthesis-writer
+        displayName: Synthesis Writer
+        description: Builds a coherent, sourced dossier from the research record.
+        prompt: |
+          Combine the research record into a coherent dossier that answers the research brief and preserves citations.
+      - name: evidence-gap-closer
+        displayName: Evidence Gap Closer
+        description: Performs only the extra research needed to satisfy review feedback.
+        prompt: |
+          When the dossier has missing evidence or coverage, use the available web tools to close only those specific gaps.
+        mcps:
+          - web-search
+          - web-fetch
+
+  - name: quality-review
+    type: Prompt
+    dependsOn:
+      - validate-and-scope
+      - research-dossier
+    timeoutSeconds: 300
+    reasoningLevel: Medium
+    systemPrompt: |
+      You are the quality gate for a deep research pipeline.
+      Review the dossier against the original request and scoped brief.
+
+      Approve only if all of the following are true:
+      - it answers the user's actual question
+      - the important sub-questions are covered
+      - material claims are backed by cited sources
+      - major uncertainties and contradictions are surfaced
+      - the research is deep rather than superficial
+
+      Your response must use exactly one of these final decision lines:
+      - FINAL_DECISION: APPROVED
+      - FINAL_DECISION: REVISE
+
+      If you choose REVISE, include these sections:
+      1. Missing coverage
+      2. Required evidence
+      3. Open questions
+      4. Revision guidance for the target step
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+
+      Research dossier:
+      {{research-dossier.output}}
+    subagents:
+      - name: intent-guardian
+        displayName: Intent Guardian
+        description: Ensures the dossier stays aligned to the user's real question.
+        prompt: |
+          Check whether the dossier answers the user's real question and covers the required scope.
+      - name: evidence-guardian
+        displayName: Evidence Guardian
+        description: Ensures the dossier is properly sourced and trustworthy.
+        prompt: |
+          Check whether important claims have credible support and whether weak evidence remains.
+    loop:
+      target: research-dossier
+      maxIterations: 3
+      exitPattern: "FINAL_DECISION: APPROVED"
+
+  - name: enforce-approval
+    type: Prompt
+    dependsOn:
+      - quality-review
+    timeoutSeconds: 120
+    systemPrompt: |
+      You are the enforcement gate.
+      If the quality review contains FINAL_DECISION: APPROVED, respond with APPROVED FOR REPORT.
+      Otherwise, call orchestra_complete with status "failed" and explain that the dossier did not pass review within the allowed iterations.
+    userPrompt: |
+      Quality review result:
+      {{quality-review.output}}
+
+  - name: write-final-report
+    type: Prompt
+    dependsOn:
+      - research-dossier
+      - enforce-approval
+    timeoutSeconds: 600
+    reasoningLevel: Medium
+    systemPrompt: |
+      You are a senior research writer.
+      Turn the approved dossier into a polished markdown research report.
+
+      Requirements:
+      - lead with the direct answer or most important conclusion
+      - preserve nuance where evidence is mixed or uncertain
+      - distinguish facts from interpretation
+      - include source URLs or clearly labeled source references inline
+      - end with open questions and next research steps
+
+      Format the report with these sections:
+      1. Executive summary
+      2. Detailed findings
+      3. Evidence and sources
+      4. Uncertainties and caveats
+      5. Next steps
+    userPrompt: |
+      Original request:
+      {{param.researchRequest}}
+
+      Approved dossier:
+      {{research-dossier.output}}
+
+  - name: finalize-output
+    type: Transform
+    dependsOn:
+      - write-final-report
+    template: |
+      # Deep Research Report
+
+      ## Original Request
+      {{param.researchRequest}}
+
+      ## Report
+      {{write-final-report.output}}
