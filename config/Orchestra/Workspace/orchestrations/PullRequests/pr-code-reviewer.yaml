@@ -1,6 +1,6 @@
 name: pr-code-reviewer
 description: |
-  Reviews a single Pull Request using four expert reviewers (.NET Expert, Principal Software Engineer, Security Expert, DurableTasksFramework Expert) each with subagents for documentation lookup, code analysis, and test coverage checks. Uses PowerReview MCP to create review sessions and leave draft comments. Correlates with WorkIQ for meeting notes, chats, emails, and documents related to the PR. Tracks PR review state via Zakira.Exchange. Produces an ActionView summary of all findings.
+  Reviews a single Pull Request using six expert reviewers (.NET Expert, Principal Software Engineer, Security Expert, DurableTasksFramework Expert, Lior Abadi persona, Ohad Schneider persona). The core expert reviewers use subagents for documentation lookup, code analysis, and test coverage checks, while the persona reviewers run as prompt-based reviewers. Uses PowerReview MCP to create review sessions and leave draft comments. Correlates with WorkIQ for meeting notes, chats, emails, and documents related to the PR. Tracks PR review state via Zakira.Exchange. Produces an ActionView summary of all findings.
 version: 1.0.0
 tags: ["ZTS", "MSFT", "PR", "Code-Review", "auto"]
 defaultModel: gpt-5.4
@@ -19,6 +19,11 @@ variables:
   reviewerName: Moaid Hathot
   repoLocalPath: "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS"
   zakiraCategory: pr-code-review-state
+  personasDir: "./Personas"
+  liorAbadiDir: "{{vars.personasDir}}/LiorAbadi"
+  liorAbadiSkillsDir: "{{vars.liorAbadiDir}}/Skills"
+  ohadSchneiderDir: "{{vars.personasDir}}/OhadSchneider"
+  ohadSchneiderSkillsDir: "{{vars.ohadSchneiderDir}}/Skills"
   skillsDirPowerReview: "./skills-powerreview"
   skillsDirActionView: "./skills-actionview"
   promptsDir: "P:\\Github\\OrcStra-Uruk\\Prompts\\PR-Reviews"
@@ -29,8 +34,8 @@ defaultRetryPolicy:
   backoffMultiplier: 2.0
   retryOnTimeout: true
 
-defaultStepTimeoutSeconds: 900
-timeoutSeconds: 7200
+defaultStepTimeoutSeconds: 1000
+timeoutSeconds: 15000
 
 mcps:
   - name: zakira
@@ -176,7 +181,6 @@ steps:
     outputHandlerPrompt: |
       Return a concise context summary a reviewer can quickly read to understand the 'why' behind the changes.
     mcps: [azdo]
-    timeoutSeconds: 600
 
   - name: workiq-context
     type: Prompt
@@ -344,7 +348,6 @@ steps:
       }
     mcps: [powerreview]
     reasoningLevel: High
-    timeoutSeconds: 600
     skillDirectories:
       - "{{vars.skillsDirPowerReview}}"
     subagents:
@@ -434,7 +437,6 @@ steps:
       }
     mcps: [powerreview]
     reasoningLevel: High
-    timeoutSeconds: 600
     skillDirectories:
       - "{{vars.skillsDirPowerReview}}"
     subagents:
@@ -534,7 +536,6 @@ steps:
       }
     mcps: [powerreview]
     reasoningLevel: High
-    timeoutSeconds: 600
     skillDirectories:
       - "{{vars.skillsDirPowerReview}}"
     subagents:
@@ -596,9 +597,33 @@ steps:
         mcps: [powerreview]
         infer: true
 
+  - name: review-lior-abadi
+    type: Prompt
+    dependsOn: [fetch-pr-diff, open-review-session, fetch-work-items]
+    systemPromptFile: "{{vars.liorAbadiDir}}/pr.persona.liorAbadi.systemPrompt.md"
+    userPromptFile: "{{vars.liorAbadiDir}}/pr.persona.liorAbadi.userPrompt.md"
+    model: claude-opus-4.6
+    mcps: [powerreview]
+    reasoningLevel: High
+    skillDirectories:
+      - "{{vars.liorAbadiSkillsDir}}"
+      - "{{vars.skillsDirPowerReview}}"
+
+  - name: review-ohad-schneider
+    type: Prompt
+    dependsOn: [fetch-pr-diff, open-review-session, fetch-work-items]
+    systemPromptFile: "{{vars.ohadSchneiderDir}}/pr.persona.ohadSchneider.systemPrompt.md"
+    userPromptFile: "{{vars.ohadSchneiderDir}}/pr.persona.ohadSchneider.userPrompt.md"
+    model: claude-opus-4.6
+    mcps: [powerreview]
+    reasoningLevel: High
+    skillDirectories:
+      - "{{vars.ohadSchneiderSkillsDir}}"
+      - "{{vars.skillsDirPowerReview}}"
+
   - name: consolidate-reviews
     type: Prompt
-    dependsOn: [review-dotnet-expert, review-principal-engineer, review-security-expert, review-durable-tasks-expert, workiq-context]
+    dependsOn: [review-dotnet-expert, review-principal-engineer, review-security-expert, review-durable-tasks-expert, review-lior-abadi, review-ohad-schneider, workiq-context]
     systemPrompt: |
       You are a review consolidation assistant. You combine the findings from multiple expert reviewers into a unified review summary. You also incorporate contextual intelligence from WorkIQ to flag any requirements misalignment.
 
@@ -628,6 +653,12 @@ steps:
       ## Durable Tasks Expert Review
       {{review-durable-tasks-expert.output}}
 
+      ## Lior Abadi Persona Review
+      {{review-lior-abadi.output}}
+
+      ## Ohad Schneider Persona Review
+      {{review-ohad-schneider.output}}
+
       ## WorkIQ Context & Requirements Alignment
       {{workiq-context.output}}
 
@@ -651,7 +682,6 @@ steps:
       }
 
       Use orchestra_save_file to save this consolidated report.
-    timeoutSeconds: 600
 
   - name: save-review-state
     type: Prompt
@@ -683,7 +713,7 @@ steps:
 
       Output confirmation of what was saved.
     mcps: [zakira]
-    timeoutSeconds: 60
+    timeoutSeconds: 120
 
   - name: fetch-action-view-schema
     type: Command
@@ -693,7 +723,6 @@ steps:
       - "--yes"
       - "--"
       - schema
-    timeoutSeconds: 600
 
   - name: create-action-view-entry
     type: Prompt
@@ -749,7 +778,6 @@ steps:
     mcps: [powerreview]
     skillDirectories:
       - "{{vars.skillsDirActionView}}"
-    timeoutSeconds: 600
 
   - name: submit-action-view-entry
     type: Command
@@ -762,7 +790,6 @@ steps:
       - add
       - "--file"
       - "{{create-action-view-entry.files[0]}}"
-    timeoutSeconds: 600
 
   - name: generate-summary
     type: Prompt
@@ -790,4 +817,3 @@ steps:
       6. Requirements alignment status
       7. Confirmation that review state was saved and ActionView entry submitted
       8. List of any errors or notes
-    timeoutSeconds: 60
