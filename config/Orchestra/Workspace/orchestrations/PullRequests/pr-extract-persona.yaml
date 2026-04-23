@@ -2,12 +2,14 @@ name: pr-extract-persona
 description: |
   Mines an engineer's last 200 PR review comments from Azure DevOps and uses
   gpt-5.4 with high reasoning to distill their reviewing expertise into a
-  reusable Agent Skill (per agentskills.io spec) plus a companion prompt that
-  another agent can use to review a PR through that engineer's persona.
+  reusable Agent Skill (per agentskills.io spec) plus companion system and
+  user prompts that another agent can use to review a PR through that
+  engineer's persona.
 
-  The generated Skill (SKILL.md with YAML frontmatter) and the matching prompt
-  are saved under the PullRequests directory so they can be wired into
-  pr-code-reviewer manually as an additional reviewer step.
+  The generated Skill (SKILL.md with YAML frontmatter) and the matching split
+  prompts are saved under a dedicated persona directory under PullRequests so
+  they can be wired into pr-code-reviewer manually as an additional reviewer
+  step.
 version: 1.0.0
 tags: ["PR", "Code-Review", "persona", "skills", "MSFT", "manual"]
 defaultModel: gpt-5.4
@@ -35,8 +37,7 @@ inputs:
 variables:
   organization: msazure
   maxComments: "200"
-  skillsOutputDir: "P:\\Github\\Neovim-Moaid\\config\\Orchestra\\workspace\\orchestrations\\PullRequests\\skills"
-  promptsOutputDir: "P:\\Github\\Neovim-Moaid\\config\\Orchestra\\workspace\\orchestrations\\PullRequests\\prompts"
+  personasOutputDir: "{{env.XDG_CONFIG_HOME}}/Orchestra/workspace/orchestrations/PullRequests/Personas"
 
 defaultRetryPolicy:
   maxRetries: 2
@@ -74,7 +75,8 @@ steps:
         "alias": "...",
         "descriptor": "...",
         "id": "...",
-        "slug": "<lowercased alias, spaces and special chars replaced by hyphens, max 40 chars>"
+        "slug": "<lowercased alias, spaces and special chars replaced by hyphens, max 40 chars>",
+        "personaDirectoryName": "<PascalCase directory name suitable for PullRequests/Personas, based on the engineer name or alias>"
       }
     mcps: [azdo]
 
@@ -241,8 +243,8 @@ steps:
          - Confidence notes (mention which guidance is tentative)
       6. Save the result as a single file using orchestra_save_file with
          extension 'md'. The file name MUST be 'SKILL.md' but include the
-         engineer slug in the suggested path so it is unique:
-         'persona-<slug>/SKILL.md'
+         target persona structure in the suggested path so it is unique:
+         '<PascalCasePersonaName>/Skills/persona-<slug>/SKILL.md'
       7. After saving, output JSON:
          {
            "skillName": "pr-review-as-<slug>",
@@ -258,55 +260,44 @@ steps:
 
       Generate the SKILL.md and save it.
 
-  - name: generate-prompt
+  - name: generate-system-prompt
     type: Prompt
     dependsOn: [resolve-engineer, analyze-persona, generate-skill]
     model: gpt-5.4
     systemPrompt: |
-      You generate a reusable PR review prompt that another orchestration step
-      can drop in alongside the matching Skill produced in the previous step.
+      You generate a reusable PR review system prompt that another
+      orchestration step can drop in alongside the matching Skill produced in
+      the previous step.
 
-      The prompt must be a markdown file with two parts:
-        1. A short YAML-style frontmatter block with: name, description,
-           skill, model, reasoningLevel
-        2. A "System prompt" section and a "User prompt" section -- both
-           templated so they can be pasted into a Prompt step in a YAML
-           orchestration
+      The prompt must be a single markdown file containing ONLY the system
+      prompt content. Do not include frontmatter, code fences, a user prompt
+      section, or explanatory text.
 
       Rules:
       1. The prompt's purpose is: review a single PR through this engineer's
          persona by activating the matching Skill
       2. The system prompt should:
          - Instruct the agent to load and apply the skill 'pr-review-as-<slug>'
-         - Reiterate the engineer's top domains and red flags (briefly,
-           keeping the skill as the source of truth)
-         - Tell the agent to leave only substantive comments -- no
-           rubber-stamps, no nitpicks unrelated to the persona's expertise
-         - Tell the agent to cite specific lines / files when commenting
-         - Tell the agent to surface explicitly when it has nothing in scope
-           to add (so the merging step knows)
-      3. The user prompt should accept these template variables (use Orchestra
-         double-curly placeholder syntax so it is drop-in for a Prompt step in
-         pr-code-reviewer.yaml). The names MUST match what pr-code-reviewer.yaml
-         already produces:
-         - the PR metadata block, available as the output of the
-           prepare-pr-data step
-         - the diff to review, available as the output of the fetch-pr-diff
-           step
-         Emit those placeholders in the generated user prompt verbatim using
-         Orchestra's standard step-output reference form: a double opening
-         curly brace, then the step name, a dot, the word output, then a
-         double closing curly brace.
-      4. Output schema the agent should produce: a JSON object with
-         { "personaComments": [ { "filePath", "lineNumber", "comment",
-         "category" } ], "outOfScope": <bool>, "summary": "<1-3 sentences>" }
+         - Reiterate the engineer's top domains and red flags briefly, keeping
+           the skill as the source of truth
+         - Tell the agent to leave only substantive comments: no rubber-stamps,
+           no generic praise, and no nitpicks unrelated to the persona's expertise
+         - Explicitly state that creating comments is not mandatory and zero
+           comments is a valid outcome
+         - Tell the agent to cite specific lines and files when commenting
+         - Tell the agent to say clearly when it has nothing in scope to add
+      3. Keep the skill as the source of truth. Summarize the persona briefly,
+         do not duplicate the entire skill.
+      4. The system prompt should align to pr-code-reviewer.yaml, where the
+         reviewer uses PowerReview to create draft comments and returns a
+         reviewer summary JSON object.
       5. Save the result using orchestra_save_file with extension 'md'.
-         File name: 'pr-review-as-<slug>.md'
+         File name: 'pr.persona.<slug>.systemPrompt.md'
       6. After saving, output JSON:
          {
-           "promptName": "pr-review-as-<slug>",
+           "promptName": "pr.persona.<slug>.systemPrompt",
            "savedFile": "<path returned by orchestra_save_file>",
-           "promptContent": "<full prompt markdown>"
+           "promptContent": "<full system prompt markdown>"
          }
     userPrompt: |
       Engineer identity:
@@ -318,29 +309,103 @@ steps:
       Skill that was just generated:
       {{generate-skill.output}}
 
-      Generate the matching PR review prompt and save it.
+      Generate the matching PR review system prompt and save it.
+
+  - name: generate-user-prompt
+    type: Prompt
+    dependsOn: [resolve-engineer, analyze-persona, generate-skill, generate-system-prompt]
+    model: gpt-5.4
+    systemPrompt: |
+      You generate a reusable PR review user prompt that another
+      orchestration step can drop in alongside the matching Skill and system
+      prompt produced in previous steps.
+
+      The prompt must be a single markdown file containing ONLY the user prompt
+      content. Do not include frontmatter, a system prompt section, code
+      fences, or explanatory text.
+
+      Rules:
+      1. The prompt's purpose is: review a single PR through this engineer's
+         persona by activating the matching Skill and following the supplied
+         system prompt
+      2. The user prompt MUST accept these Orchestra placeholders verbatim so
+         it is drop-in for a Prompt step in pr-code-reviewer.yaml:
+         - {{prepare-pr-data.output}}
+         - {{fetch-pr-diff.output}}
+         - {{fetch-work-items.output}}
+         - {{open-review-session.output}}
+      3. The prompt should instruct the reviewer to:
+         - focus only on substantive, in-scope issues this persona would
+           realistically raise
+         - leave draft comments only if meaningful issues are found
+         - treat zero comments as valid when there is nothing substantive to add
+         - use the PowerReview MCP CreateComment tool with the PR URL from the
+           review session data
+         - keep one issue per comment
+         - include the exact agentName string to use when calling CreateComment
+           or ReplyToThread
+         - return a JSON summary shaped for pr-code-reviewer.yaml:
+           {
+             "reviewer": "<Engineer Name>",
+             "commentsLeft": <count, may be 0>,
+             "criticalIssues": <count>,
+             "outOfScope": true/false,
+             "summary": "1-3 sentences",
+             "status": "approved|approved-with-suggestions|needs-work"
+           }
+      4. Save the result using orchestra_save_file with extension 'md'.
+         File name: 'pr.persona.<slug>.userPrompt.md'
+      5. After saving, output JSON:
+         {
+           "promptName": "pr.persona.<slug>.userPrompt",
+           "savedFile": "<path returned by orchestra_save_file>",
+           "promptContent": "<full user prompt markdown>"
+         }
+    userPrompt: |
+      Engineer identity:
+      {{resolve-engineer.output}}
+
+      Persona analysis:
+      {{analyze-persona.output}}
+
+      Skill that was just generated:
+      {{generate-skill.output}}
+
+      System prompt that was just generated:
+      {{generate-system-prompt.output}}
+
+      Generate the matching PR review user prompt and save it.
 
   - name: copy-outputs-to-disk
     type: Prompt
-    dependsOn: [generate-skill, generate-prompt]
+    dependsOn: [generate-skill, generate-system-prompt, generate-user-prompt]
     systemPrompt: |
-      You are a file management agent. Copy the generated SKILL.md and prompt
-      markdown files to their final destinations on disk so they are
-      discoverable for manual wiring into pr-code-reviewer.
+      You are a file management agent. Copy the generated SKILL.md, system
+      prompt, and user prompt markdown files to their final destinations on
+      disk so they are discoverable for manual wiring into pr-code-reviewer.
 
       Rules:
-      1. Read the skill file produced by generate-skill using
-         orchestra_read_file
-      2. Read the prompt file produced by generate-prompt using
-         orchestra_read_file
-      3. Ensure the target directories exist:
-         - {{vars.skillsOutputDir}}\persona-<slug>\
-         - {{vars.promptsOutputDir}}\
-      4. Write the skill to '{{vars.skillsOutputDir}}\persona-<slug>\SKILL.md'
-      5. Write the prompt to '{{vars.promptsOutputDir}}\pr-review-as-<slug>.md'
-      6. Do NOT overwrite an existing file silently -- if a file already
+      1. Read the skill file produced by generate-skill using orchestra_read_file
+      2. Read the system prompt file produced by generate-system-prompt using orchestra_read_file
+      3. Read the user prompt file produced by generate-user-prompt using orchestra_read_file
+      4. Ensure the target directories exist:
+         - {{vars.personasOutputDir}}\<PascalCasePersonaName>\
+         - {{vars.personasOutputDir}}\<PascalCasePersonaName>\Skills\persona-<slug>\
+      5. Write the skill to:
+         '{{vars.personasOutputDir}}\<PascalCasePersonaName>\Skills\persona-<slug>\SKILL.md'
+      6. Write the system prompt to:
+         '{{vars.personasOutputDir}}\<PascalCasePersonaName>\pr.persona.<slug>.systemPrompt.md'
+      7. Write the user prompt to:
+         '{{vars.personasOutputDir}}\<PascalCasePersonaName>\pr.persona.<slug>.userPrompt.md'
+      8. Do NOT overwrite an existing file silently -- if a file already
          exists, append a suffix '-v2', '-v3', etc.
-      7. Report the final on-disk paths
+      9. Report the final on-disk paths as JSON with fields:
+         {
+           "personaDirectory": "...",
+           "skillPath": "...",
+           "systemPromptPath": "...",
+           "userPromptPath": "..."
+         }
     userPrompt: |
       Engineer:
       {{resolve-engineer.output}}
@@ -348,10 +413,14 @@ steps:
       Generated skill:
       {{generate-skill.output}}
 
-      Generated prompt:
-      {{generate-prompt.output}}
+      Generated system prompt:
+      {{generate-system-prompt.output}}
 
-      Copy both files to their destinations and report the final paths.
+      Generated user prompt:
+      {{generate-user-prompt.output}}
+
+      Copy all three files to their persona directory destinations and report
+      the final paths.
 
   - name: summarize-run
     type: Transform
@@ -360,7 +429,8 @@ steps:
       - fetch-review-comments
       - analyze-persona
       - generate-skill
-      - generate-prompt
+      - generate-system-prompt
+      - generate-user-prompt
       - copy-outputs-to-disk
     template: |
       # PR Review Persona Extraction
@@ -377,13 +447,16 @@ steps:
       ## Generated Skill
       {{generate-skill.output}}
 
-      ## Generated Prompt
-      {{generate-prompt.output}}
+      ## Generated System Prompt
+      {{generate-system-prompt.output}}
+
+      ## Generated User Prompt
+      {{generate-user-prompt.output}}
 
       ## Files written to disk
       {{copy-outputs-to-disk.output}}
 
       ## Next step
       Manually add a new Prompt step to pr-code-reviewer.yaml that uses the
-      saved prompt above and references the saved skill via its 'name' field
-      from SKILL.md frontmatter.
+      saved systemPromptFile and userPromptFile above and references the saved
+      skill directory from the persona's Skills folder.
