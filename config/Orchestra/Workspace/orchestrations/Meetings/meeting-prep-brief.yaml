@@ -6,7 +6,7 @@ tags: ["productivity", "meetings", "WorkIQ", "MSFT", "auto", "ZTS"]
 defaultModel: gpt-5.4
 
 variables:
-  lookAheadHours: "6"
+  lookAheadHours: "10"
   briefingsDir: "C:\\Users\\moaid\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\Meeting Briefs"
   zakiraCategory: meeting-prep-state
   organization: msazure
@@ -20,8 +20,8 @@ defaultRetryPolicy:
   backoffMultiplier: 2.0
   retryOnTimeout: true
 
-defaultStepTimeoutSeconds: 600
-timeoutSeconds: 3600
+defaultStepTimeoutSeconds: 1200
+timeoutSeconds: 10000
 
 mcps:
   - name: workiq
@@ -66,12 +66,11 @@ steps:
       {
         "currentDateTime": "<ISO-8601 in the user's local timezone, e.g. 2026-04-19T14:30:00>",
         "windowEndDateTime": "<currentDateTime + {{vars.lookAheadHours}} hours, same format>",
-        "timeZone": "<IANA name, e.g. America/Los_Angeles>"
+        "timeZone": "<name of "timeZone" from response, e.g. Pacific Standard Time>"
       }
 
       Do not include any other text. Just the JSON object.
     mcps: [calendar]
-    timeoutSeconds: 120
 
   - name: discover-meetings
     type: Prompt
@@ -94,7 +93,6 @@ steps:
 
       If no meetings are found, call orchestra_complete to end early.
     mcps: [calendar]
-    timeoutSeconds: 300
 
   - name: check-already-briefed
     type: Prompt
@@ -114,7 +112,6 @@ steps:
 
       Check Zakira.Exchange for each meeting. Determine which ones need new briefs.
     mcps: [zakira]
-    timeoutSeconds: 120
 
   - name: gather-email-context
     type: Prompt
@@ -266,7 +263,6 @@ steps:
       {{gather-m365-copilot-context.output}}
 
       Merge into a single deduplicated context object per meeting.
-    timeoutSeconds: 300
 
   - name: generate-briefs
     type: Prompt
@@ -320,7 +316,6 @@ steps:
 
       Generate a preparation brief for each meeting. Save each as a separate markdown file.
     reasoningLevel: Medium
-    timeoutSeconds: 900
 
   - name: save-briefs-to-disk
     type: Prompt
@@ -344,7 +339,6 @@ steps:
       Briefings directory: {{vars.briefingsDir}}
 
       Read each brief file and save a copy to the briefings directory with a date-prefixed filename. Make sure the directory exists first.
-    timeoutSeconds: 120
 
   - name: mark-meetings-briefed
     type: Prompt
@@ -366,7 +360,6 @@ steps:
 
       Mark each briefed meeting in Zakira.Exchange.
     mcps: [zakira]
-    timeoutSeconds: 120
 
   - name: create-actionview-entry
     type: Prompt
@@ -399,7 +392,6 @@ steps:
       {{save-briefs-to-disk.output}}
 
       Create an ActionView entry summarizing these meeting briefs. Save as JSON.
-    timeoutSeconds: 120
 
   - name: submit-actionview-entry
     type: Prompt
@@ -419,7 +411,6 @@ steps:
 
       Read the file and invoke the actionview-submit orchestration to submit it.
     mcps: [orchestra]
-    timeoutSeconds: 360
 
   - name: generate-summary
     type: Prompt
@@ -448,4 +439,3 @@ steps:
 
       ActionView submission:
       {{submit-actionview-entry.output}}
-    timeoutSeconds: 60

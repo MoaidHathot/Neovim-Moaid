@@ -8,7 +8,7 @@ description: |
 version: 1.0.0
 tags: ["debug", "diagnostics", "m365", "calendar"]
 defaultModel: gpt-5.4
-defaultStepTimeoutSeconds: 180
+defaultStepTimeoutSeconds: 380
 
 steps:
   - name: get-timezone
@@ -23,8 +23,8 @@ steps:
       Then output ONLY a JSON object with these fields:
       {
         "currentDateTime": "<ISO-8601 in the user's local timezone, e.g. 2026-04-19T14:30:00>",
-        "windowEndDateTime": "<currentDateTime + 6 hours, same format>",
-        "timeZone": "<IANA name, e.g. America/Los_Angeles>"
+        "windowEndDateTime": "<currentDateTime + 10 hours, same format>",
+        "timeZone": "<name of "timeZone" from response, e.g. Pacific Standard Time>"
       }
 
       Do not include any other text. Just the JSON object.
@@ -62,7 +62,7 @@ steps:
     systemPrompt: |
       You are a diagnostics assistant. Call the Calendar MCP tool
       ListCalendarView to enumerate events that fall within the supplied
-      6-hour window. Do not call any other tools.
+      10-hour window. Do not call any other tools.
     userPrompt: |
       Use ListCalendarView to list all calendar events between
       currentDateTime and windowEndDateTime from this timezone payload:
