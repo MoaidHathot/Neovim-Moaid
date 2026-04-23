@@ -72,8 +72,10 @@
 			"type": "local",
 			"command": "dnx",
 			"arguments": [
-				"PowerReview",
 				"--yes",
+				"--add-source",
+				"https://api.nuget.org/v3/index.json",
+				"PowerReview",
 				"--",
 				"mcp"
 			]
