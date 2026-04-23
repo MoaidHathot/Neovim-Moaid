@@ -1,13 +1,18 @@
 name: meeting-action-items-extractor
 description: |
-  Processes meeting transcripts to extract action items, decisions, follow-ups, and other trackable items. Searches WorkIQ for recent meeting transcripts, analyzes them with AI, deduplicates against previously extracted items via Zakira.Exchange, and saves results as structured markdown files plus ActionView notifications.
+  Processes recent meetings to extract action items, decisions, follow-ups,
+  and other trackable items. Uses the shared Calendar MCP to discover recent
+  meetings, gathers meeting context from WorkIQ and the shared m365-copilot MCP,
+  analyzes transcripts and other meeting-related evidence, deduplicates
+  against previously extracted items via Zakira.Exchange, and saves results as
+  structured markdown files plus ActionView notifications.
 version: 1.0.0
 tags: ["productivity", "meetings", "action-items", "WorkIQ", "MSFT", "auto", "ZTS"]
 defaultModel: gpt-5.4
 
 variables:
   lookBackHours: "8"
-  actionItemsDir: "C:\\Users\\moaid\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\Meeting Action Items"
+  actionItemsDir: 'C:\Users\moaid\OneDrive - Microsoft\Notes\Obsidian\Work\OrcStra\Meeting Action Items'
   zakiraCategory: meeting-action-items-state
   myName: Moaid Hathot
   myAlias: moaid
@@ -18,8 +23,8 @@ defaultRetryPolicy:
   backoffMultiplier: 2.0
   retryOnTimeout: true
 
-defaultStepTimeoutSeconds: 600
-timeoutSeconds: 3600
+defaultStepTimeoutSeconds: 1200
+timeoutSeconds: 10600
 
 mcps:
   - name: workiq
@@ -51,119 +56,297 @@ trigger:
   intervalSeconds: 28800
 
 steps:
-  - name: discover-recent-meetings
+  - name: get-timezone
     type: Prompt
     systemPrompt: |
-      You are a meeting transcript discovery agent. Your job is to find meetings from the past {{vars.lookBackHours}} hours that have transcripts or recordings available.
+      You are a timezone resolution agent. Call the Calendar MCP tool
+      GetUserDateAndTimeZoneSettings to resolve the user's current date,
+      time, and IANA timezone. Do not call any other tools.
+    userPrompt: |
+      Use GetUserDateAndTimeZoneSettings to fetch the user's timezone settings.
+
+      Then output ONLY a JSON object with these fields:
+      {
+        "currentDateTime": "<ISO-8601 in the user's local timezone>",
+        "windowStartDateTime": "<currentDateTime - {{vars.lookBackHours}} hours, same format>",
+        "timeZone": "<IANA name>"
+      }
+
+      Do not include any other text. Just the JSON object.
+    mcps: [calendar]
+
+  - name: discover-recent-meetings
+    type: Prompt
+    dependsOn: [get-timezone]
+    systemPrompt: |
+      You are a meeting discovery agent. Your job is to find all meetings from
+      the last {{vars.lookBackHours}} hours using the shared Calendar MCP.
 
       Rules:
-      1. Use WorkIQ to search for meetings that occurred in the last {{vars.lookBackHours}} hours
-      2. For each meeting found, check if a transcript is available
-      3. Include meetings where you attended (not just organized)
-      4. Exclude: cancelled meetings, meetings you declined, focus time blocks
-      5. For each meeting with a transcript, extract: meeting title, date/time, organizer, attendees, duration, transcript content (or as much as available)
-      6. If no meetings with transcripts are found, call orchestra_complete with status 'success' and reason 'No meetings with transcripts found in the last {{vars.lookBackHours}} hours'
-      7. Output a JSON array of meetings with their transcript content
+      1. Call ListCalendarView with the start and end times provided by the
+         previous step (windowStartDateTime and currentDateTime in the user's
+         IANA timezone)
+      2. Include meetings I organized or attended: 1:1s, standups, reviews,
+         design sessions, syncs, interviews, and ad hoc calls
+      3. Exclude: cancelled meetings, focus time blocks, OOF blocks, and
+         placeholder all-day events
+      4. For each meeting, extract as much metadata as available:
+         title, start time, end time, organizer, attendees, body/agenda,
+         meeting link, recurrence info, and event id if available
+      5. If there are ZERO meetings in the window, call orchestra_complete
+         with status 'success' and reason 'No meetings in the last {{vars.lookBackHours}} hours'
+      6. Output a JSON array of meeting objects
     userPrompt: |
-      Find all my meetings from the last {{vars.lookBackHours}} hours that have transcripts available. I am {{vars.myName}} ({{vars.myAlias}}). Use WorkIQ to search calendar and find transcripts.
+      Timezone and window:
+      {{get-timezone.output}}
 
-      If no meetings with transcripts exist, call orchestra_complete to end early.
-    mcps: [workiq]
+      Use ListCalendarView from the shared Calendar MCP to query my calendar
+      for the recent window above. Return each meeting with all available
+      details.
+
+      If no meetings are found, call orchestra_complete to end early.
+    mcps: [calendar]
 
   - name: check-already-processed
     type: Prompt
     dependsOn: [discover-recent-meetings]
     systemPrompt: |
-      You are a deduplication agent. Check which meeting transcripts have already been processed using Zakira.Exchange.
+      You are a deduplication agent. Check which meetings have already been
+      processed using Zakira.Exchange.
 
       Rules:
-      1. For each meeting, generate a key: 'transcript-<date>-<normalized-title>' where date is YYYY-MM-DD-HHmm and normalized-title is lowercase with spaces replaced by hyphens, truncated to 50 chars
+      1. For each meeting, generate a key: 'meeting-<date>-<normalized-title>'
+         where date is YYYY-MM-DD-HHmm and normalized-title is lowercase with
+         spaces replaced by hyphens, truncated to 50 chars
       2. Check Zakira.Exchange using get_memory for each key
       3. If a record exists with status 'processed', mark the meeting as 'skip'
       4. If no record exists or status is 'failed', mark as 'needs-processing'
-      5. If ALL meetings are 'skip', call orchestra_complete with status 'success' and reason 'All recent meeting transcripts already processed'
+      5. If ALL meetings are 'skip', call orchestra_complete with status
+         'success' and reason 'All recent meetings already processed'
       6. Output JSON with: meetingsToProcess and meetingsSkipped arrays
     userPrompt: |
-      Discovered meetings with transcripts:
+      Discovered recent meetings:
       {{discover-recent-meetings.output}}
 
-      Check Zakira.Exchange to see which ones have already been processed.
+      Check Zakira.Exchange to see which meetings have already been processed.
     mcps: [zakira]
-    timeoutSeconds: 180
 
-  - name: extract-action-items
+  - name: gather-workiq-meeting-context
     type: Prompt
     dependsOn: [check-already-processed]
     systemPrompt: |
-      You are an expert meeting transcript analyzer. Your job is to carefully read meeting transcripts and extract ALL actionable items, decisions, and things that need tracking.
+      You are a meeting context research agent using ONLY the WorkIQ MCP.
+
+      For each meeting that needs processing, gather all useful evidence that
+      can help identify action items or trackable outcomes.
+
+      Search across:
+      1. Meeting transcripts or transcript snippets if available
+      2. Meeting recordings, recaps, or summaries if WorkIQ can surface them
+      3. Follow-up emails related to the meeting
+      4. Teams chats or channel threads related to the meeting
+      5. Meeting notes or documents related to the discussed topic
+      6. Previous occurrences of recurring meetings in the last 30 days
+
+      For each meeting, capture:
+      - transcript availability status: full|partial|none|unknown
+      - transcript or recap content if available
+      - supporting artifacts from email/chat/docs/past meetings
+      - short notes on likely action items, decisions, follow-ups, blockers,
+        or open questions suggested by the evidence
+
+      Output JSON keyed by meeting identifier.
+    userPrompt: |
+      Meetings needing processing:
+      {{check-already-processed.output}}
+
+      I am {{vars.myName}} ({{vars.myAlias}}).
+
+      Use WorkIQ to gather meeting transcripts when available, plus any other
+      meeting-related evidence that can help identify action items or outcomes.
+      Do not limit yourself to transcript-only evidence.
+    mcps: [workiq]
+
+  - name: gather-m365-copilot-meeting-context
+    type: Prompt
+    dependsOn: [check-already-processed]
+    systemPrompt: |
+      You are a meeting context research agent using ONLY the shared
+      m365-copilot MCP.
+
+      For each meeting that needs processing, gather all relevant meeting
+      evidence, not just transcript text.
+
+      Search across:
+      1. Meeting transcript, recording recap, or AI-generated meeting summary
+      2. Emails, Teams chats, documents, and shared files related to the meeting
+      3. Follow-up messages after the meeting
+      4. Previous occurrences or earlier notes for recurring meetings
+
+      Prioritize content containing:
+      - explicit or implicit action items
+      - decisions made
+      - unresolved questions
+      - blockers, risks, or commitments
+
+      Output JSON keyed by meeting identifier, including transcript/recap
+      availability and the most relevant evidence per meeting.
+    userPrompt: |
+      Meetings needing processing:
+      {{check-already-processed.output}}
+
+      Use m365-copilot to gather meeting transcripts/recaps if available and
+      any other relevant context that may contain action items or meeting
+      outcomes. Do not rely on transcript-only evidence.
+    mcps: [m365-copilot]
+
+  - name: merge-meeting-context
+    type: Prompt
+    dependsOn:
+      - check-already-processed
+      - gather-workiq-meeting-context
+      - gather-m365-copilot-meeting-context
+    systemPrompt: |
+      You are a context-merging agent. Merge WorkIQ and m365-copilot meeting
+      evidence into one normalized context object per meeting for downstream
+      extraction.
+
+      Rules:
+      1. For each meeting, merge and deduplicate evidence from both sources
+      2. Prefer richer transcript/recap content when both sources provide the
+         same artifact
+      3. Keep source attribution on every merged item using a sources array
+      4. Organize each meeting into these sections when present:
+         - transcriptOrRecap
+         - followUpEmails
+         - teamsMessages
+         - documentsAndNotes
+         - priorMeetings
+         - contextualSignals
+      5. If the sources disagree materially, add a conflict note
+      6. Output JSON keyed by meeting identifier with one merged object per meeting
+    userPrompt: |
+      Meetings needing processing:
+      {{check-already-processed.output}}
+
+      WorkIQ meeting context:
+      {{gather-workiq-meeting-context.output}}
+
+      m365-copilot meeting context:
+      {{gather-m365-copilot-meeting-context.output}}
+
+      Merge into a single deduplicated meeting context object per meeting.
+
+  - name: extract-action-items
+    type: Prompt
+    dependsOn: [check-already-processed, merge-meeting-context]
+    systemPrompt: |
+      You are an expert meeting analyzer. Your job is to extract ALL
+      actionable items, decisions, follow-ups, and trackable outcomes from the
+      available meeting evidence.
+
+      Important:
+      - Use transcript or recap content when available
+      - Also use related evidence such as follow-up emails, Teams chats,
+        meeting notes, and prior-meeting context
+      - Do NOT restrict the analysis to transcript-only findings
+      - Every extracted item should be grounded in evidence from the provided context
 
       Extract the following categories:
 
-      1. **ACTION ITEMS** - Explicit or implicit tasks assigned to someone
-         - Who is responsible (name/alias, or 'unassigned' if unclear)
-         - What needs to be done (specific, actionable description)
-         - Deadline if mentioned
-         - Priority: high (blocking/urgent), medium (should do soon), low (nice to have)
-         - Flag items assigned to ME ({{vars.myName}}/{{vars.myAlias}}) prominently
+      1. ACTION ITEMS
+         - owner (name/alias or 'unassigned')
+         - action description
+         - deadline if mentioned
+         - priority: high|medium|low
+         - evidence snippet and source type
+         - flag items assigned to ME ({{vars.myName}}/{{vars.myAlias}})
 
-      2. **DECISIONS MADE** - Conclusions reached during the meeting
-         - What was decided
-         - Context/reasoning
-         - Who made or approved the decision
-         - Any conditions or caveats
+      2. DECISIONS MADE
+         - decision
+         - context/reasoning
+         - who made or approved it if clear
+         - evidence snippet and source type
 
-      3. **FOLLOW-UPS NEEDED** - Things that need checking, investigating, or revisiting
-         - What needs follow-up
-         - Who should follow up
-         - Why (what triggered this follow-up)
-         - Timeframe if mentioned
+      3. FOLLOW-UPS NEEDED
+         - follow-up needed
+         - owner if clear
+         - why it is needed
+         - timeframe if mentioned
+         - evidence snippet and source type
 
-      4. **QUESTIONS & OPEN ITEMS** - Unresolved questions raised during the meeting
-         - The question or open item
-         - Who raised it
-         - Who might have the answer
-         - Importance/urgency
+      4. QUESTIONS & OPEN ITEMS
+         - unresolved question or open issue
+         - who raised it if clear
+         - who might answer it if clear
+         - urgency
+         - evidence snippet and source type
 
-      5. **RISKS & CONCERNS** - Issues, risks, or concerns raised
-         - The risk/concern
-         - Who raised it
-         - Potential impact
-         - Any proposed mitigation
+      5. RISKS & CONCERNS
+         - risk or concern
+         - who raised it if clear
+         - potential impact
+         - mitigation if mentioned
+         - evidence snippet and source type
 
-      6. **INFORMATION SHARED** - Key facts, updates, or announcements worth noting
-         - The information
-         - Who shared it
-         - Relevance
+      6. INFORMATION SHARED
+         - key fact/update/announcement
+         - relevance
+         - evidence snippet and source type
 
       Rules:
-      1. Process each meeting transcript independently
-      2. Be thorough -- implicit action items count (e.g., 'I'll look into that' = action item for the speaker)
-      3. Distinguish between my items vs others' items -- I need to know what I need to do
-      4. Use the exact words from the transcript when possible for accuracy
-      5. For each meeting, save a structured JSON result using orchestra_save_file with extension 'json'
-      6. Output a summary: { meetings: [{ title, date, actionItemsCount, decisionsCount, followUpsCount, questionsCount, risksCount, myActionItemsCount }] }
+      1. Process each meeting independently
+      2. Be thorough -- implicit commitments count when they are grounded in evidence
+      3. Distinguish my items vs others' items clearly
+      4. Prefer exact wording from the evidence when possible
+      5. If transcript content is missing, still extract from other reliable
+         meeting-related context when supported
+      6. For each meeting, save a structured JSON result using orchestra_save_file
+         with extension 'json'
+      7. Output a summary:
+         {
+           "meetings": [
+             {
+               "title": "...",
+               "date": "...",
+               "transcriptAvailability": "full|partial|none|unknown",
+               "actionItemsCount": 0,
+               "decisionsCount": 0,
+               "followUpsCount": 0,
+               "questionsCount": 0,
+               "risksCount": 0,
+               "myActionItemsCount": 0
+             }
+           ]
+         }
     userPrompt: |
       Meetings to process:
       {{check-already-processed.output}}
 
-      I am {{vars.myName}} (alias: {{vars.myAlias}}). Extract all action items, decisions, follow-ups, questions, risks, and key information from each meeting transcript. Pay special attention to items assigned to me or that I committed to.
+      Merged meeting context:
+      {{merge-meeting-context.output}}
+
+      I am {{vars.myName}} (alias: {{vars.myAlias}}). Extract all action
+      items, decisions, follow-ups, questions, risks, and key information.
+      Pay special attention to items assigned to me or commitments I made.
     reasoningLevel: High
-    timeoutSeconds: 1200
 
   - name: generate-markdown-reports
     type: Prompt
     dependsOn: [extract-action-items]
     systemPrompt: |
-      You are a markdown report generator for meeting action items. Convert the extracted action items into well-formatted markdown files.
+      You are a markdown report generator for meeting action items. Convert
+      the extracted meeting results into well-formatted markdown files.
 
       For each meeting, generate a markdown file with this structure:
 
       # Meeting Notes: <Title>
 
       **Date:** <date/time>
-      **Duration:** <duration>
-      **Organizer:** <name>
-      **Attendees:** <list>
+      **Duration:** <duration if known>
+      **Organizer:** <name if known>
+      **Attendees:** <list if known>
+      **Transcript/Recap Availability:** <full|partial|none|unknown>
 
       ---
 
@@ -174,24 +357,24 @@ steps:
       - [ ] **[LOW]** <description>
 
       ## All Action Items
-      | Owner | Action | Priority | Deadline |
-      |-------|--------|----------|----------|
-      | ... | ... | ... | ... |
+      | Owner | Action | Priority | Deadline | Source |
+      |-------|--------|----------|----------|--------|
+      | ... | ... | ... | ... | ... |
 
       ## Decisions Made
-      1. **<Decision>** - <context> *(decided by: <name>)*
+      1. **<Decision>** - <context> *(source: <source type>)*
 
       ## Follow-Ups Needed
-      - [ ] <follow-up> - *<owner>*
+      - [ ] <follow-up> - *<owner>* *(source: <source type>)*
 
       ## Open Questions
-      - <question> *(raised by: <name>, directed at: <name>)*
+      - <question> *(source: <source type>)*
 
       ## Risks & Concerns
-      - **<risk>** - <impact> *(raised by: <name>)*
+      - **<risk>** - <impact> *(source: <source type>)*
 
       ## Key Information
-      - <info point>
+      - <info point> *(source: <source type>)*
 
       ---
       *Extracted by meeting-action-items-extractor on <timestamp>*
@@ -209,7 +392,8 @@ steps:
       Extracted files:
       {{extract-action-items.files}}
 
-      I am {{vars.myName}}. Generate a markdown report for each meeting. Read the JSON files if needed using orchestra_read_file.
+      I am {{vars.myName}}. Generate a markdown report for each meeting. Read
+      the JSON files if needed using orchestra_read_file.
 
   - name: save-reports-to-disk
     type: Prompt
@@ -233,17 +417,17 @@ steps:
       Action items directory: {{vars.actionItemsDir}}
 
       Copy each report to the action items directory.
-    timeoutSeconds: 120
 
   - name: mark-meetings-processed
     type: Prompt
     dependsOn: [extract-action-items]
     systemPrompt: |
-      You are a state management agent. Mark each processed meeting transcript in Zakira.Exchange so we don't reprocess it.
+      You are a state management agent. Mark each processed meeting in
+      Zakira.Exchange so we don't reprocess it.
 
       Rules:
       1. For each meeting that was processed, use Zakira.Exchange create_memory
-      2. Key format: 'transcript-<date>-<normalized-title>' (same format used in check-already-processed)
+      2. Key format: 'meeting-<date>-<normalized-title>'
       3. Data: { status: 'processed', processedAt: '<ISO timestamp>', meetingTitle: '<title>', meetingDate: '<date>', actionItemsCount: <N>, myActionItemsCount: <M>, orchestrationRunId: '{{orchestration.runId}}' }
       4. Report how many meetings were marked as processed
     userPrompt: |
@@ -255,13 +439,13 @@ steps:
 
       Mark each processed meeting in Zakira.Exchange.
     mcps: [zakira]
-    timeoutSeconds: 120
 
   - name: create-actionview-entry
     type: Prompt
     dependsOn: [extract-action-items, save-reports-to-disk]
     systemPrompt: |
-      You are an ActionView entry generator. Create an ActionView entry summarizing the action items extracted from meeting transcripts.
+      You are an ActionView entry generator. Create an ActionView entry
+      summarizing the action items extracted from recent meetings.
 
       Entry requirements:
       - type: 'meeting-action-items'
@@ -277,7 +461,7 @@ steps:
         - A keyValue block: Total Meetings Processed, Total Action Items, My Action Items, Decisions Made, Open Questions
         - For each meeting, a section (type: 'section') with:
           - Meeting title as section title
-          - A table of action items (Owner, Action, Priority)
+          - A table of action items (Owner, Action, Priority, Source)
           - A markdown block with key decisions (if any)
         - A markdown block listing all follow-ups needed
       - groupId: Use current date YYYY-MM-DD
@@ -294,8 +478,8 @@ steps:
       Saved report paths:
       {{save-reports-to-disk.output}}
 
-      I am {{vars.myName}}. Create the ActionView entry. Highlight MY action items prominently. Save as JSON.
-    timeoutSeconds: 180
+      I am {{vars.myName}}. Create the ActionView entry. Highlight MY action
+      items prominently. Save as JSON.
 
   - name: submit-actionview-entry
     type: Prompt
@@ -315,11 +499,10 @@ steps:
 
       Read the file and invoke the actionview-submit orchestration to submit it.
     mcps: [orchestra]
-    timeoutSeconds: 360
 
   - name: generate-summary
     type: Prompt
-    dependsOn: [extract-action-items, save-reports-to-disk, mark-meetings-processed, submit-actionview-entry]
+    dependsOn: [discover-recent-meetings, check-already-processed, extract-action-items, save-reports-to-disk, mark-meetings-processed, submit-actionview-entry]
     systemPrompt: |
       You are a summary generator. Create a concise markdown summary of this extraction run.
 
@@ -327,10 +510,17 @@ steps:
       1. How many meetings were discovered vs processed vs skipped
       2. Total action items extracted (total and mine)
       3. Total decisions, follow-ups, open questions found
-      4. File paths where reports were saved
-      5. ActionView submission status
-      6. Highlight my most important/urgent action items at the end
+      4. Whether transcripts/recaps were available broadly or extraction relied on other evidence
+      5. File paths where reports were saved
+      6. ActionView submission status
+      7. Highlight my most important/urgent action items at the end
     userPrompt: |
+      Meetings discovered:
+      {{discover-recent-meetings.output}}
+
+      Meetings to process / skip:
+      {{check-already-processed.output}}
+
       Extraction summary:
       {{extract-action-items.output}}
 
@@ -344,4 +534,3 @@ steps:
       {{submit-actionview-entry.output}}
 
       Generate a concise run summary. Emphasize what I need to act on.
-    timeoutSeconds: 60
