@@ -1,16 +1,18 @@
 name: deep-research-orchestration
-description: Multi-step deep research orchestration that scopes a topic, searches the web in parallel, fetches pages, stress-tests findings, and produces a sourced report.
-version: "1.1.0"
-tags: ["research", "utils", "manual"]
+description: Multi-step deep research orchestration that scopes a topic, discovers sources in parallel, builds a structured source manifest, extracts quoted evidence, stress-tests conclusions, closes gaps, and produces a grounded sourced report.
+version: "2.1.0"
+tags: ["research", "utils", "manual", "grounded"]
 trigger:
   type: manual
 defaultModel: gpt-5.4
-timeoutSeconds: 14400
+timeoutSeconds: 43200
 defaultRetryPolicy:
-  maxRetries: 1
+  maxRetries: 2
   backoffSeconds: 2
   backoffMultiplier: 2
   retryOnTimeout: true
+variables:
+  zakiraCategory: deep-research-state
 inputs:
   researchRequest:
     type: string
@@ -35,20 +37,36 @@ mcps:
       - "--yes"
       - "--"
       - mcp
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - "--yes"
+      - "--"
+      - mcp
+      - "--category"
+      - "{{vars.zakiraCategory}}"
 steps:
   - name: validate-and-scope
     type: Prompt
-    reasoningLevel: Medium
+    reasoningLevel: High
     systemPrompt: |
       You are a research intake analyst.
-      Convert the user's request into a precise research brief.
+      Convert the user's request into a precise, research-ready brief that maximizes grounding and correctness.
 
       Produce these sections:
       1. Research objective
       2. Key sub-questions
-      3. Search plan
-      4. Source quality criteria
-      5. Known risks and blind spots
+         Include an importance label for each sub-question: critical, high, or medium.
+      3. Definitions and assumptions
+      4. Search plan
+      5. Source quality criteria
+      6. Time sensitivity and recency requirements
+      7. Geographic, legal, or jurisdiction scope
+      8. Product, platform, or version scope
+      9. Explicitly out of scope
+      10. Known risks and blind spots
 
       Use your subagents to pressure-test whether the scoped brief is precise enough
       to support meaningful research before finalizing it.
@@ -76,6 +94,106 @@ steps:
         prompt: |
           Judge whether the scoped brief is precise, answerable, and aligned to the user's actual
           request. Flag any missing constraints, hidden assumptions, or underspecified sub-questions.
+      - name: constraints-auditor
+        displayName: Constraints Auditor
+        description: Ensures recency, geography, and version constraints are explicit.
+        prompt: |
+          Check whether the brief clearly captures time sensitivity, geography or jurisdiction,
+          product or version scope, and what is explicitly out of scope.
+
+  - name: derive-research-memory-key
+    type: Prompt
+    dependsOn:
+      - validate-and-scope
+    systemPrompt: |
+      You are a research memory key derivation assistant.
+      Derive one stable Zakira.Exchange memory key for this research topic.
+
+      The key must use this format:
+      research-<normalized-request>
+
+      Normalization rules:
+      - start from the original research request, not from downstream summaries
+      - lowercase everything
+      - replace spaces and punctuation with single hyphens
+      - keep only letters, digits, and hyphens
+      - collapse repeated hyphens
+      - trim leading and trailing hyphens
+      - truncate the normalized request portion to 80 characters if needed
+      - keep the result deterministic and stable across runs for the same request wording
+
+      Output ONLY a valid JSON object with this shape:
+      {
+        "key": "research-...",
+        "normalizedRequest": "...",
+        "notes": ["..."]
+      }
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+
+      Derive the stable Zakira.Exchange memory key for this research topic.
+
+  - name: load-prior-research-memory
+    type: Prompt
+    dependsOn:
+      - validate-and-scope
+      - derive-research-memory-key
+    mcps:
+      - zakira
+    systemPrompt: |
+      You are a research state retrieval assistant.
+      Use Zakira.Exchange to check whether this research topic was previously investigated.
+
+      Use the exact key provided by derive-research-memory-key.
+      Use Zakira.Exchange get_memory with that key.
+
+      Treat prior memory as planning context only, never as evidence.
+      Assess whether it is still trustworthy enough to reuse for prioritization.
+
+      Freshness guidance:
+      - if the scoped brief is time-sensitive, fast-moving, version-sensitive, or policy-sensitive, old memory should usually be treated as low trust
+      - if the scoped brief is timeless or slow-changing, prior memory can be medium or high trust if its summaries still align with the scoped brief
+
+      Output ONLY a valid JSON object with this shape:
+      {
+        "key": "...",
+        "found": true,
+        "priorMemory": { },
+        "memoryFreshness": "fresh|usable-with-caution|stale|unknown",
+        "memoryTrust": "high|medium|low",
+        "reusableInsights": ["..."],
+        "carryForwardGaps": ["..."],
+        "mandatoryRecheckAreas": ["..."],
+        "notes": ["..."]
+      }
+
+      If no memory exists, return:
+      {
+        "key": "...",
+        "found": false,
+        "priorMemory": null,
+        "memoryFreshness": "unknown",
+        "memoryTrust": "low",
+        "reusableInsights": [],
+        "carryForwardGaps": [],
+        "mandatoryRecheckAreas": [],
+        "notes": []
+      }
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+
+      Derived research memory key:
+      {{derive-research-memory-key.output}}
+
+      Check Zakira.Exchange for prior research memory for this request.
 
   - name: search-authoritative-sources
     type: Prompt
@@ -100,8 +218,9 @@ steps:
       - default to Recall Search first when the source landscape is still broad or unclear
       - use Recall Fetch when you already have a specific URL and want that page's readable content
       - use Recall Research when answer quality and grounding matter more than speed and you need actual page content, synthesis, or citations
-      - return at most 8 high-value sources
+      - return enough high-value sources to cover every important sub-question; do not stop at a small fixed number if strong coverage is still missing
       - for each source, explain why it matters and what question it helps answer
+      - identify likely missing primary-source lanes, if any
       - use your subagents to test whether the source set is truly authoritative and sufficient for the request
 
       Produce these sections:
@@ -157,10 +276,10 @@ steps:
       Use Recall Research when you need grounded synthesis from multiple pages rather than just candidate links.
 
       Requirements:
-      - look for diverse viewpoints and context
+      - look for diverse viewpoints, context, history, and edge cases
       - default to Recall Search first for broad exploration and quick scanning of titles, URLs, and snippets
       - use Recall Research once you need evidence-rich reading, citations, or synthesized comparisons across sources
-      - return at most 8 high-value sources
+      - return enough high-value sources to cover competing views and background well; do not stop at a small fixed number if major context is still thin
       - highlight what these sources add beyond the primary-source lane
       - surface overlooked angles and likely counterarguments
       - use your subagents to judge whether the contextual coverage is broad enough and not redundant
@@ -214,7 +333,7 @@ steps:
       Requirements:
       - use this step when the brief involves software libraries, frameworks, packages, SDKs, APIs, or implementation details; otherwise explicitly say Not applicable
       - prefer official, version-appropriate docs and code examples
-      - return at most 6 high-value documentation sources
+      - return enough high-value documentation to cover the relevant implementation questions well
       - explain what each source clarifies and any version or applicability limits
       - use your subagents to judge whether the documentation coverage is relevant and sufficient for the request
 
@@ -267,7 +386,7 @@ steps:
       Requirements:
       - use this step when the brief touches Microsoft products, Azure, .NET, Microsoft 365, Windows, Power Platform, GitHub-related Microsoft docs, or adjacent services; otherwise explicitly say Not applicable
       - prioritize product docs, reference docs, official guidance, and official code samples over marketing pages
-      - return at most 6 high-value Microsoft Learn sources
+      - return enough high-value Microsoft Learn sources to cover the relevant Microsoft-specific questions well
       - explain product, version, and service applicability for each source
       - use your subagents to judge whether the Learn coverage is relevant and sufficient for the request
 
@@ -304,89 +423,118 @@ steps:
           Judge whether the Microsoft Learn results are sufficient, correctly scoped, and product-appropriate
           for the user's request. Flag missing Microsoft product or version coverage.
 
-  - name: search-recall-research
+  - name: build-source-manifest
     type: Prompt
     dependsOn:
       - validate-and-scope
+      - load-prior-research-memory
+      - search-authoritative-sources
+      - search-broad-coverage
+      - search-library-docs
+      - search-microsoft-learn-docs
     reasoningLevel: High
     mcps:
       - recall
+      - context7
+      - microsoft-learn
     systemPrompt: |
-      You are an independent web research specialist.
-      Use Zakira.Recall to run a separate research lane using its Search, Fetch, and Research tools.
+      You are a source curation strategist.
+      Build a structured research source manifest from the scoped brief and all discovery lanes.
 
-      Requirements:
-      - use Recall Search for broad discovery, candidate links, and quick scanning of titles, URLs, and snippets
-      - use Recall Research when you need source-backed detail, automatic reading of top results, citations, or synthesis from multiple pages
-      - use Recall Fetch when you already have a specific URL and want that page's readable content
-      - prefer sources that add genuinely new evidence, corroboration, or overlooked context
-      - return at most 6 high-value sources
-      - note when Recall mainly confirms existing findings instead of extending them
-      - use your subagents to judge whether this lane materially improves coverage for the request
+      Your job is to convert the discovered sources into a prioritized working set that maximizes grounding.
+      Do light targeted follow-up only if needed to disambiguate duplicate sources, confirm URLs,
+      or fill obvious coverage holes before finalizing the manifest.
 
-      Produce these sections:
-      1. Search summary
-      2. Distinctive sources and findings
-      3. What this lane adds and what is still missing
+      Output ONLY a valid JSON object with this shape:
+      {
+        "subQuestions": [
+          {
+            "subQuestionId": "sq-1",
+            "question": "...",
+            "importance": "critical|high|medium"
+          }
+        ],
+        "sources": [
+          {
+            "sourceId": "src-1",
+            "title": "...",
+            "url": "...",
+            "lane": "authoritative|broad|context7|microsoft-learn|targeted",
+            "sourceType": "official-doc|reference-doc|standard|paper|primary-data|code-sample|secondary-analysis|news|blog|forum|other",
+            "priority": "critical|high|medium|low",
+            "relevanceToSubQuestions": ["sq-1"],
+            "whyItMatters": "...",
+            "preferredReader": "recall-fetch|recall-research|context7|microsoft-learn",
+            "applicabilityLimits": "...",
+            "credibilityNotes": "...",
+            "selectedForInitialRead": true
+          }
+        ],
+        "readingPlan": [
+          {
+            "subQuestionId": "sq-1",
+            "minimumStrongSourcesNeeded": 2,
+            "targetSourceIds": ["src-1"],
+            "notes": "..."
+          }
+        ],
+        "coverageGaps": ["..."],
+        "manifestNotes": ["..."]
+      }
+
+      Rules:
+      - include enough sources to support exhaustive grounded research, not just a short shortlist
+      - prefer at least 2 strong sources for each critical or high-importance sub-question when feasible
+      - de-duplicate equivalent sources and preserve the strongest canonical URL
+      - set preferredReader to Context7 or Microsoft Learn only when those MCPs are the best way to read that source class
+      - set preferredReader to recall-fetch for known readable pages and recall-research when synthesis across multiple pages is likely needed
+      - do not include junk sources just to inflate coverage
     userPrompt: |
       Original research request:
       {{param.researchRequest}}
 
       Scoped brief:
       {{validate-and-scope.output}}
-    subagents:
-      - name: recall-scout
-        displayName: Recall Scout
-        description: Uses Recall to run an independent search lane.
-        prompt: |
-          Use Zakira.Recall Search first to find high-value sources and candidate URLs that can answer the scoped brief.
-          Escalate to Recall Research only when you need grounded synthesis from the strongest results.
-        mcps:
-          - recall
-      - name: recall-fetch-analyst
-        displayName: Recall Fetch Analyst
-        description: Uses Recall fetch and research capabilities to inspect promising results.
-        prompt: |
-          Use Zakira.Recall Fetch when you already have a specific promising URL to inspect.
-          Use Recall Research when you need grounded synthesis across multiple promising sources.
-        mcps:
-          - recall
-      - name: triangulation-reviewer
-        displayName: Triangulation Reviewer
-        description: Judges whether Recall adds meaningful new coverage.
-        prompt: |
-          Judge whether the Recall lane adds meaningful new evidence, corroboration, or alternative angles,
-          or whether important coverage still remains missing.
 
-  - name: normalize-source-list
-    type: Transform
-    dependsOn:
-      - search-authoritative-sources
-      - search-broad-coverage
-      - search-library-docs
-      - search-microsoft-learn-docs
-      - search-recall-research
-    template: |
-      # Authoritative Sources
+      Prior research memory:
+      {{load-prior-research-memory.output}}
+
+      Authoritative sources:
       {{search-authoritative-sources.output}}
 
-      # Broad Coverage Sources
+      Broad coverage sources:
       {{search-broad-coverage.output}}
 
-      # Library And API Documentation
+      Library docs:
       {{search-library-docs.output}}
 
-      # Microsoft Learn Sources
+      Microsoft Learn docs:
       {{search-microsoft-learn-docs.output}}
-
-      # Recall Research Sources
-      {{search-recall-research.output}}
+    subagents:
+      - name: source-curator
+        displayName: Source Curator
+        description: Curates the working set of sources.
+        prompt: |
+          Build the best possible source working set for the research brief.
+          Prioritize sources that materially improve grounded coverage of each sub-question.
+      - name: manifest-auditor
+        displayName: Manifest Auditor
+        description: Checks manifest structure and quality.
+        prompt: |
+          Review the source manifest for duplicate sources, weak priorities, poor reader choices,
+          and missing coverage.
+      - name: priority-planner
+        displayName: Priority Planner
+        description: Plans the reading order and coverage targets.
+        prompt: |
+          Make sure the reading plan is proportional to sub-question importance and directs the pipeline
+          toward exhaustive grounded coverage.
 
   - name: fetch-key-pages
     type: Prompt
     dependsOn:
       - validate-and-scope
-      - normalize-source-list
+      - build-source-manifest
     reasoningLevel: High
     mcps:
       - context7
@@ -399,27 +547,62 @@ steps:
       retryOnTimeout: true
     systemPrompt: |
       You are an evidence extraction specialist.
-      Fetch and read the most important pages from the normalized source list.
+      Read the highest-priority sources from the structured source manifest and extract direct evidence.
+
       Use Recall as the default web source lane.
       Use Recall Fetch when you already have a specific URL and want that page's readable content.
       Use Recall Research when you need source-backed reading, synthesis, or citations across multiple pages.
-      Context7 for library and API docs, and Microsoft Learn for Microsoft official docs.
-      Prefer the source-native MCP when it can expose the evidence more directly.
+      Use Context7 for library and API docs and Microsoft Learn for Microsoft official docs.
 
       Requirements:
-      - fetch at most 10 pages that matter most for answering the research question
-      - because the source list already contains specific URLs, prefer Recall Fetch for ordinary web pages by default
-      - extract concrete claims, dates, definitions, and data points
-      - keep exact source URLs tied to every extracted item
+      - because the manifest already contains specific URLs and reader choices, prefer Recall Fetch for ordinary web pages by default
+      - read enough sources to achieve strong support for each critical and high-importance sub-question when possible
+      - do not stop at a small fixed count if major sub-questions still lack strong evidence
+      - for every material claim, include an exact verbatim excerpt of 1 to 3 sentences from the source
+      - keep the exact source URL with every extracted item
+      - include a source locator such as section heading, nearby heading, or other locator when available
+      - separate direct evidence from your interpretation
       - note staleness, weak sourcing, and credibility concerns
-      - separate direct evidence from interpretation
       - use your subagents to judge whether the extracted evidence is sufficient and well-matched to the request
 
-      Produce these sections:
-      1. Extracted evidence by source
-      2. Strongest supported claims
-      3. Credibility concerns
-      4. Remaining evidence gaps
+      Output ONLY a valid JSON object with this shape:
+      {
+        "evidenceBySource": [
+          {
+            "sourceId": "src-1",
+            "title": "...",
+            "url": "...",
+            "readerUsed": "recall-fetch|recall-research|context7|microsoft-learn",
+            "currencyAssessment": "...",
+            "credibilityAssessment": "...",
+            "coverageContribution": ["sq-1"],
+            "evidenceItems": [
+              {
+                "evidenceId": "ev-1",
+                "subQuestionIds": ["sq-1"],
+                "claim": "...",
+                "evidenceType": "fact|definition|statistic|timeline|procedure|limitation|quote|example",
+                "verbatimExcerpt": "...",
+                "sourceLocator": "...",
+                "interpretation": "...",
+                "confidence": "high|medium|low"
+              }
+            ]
+          }
+        ],
+        "materialClaims": [
+          {
+            "claimId": "claim-1",
+            "claim": "...",
+            "subQuestionIds": ["sq-1"],
+            "supportingEvidenceIds": ["ev-1"],
+            "supportStrength": "strong|moderate|weak",
+            "notes": "..."
+          }
+        ],
+        "remainingEvidenceGaps": ["..."],
+        "readCoverageSummary": ["..."]
+      }
     userPrompt: |
       Original research request:
       {{param.researchRequest}}
@@ -427,28 +610,25 @@ steps:
       Scoped brief:
       {{validate-and-scope.output}}
 
-      Source list:
-      {{normalize-source-list.output}}
+      Source manifest:
+      {{build-source-manifest.output}}
     subagents:
       - name: evidence-extractor
         displayName: Evidence Extractor
-        description: Pulls concrete evidence from Recall Fetch, Context7, and Microsoft Learn results.
+        description: Pulls concrete evidence from source content.
         prompt: |
           Use Recall Fetch for specific web-page URLs, and use Recall Research only if multi-page synthesis is needed.
-          Read the fetched or retrieved source content carefully and extract the evidence that directly answers the research brief.
-        mcps:
-          - context7
-          - microsoft-learn
-          - recall
+          Read the retrieved source content carefully and extract evidence that directly answers the research brief.
       - name: source-auditor
         displayName: Source Auditor
         description: Checks source credibility and evidence quality.
         prompt: |
-          Evaluate whether the fetched or retrieved sources are current, trustworthy, and strong enough to support major claims.
-        mcps:
-          - context7
-          - microsoft-learn
-          - recall
+          Evaluate whether the retrieved sources are current, trustworthy, and strong enough to support major claims.
+      - name: excerpt-auditor
+        displayName: Excerpt Auditor
+        description: Checks that material claims have real supporting excerpts.
+        prompt: |
+          Verify that material claims are backed by exact excerpts and exact URLs rather than loose paraphrase.
       - name: evidence-sufficiency-reviewer
         displayName: Evidence Sufficiency Reviewer
         description: Judges whether the fetched evidence is enough for synthesis.
@@ -460,7 +640,8 @@ steps:
     type: Prompt
     dependsOn:
       - validate-and-scope
-      - normalize-source-list
+      - build-source-manifest
+      - fetch-key-pages
     reasoningLevel: High
     mcps:
       - context7
@@ -473,22 +654,51 @@ steps:
       retryOnTimeout: true
     systemPrompt: |
       You are a skeptical researcher.
-      Search for contradictions, counter-evidence, and unresolved gaps.
+      Search for contradictions, counter-evidence, and unresolved gaps against the current evidence record.
 
       Requirements:
-      - look for reputable evidence that challenges the current likely conclusion
+      - identify the current likely conclusions and strongest material claims from the extracted evidence
       - use Recall Search first to discover conflicting claims and candidate sources
       - use Recall Research when you need grounded synthesis from multiple conflicting sources
       - use Recall Fetch, Context7, or Microsoft Learn when you already have a specific source to inspect before relying on conflicting claims
-      - examine at most 6 counter-evidence sources
       - surface unresolved uncertainty clearly
+      - do not dismiss conflicts without reading the source content
       - use Context7 and Microsoft Learn when contradictions depend on official API, product, or version behavior
       - use your subagents to judge whether the adversarial pass was strong enough
 
-      Produce these sections:
-      1. Contradictions and counter-evidence
-      2. Claims that remain uncertain
-      3. Missing research needed before synthesis
+      Output ONLY a valid JSON object with this shape:
+      {
+        "counterevidenceSources": [
+          {
+            "sourceId": "counter-1",
+            "title": "...",
+            "url": "...",
+            "readerUsed": "recall-fetch|recall-research|context7|microsoft-learn",
+            "whyItMatters": "...",
+            "credibilityNotes": "...",
+            "claimsChallenged": ["claim-1"]
+          }
+        ],
+        "challenges": [
+          {
+            "claimId": "claim-1",
+            "challengeType": "contradicts|qualifies|narrows|outdated|context-dependent",
+            "summary": "...",
+            "supportingExcerpts": [
+              {
+                "title": "...",
+                "url": "...",
+                "verbatimExcerpt": "...",
+                "sourceLocator": "..."
+              }
+            ],
+            "resolutionState": "resolved|partially-resolved|open",
+            "notes": "..."
+          }
+        ],
+        "unresolvedQuestions": ["..."],
+        "recommendedFollowUps": ["..."]
+      }
     userPrompt: |
       Original research request:
       {{param.researchRequest}}
@@ -496,8 +706,11 @@ steps:
       Scoped brief:
       {{validate-and-scope.output}}
 
-      Source list:
-      {{normalize-source-list.output}}
+      Source manifest:
+      {{build-source-manifest.output}}
+
+      Extracted evidence:
+      {{fetch-key-pages.output}}
     subagents:
       - name: contradiction-hunter
         displayName: Contradiction Hunter
@@ -506,10 +719,6 @@ steps:
           Use Recall Search first to look for reputable evidence that challenges, narrows,
           or contradicts the likely conclusion. Use Recall Research only when you need
           grounded synthesis from the strongest conflicting sources.
-        mcps:
-          - context7
-          - microsoft-learn
-          - recall
       - name: gap-analyst
         displayName: Gap Analyst
         description: Finds the most important unanswered questions.
@@ -517,35 +726,534 @@ steps:
           Identify what is still missing before the research can be considered deep and trustworthy,
           including where Recall Search, Recall Fetch, Recall Research, Context7, or Microsoft Learn
           should be used next.
-        mcps:
-          - context7
-          - microsoft-learn
-          - recall
       - name: counterevidence-reviewer
         displayName: Counterevidence Reviewer
         description: Judges whether the skepticism pass was strong enough.
         prompt: |
           Judge whether the contradiction search meaningfully challenged the likely conclusion,
-          whether conflicting claims were checked against fetched evidence, and what still needs scrutiny.
+          whether conflicting claims were checked against real source content, and what still needs scrutiny.
 
-  - name: normalize-evidence-pack
-    type: Transform
+  - name: targeted-deep-dive
+    type: Prompt
     dependsOn:
+      - validate-and-scope
+      - load-prior-research-memory
+      - build-source-manifest
       - fetch-key-pages
       - search-counterevidence
-    template: |
-      # Extracted Evidence
+    reasoningLevel: High
+    mcps:
+      - context7
+      - microsoft-learn
+      - recall
+    infiniteSessions:
+      enabled: true
+      backgroundCompactionThreshold: 0.8
+      bufferExhaustionThreshold: 0.95
+    systemPrompt: |
+      You are a targeted deep-dive researcher.
+      Your job is to close the most important evidence gaps, unresolved sub-questions,
+      weakly supported claims, and unresolved contradictions.
+
+      On any rerun triggered by evidence-readiness-review or quality-review,
+      treat the latest review feedback as mandatory.
+      Address every item under Missing coverage, Required evidence, Open questions,
+      and Revision guidance one by one.
+
+      Use this Recall decision rule:
+      - use Search when you need options, discovery, titles, URLs, or snippets
+      - use Research when you need evidence, content, synthesis, or citations
+      - use Fetch when you need a specific known page
+
+      Requirements:
+      - do only the targeted additional research needed to strengthen the evidence record
+      - prioritize critical and high-importance sub-questions first
+      - treat carryForwardGaps and mandatoryRecheckAreas from prior memory as mandatory inputs to triage
+      - if prior memoryTrust is low, use it only to suggest where to look next, not what to conclude
+      - add corroboration for major claims, not just one more source
+      - use Context7 for library and API docs and Microsoft Learn for Microsoft-specific official docs
+      - include exact excerpts and exact URLs for new material evidence
+      - say clearly which gaps remain hard or irreducible after the deep dive
+
+      Output ONLY a valid JSON object with this shape:
+      {
+        "actionsTaken": [
+          {
+            "target": "sq-1 or claim-1",
+            "reason": "...",
+            "toolsUsed": ["recall-search", "recall-fetch", "recall-research", "context7", "microsoft-learn"],
+            "summary": "..."
+          }
+        ],
+        "newSources": [
+          {
+            "title": "...",
+            "url": "...",
+            "readerUsed": "recall-fetch|recall-research|context7|microsoft-learn",
+            "whyItMatters": "..."
+          }
+        ],
+        "newEvidence": [
+          {
+            "subQuestionIds": ["sq-1"],
+            "claimOrQuestion": "...",
+            "title": "...",
+            "url": "...",
+            "readerUsed": "recall-fetch|recall-research|context7|microsoft-learn",
+            "verbatimExcerpt": "...",
+            "sourceLocator": "...",
+            "interpretation": "...",
+            "credibilityAssessment": "..."
+          }
+        ],
+        "coverageImprovements": [
+          {
+            "subQuestionId": "sq-1",
+            "whatWasMissing": "...",
+            "whatWasAdded": "...",
+            "newSupportStrength": "strong|moderate|weak"
+          }
+        ],
+        "remainingHardGaps": ["..."]
+      }
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+
+      Prior research memory:
+      {{load-prior-research-memory.output}}
+
+      Source manifest:
+      {{build-source-manifest.output}}
+
+      Extracted evidence:
       {{fetch-key-pages.output}}
 
-      # Counter-Evidence And Gaps
+      Counter-evidence:
       {{search-counterevidence.output}}
+    subagents:
+      - name: unresolved-question-hunter
+        displayName: Unresolved Question Hunter
+        description: Identifies the highest-value unanswered questions.
+        prompt: |
+          Identify the highest-value unresolved questions or weak claims that still block a grounded answer.
+          Prioritize unresolved gaps carried forward from prior memory when they are still relevant.
+      - name: corroboration-scout
+        displayName: Corroboration Scout
+        description: Finds additional strong support for major claims.
+        prompt: |
+          Find the strongest additional corroboration for major claims that still feel thin or single-sourced.
+      - name: hard-gap-reviewer
+        displayName: Hard Gap Reviewer
+        description: Distinguishes fixable gaps from irreducible uncertainty.
+        prompt: |
+          Judge which remaining gaps are realistically closable with more research and which should be carried forward as explicit uncertainty.
+
+  - name: build-coverage-matrix
+    type: Prompt
+    dependsOn:
+      - validate-and-scope
+      - build-source-manifest
+      - fetch-key-pages
+      - search-counterevidence
+      - targeted-deep-dive
+    reasoningLevel: High
+    systemPrompt: |
+      You are a research coverage mapper.
+      Build an explicit coverage matrix that shows whether every important sub-question
+      and every material claim is actually supported strongly enough.
+
+      Output ONLY a valid JSON object with this shape:
+      {
+        "subQuestions": [
+          {
+            "subQuestionId": "sq-1",
+            "question": "...",
+            "importance": "critical|high|medium",
+            "answerStatus": "answered-strongly|answered-with-caveats|partially-answered|unanswered",
+            "answerPreview": "...",
+            "supportStrength": "strong|moderate|weak",
+            "strongestSupport": [
+              {
+                "title": "...",
+                "url": "...",
+                "verbatimExcerpt": "..."
+              }
+            ],
+            "contradictions": ["..."],
+            "remainingGap": "...",
+            "recommendedNextAction": "none|search|research|fetch|context7|microsoft-learn",
+            "readyForSynthesis": true
+          }
+        ],
+        "materialClaims": [
+          {
+            "claimId": "claim-1",
+            "claim": "...",
+            "subQuestionIds": ["sq-1"],
+            "supportStrength": "strong|moderate|weak",
+            "supportingEvidence": [
+              {
+                "title": "...",
+                "url": "...",
+                "verbatimExcerpt": "..."
+              }
+            ],
+            "conflictingEvidence": [
+              {
+                "title": "...",
+                "url": "...",
+                "verbatimExcerpt": "..."
+              }
+            ],
+            "readyForFinalReport": true
+          }
+        ],
+        "overallReadiness": "ready|needs-more-research",
+        "blockingGaps": ["..."],
+        "matrixNotes": ["..."]
+      }
+
+      Rules:
+      - be strict; do not mark a sub-question ready if support is weak or single-sourced without good reason
+      - use exact excerpts in strongestSupport and supportingEvidence for the claims that matter most
+      - make remaining gaps explicit rather than optimistic
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+
+      Source manifest:
+      {{build-source-manifest.output}}
+
+      Extracted evidence:
+      {{fetch-key-pages.output}}
+
+      Counter-evidence:
+      {{search-counterevidence.output}}
+
+      Targeted deep dive:
+      {{targeted-deep-dive.output}}
+    subagents:
+      - name: coverage-mapper
+        displayName: Coverage Mapper
+        description: Maps sub-questions to evidence strength.
+        prompt: |
+          Build a strict sub-question-by-sub-question map of what is answered strongly,
+          weakly, or not yet answered.
+      - name: claim-auditor
+        displayName: Claim Auditor
+        description: Checks whether material claims are really supported.
+        prompt: |
+          Audit the material claims and verify whether each one has enough direct support and whether conflicting evidence is addressed.
+      - name: readiness-assessor
+        displayName: Readiness Assessor
+        description: Decides whether the evidence is ready for synthesis.
+        prompt: |
+          Decide whether the evidence base is genuinely ready for final synthesis or whether more targeted research is still required.
+
+  - name: build-claim-ledger
+    type: Prompt
+    dependsOn:
+      - validate-and-scope
+      - load-prior-research-memory
+      - build-source-manifest
+      - fetch-key-pages
+      - search-counterevidence
+      - targeted-deep-dive
+      - build-coverage-matrix
+    reasoningLevel: High
+    systemPrompt: |
+      You are a claim ledger auditor.
+      Build a strict ledger of the material claims that could appear in the final answer.
+
+      The ledger must make it obvious which claims are safe to use, which need caveats,
+      which remain contested, and which are still too weak to include.
+
+      Output ONLY a valid JSON object with this shape:
+      {
+        "claims": [
+          {
+            "claimId": "claim-1",
+            "claim": "...",
+            "subQuestionIds": ["sq-1"],
+            "claimType": "factual|interpretive|comparative|procedural|forecast|other",
+            "status": "well-supported|supported-with-caveats|contested|insufficiently-supported",
+            "supportStrength": "strong|moderate|weak",
+            "supportingEvidence": [
+              {
+                "title": "...",
+                "url": "...",
+                "verbatimExcerpt": "..."
+              }
+            ],
+            "contradictingEvidence": [
+              {
+                "title": "...",
+                "url": "...",
+                "verbatimExcerpt": "..."
+              }
+            ],
+            "bestCurrentWording": "...",
+            "requiredCaveats": ["..."],
+            "safeForFinalReport": true
+          }
+        ],
+        "unsafeClaims": ["..."],
+        "ledgerSummary": ["..."]
+      }
+
+      Rules:
+      - be conservative; if support is weak, say so
+      - use exact excerpts for the supporting and contradicting evidence that matter most
+      - if a claim is only safe with caveats, make those caveats explicit
+      - mark a claim unsafe if the evidence is too thin, too contradictory, or too easy to overstate
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+
+      Prior research memory:
+      {{load-prior-research-memory.output}}
+
+      Source manifest:
+      {{build-source-manifest.output}}
+
+      Extracted evidence:
+      {{fetch-key-pages.output}}
+
+      Counter-evidence:
+      {{search-counterevidence.output}}
+
+      Targeted deep dive:
+      {{targeted-deep-dive.output}}
+
+      Coverage matrix:
+      {{build-coverage-matrix.output}}
+    subagents:
+      - name: claim-ledger-builder
+        displayName: Claim Ledger Builder
+        description: Builds the material claim ledger.
+        prompt: |
+          Build a strict ledger of the claims that the final answer is likely to rely on.
+      - name: claim-conservatism-reviewer
+        displayName: Claim Conservatism Reviewer
+        description: Checks whether claims are worded cautiously enough.
+        prompt: |
+          Review whether each claim is worded conservatively enough for the actual level of support.
+      - name: contradiction-ledger-reviewer
+        displayName: Contradiction Ledger Reviewer
+        description: Checks whether conflicting evidence is represented fairly.
+        prompt: |
+          Review whether contradicting or qualifying evidence is reflected fairly in the ledger.
+
+  - name: compare-prior-and-current-claims
+    type: Prompt
+    dependsOn:
+      - load-prior-research-memory
+      - build-claim-ledger
+    reasoningLevel: High
+    systemPrompt: |
+      You are a research continuity analyst.
+      Compare prior saved research memory with the current claim ledger.
+
+      Your job is to detect whether the current run confirms, refines, weakens, overturns,
+      or leaves unresolved the main conclusions implied by prior memory.
+
+      Treat prior memory as historical context only, never as evidence.
+      If prior memory is stale or low-trust, say so explicitly.
+
+      Output ONLY a valid JSON object with this shape:
+      {
+        "priorMemoryUsability": "high|medium|low|none",
+        "comparisonSummary": ["..."],
+        "claimComparisons": [
+          {
+            "topic": "...",
+            "priorPosition": "...",
+            "currentPosition": "...",
+            "changeType": "confirmed|refined|weakened|overturned|new|still-open",
+            "reason": "...",
+            "needsExplicitCallout": true
+          }
+        ],
+        "staleAreas": ["..."],
+        "carryForwardWarnings": ["..."]
+      }
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+
+      Prior research memory:
+      {{load-prior-research-memory.output}}
+
+      Current claim ledger:
+      {{build-claim-ledger.output}}
+    subagents:
+      - name: continuity-reviewer
+        displayName: Continuity Reviewer
+        description: Compares prior and current positions.
+        prompt: |
+          Compare prior saved research state to the current claim ledger and identify what changed materially.
+      - name: staleness-reviewer
+        displayName: Staleness Reviewer
+        description: Flags stale prior memory.
+        prompt: |
+          Judge which parts of prior memory are likely stale, overconfident, or no longer safe to rely on even as planning context.
+
+  - name: save-research-checkpoint
+    type: Prompt
+    dependsOn:
+      - load-prior-research-memory
+      - validate-and-scope
+      - build-source-manifest
+      - build-coverage-matrix
+      - build-claim-ledger
+      - compare-prior-and-current-claims
+    mcps:
+      - zakira
+    systemPrompt: |
+      You are a research state persistence assistant.
+      Save a checkpoint of the current research state in Zakira.Exchange so future runs can resume from stronger context.
+
+      Use the same key from load-prior-research-memory.
+      Prefer the exact derived key from derive-research-memory-key as the canonical key.
+      Use create_memory if no prior memory exists; otherwise use edit_memory.
+
+      Store JSON data with:
+      - status: 'checkpoint'
+      - scopedBriefSummary
+      - coverageSummary
+      - claimLedgerSummary
+      - priorComparisonSummary
+      - remainingGaps
+      - lastCompletedStep: 'build-claim-ledger'
+      - updatedAt: current timestamp
+      - orchestrationRunId: '{{orchestration.runId}}'
+
+      Keep the data concise but useful for future resume or comparison.
+    userPrompt: |
+      Save a checkpoint for this research run in Zakira.Exchange.
+
+      Existing memory lookup:
+      {{load-prior-research-memory.output}}
+
+      Derived research memory key:
+      {{derive-research-memory-key.output}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+
+      Source manifest:
+      {{build-source-manifest.output}}
+
+      Coverage matrix:
+      {{build-coverage-matrix.output}}
+
+      Claim ledger:
+      {{build-claim-ledger.output}}
+
+      Prior-vs-current claim comparison:
+      {{compare-prior-and-current-claims.output}}
+
+      Output confirmation of what was saved.
+
+  - name: evidence-readiness-review
+    type: Prompt
+    dependsOn:
+      - validate-and-scope
+      - load-prior-research-memory
+      - build-source-manifest
+      - build-coverage-matrix
+      - build-claim-ledger
+      - compare-prior-and-current-claims
+    reasoningLevel: High
+    systemPrompt: |
+      You are the evidence-readiness gate for a deep research pipeline.
+      Review the scoped brief, prior research memory, source manifest, coverage matrix,
+      claim ledger, and prior-vs-current comparison.
+
+      Approve only if all of the following are true:
+      - every critical sub-question is answered strongly or is explicitly documented as irreducibly uncertain
+      - every high-importance sub-question is answered strongly or with clearly bounded caveats
+      - material claims are backed by exact URLs and real supporting excerpts
+      - major contradictions are surfaced and either resolved or explicitly left open
+      - source coverage is strong enough that the final synthesis will be grounded rather than speculative
+
+      Your response must use exactly one of these final decision lines:
+      - FINAL_DECISION: APPROVED
+      - FINAL_DECISION: REVISE
+
+      If you choose REVISE, include these sections:
+      1. Missing coverage
+      2. Required evidence
+      3. Open questions
+      4. Revision guidance for targeted-deep-dive
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+
+      Source manifest:
+      {{build-source-manifest.output}}
+
+      Prior research memory:
+      {{load-prior-research-memory.output}}
+
+      Coverage matrix:
+      {{build-coverage-matrix.output}}
+
+      Claim ledger:
+      {{build-claim-ledger.output}}
+
+      Prior-vs-current claim comparison:
+      {{compare-prior-and-current-claims.output}}
+    subagents:
+      - name: evidence-readiness-guardian
+        displayName: Evidence Readiness Guardian
+        description: Checks whether evidence is strong enough to synthesize.
+        prompt: |
+          Check whether the evidence base is truly ready for synthesis or whether real gaps still remain.
+      - name: excerpt-readiness-guardian
+        displayName: Excerpt Readiness Guardian
+        description: Checks that key claims are backed by real excerpts.
+        prompt: |
+          Verify that the claims that matter most are backed by real excerpts and exact URLs.
+      - name: coverage-readiness-guardian
+        displayName: Coverage Readiness Guardian
+        description: Checks that important sub-questions are covered deeply enough.
+        prompt: |
+          Verify that critical and high-importance sub-questions have genuinely strong support and not just surface coverage.
+    loop:
+      target: targeted-deep-dive
+      maxIterations: 5
+      exitPattern: "FINAL_DECISION: APPROVED"
 
   - name: research-dossier
     type: Prompt
     dependsOn:
       - validate-and-scope
-      - normalize-source-list
-      - normalize-evidence-pack
+      - load-prior-research-memory
+      - build-source-manifest
+      - fetch-key-pages
+      - search-counterevidence
+      - targeted-deep-dive
+      - build-coverage-matrix
+      - build-claim-ledger
+      - compare-prior-and-current-claims
+      - evidence-readiness-review
     reasoningLevel: High
     mcps:
       - context7
@@ -557,9 +1265,10 @@ steps:
       bufferExhaustionThreshold: 0.95
     systemPrompt: |
       You are the lead research coordinator.
-      Build a complete research dossier from the scoped brief, normalized source list, and normalized evidence pack.
+      Build a complete research dossier from the scoped brief, source manifest, extracted evidence,
+      counter-evidence, targeted deep-dive output, coverage matrix, claim ledger, and prior-vs-current comparison.
 
-      On any rerun triggered by review feedback, treat the latest feedback as mandatory.
+      On any rerun triggered by quality-review, treat the latest review feedback as mandatory.
       Address every item under Missing coverage, Required evidence, Open questions, and Revision guidance one by one.
       Perform only the targeted additional Recall, Context7, and Microsoft Learn work needed to close those gaps.
       Use this Recall decision rule:
@@ -568,17 +1277,15 @@ steps:
       - use Fetch when you need a specific known page
       Then rewrite the full dossier.
 
-      Use your subagents to test whether the assembled dossier is sufficiently supported,
-      complete, and aligned to the user's actual research request before finalizing it.
-
       Requirements:
       - answer the actual research request directly
-      - cover the important sub-questions
-      - keep source citations with URLs for every material claim
+      - cover the important sub-questions explicitly
+      - keep source citations with exact URLs for every material claim
+      - when a claim is central, disputed, or easy to misstate, quote or closely reference the supporting excerpt
       - distinguish facts, interpretations, and open questions
       - surface contradictions and unresolved uncertainty
       - do not claim confidence that the evidence does not support
-      - keep the final source index to the 12 most important sources
+      - keep the final source index focused on the most important sources while preserving breadth
 
       Produce these sections:
       1. Coverage summary
@@ -594,11 +1301,32 @@ steps:
       Scoped brief:
       {{validate-and-scope.output}}
 
-      Normalized source list:
-      {{normalize-source-list.output}}
+      Prior research memory:
+      {{load-prior-research-memory.output}}
 
-      Normalized evidence pack:
-      {{normalize-evidence-pack.output}}
+      Source manifest:
+      {{build-source-manifest.output}}
+
+      Extracted evidence:
+      {{fetch-key-pages.output}}
+
+      Counter-evidence:
+      {{search-counterevidence.output}}
+
+      Targeted deep dive:
+      {{targeted-deep-dive.output}}
+
+      Coverage matrix:
+      {{build-coverage-matrix.output}}
+
+      Claim ledger:
+      {{build-claim-ledger.output}}
+
+      Prior-vs-current claim comparison:
+      {{compare-prior-and-current-claims.output}}
+
+      Evidence readiness review:
+      {{evidence-readiness-review.output}}
     subagents:
       - name: synthesis-writer
         displayName: Synthesis Writer
@@ -627,25 +1355,31 @@ steps:
         displayName: Citation Auditor
         description: Checks that material claims stay tied to evidence.
         prompt: |
-          Review the dossier for citation discipline, source quality, and overreliance on any narrow or weak source lane.
+          Review the dossier for citation discipline, excerpt-backed grounding, source quality,
+          and overreliance on any narrow or weak source lane.
 
   - name: quality-review
     type: Prompt
     dependsOn:
       - validate-and-scope
+      - load-prior-research-memory
+      - build-coverage-matrix
+      - build-claim-ledger
+      - compare-prior-and-current-claims
       - research-dossier
-    reasoningLevel: Medium
+    reasoningLevel: High
     systemPrompt: |
-      You are the quality gate for a deep research pipeline.
-      Review the dossier against the original request and scoped brief.
+      You are the final quality gate for a deep research pipeline.
+      Review the dossier against the original request, scoped brief, prior research memory,
+      coverage matrix, claim ledger, and prior-vs-current claim comparison.
 
       Approve only if all of the following are true:
-      - it answers the user's actual question
+      - it answers the user's actual question directly
       - the important sub-questions are covered
-      - material claims are backed by cited sources
+      - material claims are backed by cited sources and grounded evidence
       - major uncertainties and contradictions are surfaced
       - the research is deep rather than superficial
-      - the research lanes that were materially applicable were used well enough to support the conclusions
+      - the dossier does not overstate certainty
 
       Your response must use exactly one of these final decision lines:
       - FINAL_DECISION: APPROVED
@@ -655,13 +1389,25 @@ steps:
       1. Missing coverage
       2. Required evidence
       3. Open questions
-      4. Revision guidance for the target step
+      4. Revision guidance for research-dossier
     userPrompt: |
       Original research request:
       {{param.researchRequest}}
 
       Scoped brief:
       {{validate-and-scope.output}}
+
+      Prior research memory:
+      {{load-prior-research-memory.output}}
+
+      Coverage matrix:
+      {{build-coverage-matrix.output}}
+
+      Claim ledger:
+      {{build-claim-ledger.output}}
+
+      Prior-vs-current claim comparison:
+      {{compare-prior-and-current-claims.output}}
 
       Research dossier:
       {{research-dossier.output}}
@@ -713,7 +1459,7 @@ steps:
       - lead with the direct answer or most important conclusion
       - preserve nuance where evidence is mixed or uncertain
       - distinguish facts from interpretation
-      - include source URLs or clearly labeled source references inline
+      - include exact source URLs or clearly labeled source references inline
       - end with open questions and next research steps
 
       Format the report with these sections:
@@ -729,10 +1475,80 @@ steps:
       Approved dossier:
       {{research-dossier.output}}
 
+  - name: save-final-research-memory
+    type: Prompt
+    dependsOn:
+      - load-prior-research-memory
+      - validate-and-scope
+      - build-source-manifest
+      - build-coverage-matrix
+      - build-claim-ledger
+      - compare-prior-and-current-claims
+      - research-dossier
+      - quality-review
+      - write-final-report
+    mcps:
+      - zakira
+    systemPrompt: |
+      You are a research state persistence assistant.
+      Save the approved final research state in Zakira.Exchange for reuse by future runs.
+
+      Use the same key from load-prior-research-memory.
+      Prefer the exact derived key from derive-research-memory-key as the canonical key.
+      Use edit_memory if an entry already exists; otherwise use create_memory.
+
+      Store JSON data with:
+      - status: 'approved'
+      - researchRequest
+      - scopedBriefSummary
+      - sourceManifestSummary
+      - coverageSummary
+      - claimLedgerSummary
+      - priorComparisonSummary
+      - keyConclusionsSummary
+      - remainingGaps
+      - reportSummary
+      - approvedAt: current timestamp
+      - orchestrationRunId: '{{orchestration.runId}}'
+
+      Keep the memory concise but useful for later resume, comparison, or extension of the same topic.
+    userPrompt: |
+      Save the final approved research state in Zakira.Exchange.
+
+      Existing memory lookup:
+      {{load-prior-research-memory.output}}
+
+      Derived research memory key:
+      {{derive-research-memory-key.output}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+
+      Source manifest:
+      {{build-source-manifest.output}}
+
+      Coverage matrix:
+      {{build-coverage-matrix.output}}
+
+      Claim ledger:
+      {{build-claim-ledger.output}}
+
+      Prior-vs-current claim comparison:
+      {{compare-prior-and-current-claims.output}}
+
+      Research dossier:
+      {{research-dossier.output}}
+
+      Final report:
+      {{write-final-report.output}}
+
+      Output confirmation of what was saved.
+
   - name: finalize-output
     type: Transform
     dependsOn:
       - write-final-report
+      - save-final-research-memory
     template: |
       # Deep Research Report
 
