@@ -1,0 +1,29 @@
+{
+  "DefaultProvider": "duckduckgo",
+  "DefaultProfile": "default",
+  "ProfilesRoot": null,
+  "Profiles": {
+    "default": {
+      "Name": "default",
+      "Channel": "msedge",
+      "DefaultProvider": "duckduckgo",
+      "Headless": true,
+      "UserDataDir": null,
+      "Locale": "en-US",
+      "TimeoutSeconds": 30,
+      "Metadata": {}
+    },
+    "interactive": {
+      "Name": "interactive",
+      "Channel": "msedge",
+      "DefaultProvider": "bing",
+      "Headless": false,
+      "UserDataDir": null,
+      "Locale": null,
+      "TimeoutSeconds": 45,
+      "Metadata": {
+        "purpose": "manual sign-in and browsing"
+      }
+    }
+  }
+}

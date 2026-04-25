@@ -1,6 +1,6 @@
 name: deep-research-orchestration
 description: Multi-step deep research orchestration that scopes a topic, searches the web in parallel, fetches pages, stress-tests findings, and produces a sourced report.
-version: "1.0.0"
+version: "1.1.0"
 tags: ["research", "utils", "manual"]
 trigger:
   type: manual
@@ -18,20 +18,26 @@ inputs:
     required: true
     multiline: true
 mcps:
-  - name: web-search
+  - name: context7
+    type: local
+    command: npx
+    arguments:
+      - "-y"
+      - "@upstash/context7-mcp"
+  - name: microsoft-learn
     type: remote
-    endpoint: "{{env.WEB_SEARCH_MCP_ENDPOINT}}"
-    headers:
-      Authorization: "Bearer {{env.WEB_SEARCH_MCP_TOKEN}}"
-  - name: web-fetch
-    type: remote
-    endpoint: "{{env.WEB_FETCH_MCP_ENDPOINT}}"
-    headers:
-      Authorization: "Bearer {{env.WEB_FETCH_MCP_TOKEN}}"
+    endpoint: "https://learn.microsoft.com/api/mcp"
+  - name: recall
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Recall
+      - "--yes"
+      - "--"
+      - mcp
 steps:
   - name: validate-and-scope
     type: Prompt
-    timeoutSeconds: 300
     reasoningLevel: Medium
     systemPrompt: |
       You are a research intake analyst.
@@ -43,6 +49,9 @@ steps:
       3. Search plan
       4. Source quality criteria
       5. Known risks and blind spots
+
+      Use your subagents to pressure-test whether the scoped brief is precise enough
+      to support meaningful research before finalizing it.
 
       If the request is too vague to support meaningful research, explain what is missing and call orchestra_complete with status "failed".
     userPrompt: |
@@ -58,17 +67,23 @@ steps:
         displayName: Query Designer
         description: Designs strong search queries and source categories.
         prompt: |
-          Turn the research request into high-signal internet search queries, alternate phrasings,
-          and source categories to prioritize.
+          Turn the research request into high-signal Recall Search queries for broad discovery first,
+          plus targeted follow-up Recall Research questions for the cases where grounded synthesis,
+          citations, or automatic reading of top results will be needed.
+      - name: brief-quality-checker
+        displayName: Brief Quality Checker
+        description: Verifies the brief is concrete and answerable.
+        prompt: |
+          Judge whether the scoped brief is precise, answerable, and aligned to the user's actual
+          request. Flag any missing constraints, hidden assumptions, or underspecified sub-questions.
 
   - name: search-authoritative-sources
     type: Prompt
     dependsOn:
       - validate-and-scope
-    timeoutSeconds: 900
     reasoningLevel: High
     mcps:
-      - web-search
+      - recall
     retry:
       maxRetries: 1
       backoffSeconds: 2
@@ -76,13 +91,18 @@ steps:
       retryOnTimeout: true
     systemPrompt: |
       You are a primary-source researcher.
-      Use internet search to find authoritative and primary sources for the scoped brief.
+      Use Zakira.Recall Search to discover authoritative and primary sources for the scoped brief.
+      Use Recall Research only when you need source-backed detail from multiple pages to validate,
+      compare, or synthesize the strongest candidates.
 
       Requirements:
       - prioritize official documents, primary data, standards bodies, peer-reviewed material, and first-party publications
-      - search broadly first, then refine
+      - default to Recall Search first when the source landscape is still broad or unclear
+      - use Recall Fetch when you already have a specific URL and want that page's readable content
+      - use Recall Research when answer quality and grounding matter more than speed and you need actual page content, synthesis, or citations
       - return at most 8 high-value sources
       - for each source, explain why it matters and what question it helps answer
+      - use your subagents to test whether the source set is truly authoritative and sufficient for the request
 
       Produce these sections:
       1. Search summary
@@ -99,25 +119,32 @@ steps:
         displayName: Primary Source Scout
         description: Finds official and primary sources.
         prompt: |
-          Use internet search to find the most authoritative primary sources for the scoped brief.
+          Use Zakira.Recall Search to find the most authoritative primary sources for the scoped brief.
+          Use Recall Fetch or Recall Research only after you have strong candidate URLs to inspect.
         mcps:
-          - web-search
+          - recall
       - name: standards-scout
         displayName: Standards Scout
         description: Finds formal standards, papers, and institutional references.
         prompt: |
-          Look for standards bodies, formal papers, institutional publications, and official references.
+          Use Recall Search to look for standards bodies, formal papers, institutional publications,
+          and official references. Use Recall Fetch or Recall Research only for the strongest candidates.
         mcps:
-          - web-search
+          - recall
+      - name: authoritative-coverage-reviewer
+        displayName: Authoritative Coverage Reviewer
+        description: Checks whether primary-source coverage is strong enough.
+        prompt: |
+          Review the authoritative source set and judge whether it is relevant, strong, and complete
+          enough for the user's request. Flag missing primary-source lanes or overreliance on weak sources.
 
   - name: search-broad-coverage
     type: Prompt
     dependsOn:
       - validate-and-scope
-    timeoutSeconds: 900
     reasoningLevel: High
     mcps:
-      - web-search
+      - recall
     retry:
       maxRetries: 1
       backoffSeconds: 2
@@ -125,13 +152,18 @@ steps:
       retryOnTimeout: true
     systemPrompt: |
       You are a coverage researcher.
-      Use internet search to find context, competing views, historical background, and high-quality secondary sources.
+      Use Zakira.Recall Search to find context, competing views, historical background,
+      and high-quality secondary sources.
+      Use Recall Research when you need grounded synthesis from multiple pages rather than just candidate links.
 
       Requirements:
       - look for diverse viewpoints and context
+      - default to Recall Search first for broad exploration and quick scanning of titles, URLs, and snippets
+      - use Recall Research once you need evidence-rich reading, citations, or synthesized comparisons across sources
       - return at most 8 high-value sources
       - highlight what these sources add beyond the primary-source lane
       - surface overlooked angles and likely counterarguments
+      - use your subagents to judge whether the contextual coverage is broad enough and not redundant
 
       Produce these sections:
       1. Search summary
@@ -148,22 +180,192 @@ steps:
         displayName: Context Scout
         description: Finds contextual and explanatory sources.
         prompt: |
-          Find high-quality contextual sources that help explain the topic and its background.
+          Use Recall Search to find high-quality contextual sources that help explain the topic and its background.
+          Use Recall Research only when you need grounded synthesis from the most promising results.
         mcps:
-          - web-search
+          - recall
       - name: dissent-scout
         displayName: Dissent Scout
         description: Looks for disagreement, criticism, and alternative views.
         prompt: |
-          Find credible disagreement, criticism, or alternative interpretations relevant to the research brief.
+          Use Recall Search to find credible disagreement, criticism, or alternative interpretations.
+          Use Recall Research when you need to read and synthesize the strongest opposing sources.
         mcps:
-          - web-search
+          - recall
+      - name: breadth-reviewer
+        displayName: Breadth Reviewer
+        description: Checks whether the contextual lane adds enough breadth.
+        prompt: |
+          Judge whether the contextual sources add meaningful breadth, competing views, history,
+          and counterarguments beyond the authoritative lane. Flag thin or repetitive coverage.
+
+  - name: search-library-docs
+    type: Prompt
+    dependsOn:
+      - validate-and-scope
+    reasoningLevel: High
+    mcps:
+      - context7
+    systemPrompt: |
+      You are a technical documentation researcher.
+      Use Context7 to find official library, framework, SDK, package, and API documentation that
+      materially helps answer the scoped brief.
+
+      Requirements:
+      - use this step when the brief involves software libraries, frameworks, packages, SDKs, APIs, or implementation details; otherwise explicitly say Not applicable
+      - prefer official, version-appropriate docs and code examples
+      - return at most 6 high-value documentation sources
+      - explain what each source clarifies and any version or applicability limits
+      - use your subagents to judge whether the documentation coverage is relevant and sufficient for the request
+
+      Produce these sections:
+      1. Search summary
+      2. Prioritized library and API documentation
+      3. Applicability and remaining gaps
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+    subagents:
+      - name: documentation-scout
+        displayName: Documentation Scout
+        description: Finds official library and API docs that directly answer the brief.
+        prompt: |
+          Use Context7 to find the most relevant official library, framework, SDK, and API documentation
+          for the scoped brief.
+        mcps:
+          - context7
+      - name: api-version-auditor
+        displayName: API Version Auditor
+        description: Checks version alignment and applicability of docs.
+        prompt: |
+          Check whether the documentation found is version-appropriate, targets the right library or API,
+          and avoids mismatched or outdated references.
+        mcps:
+          - context7
+      - name: documentation-sufficiency-reviewer
+        displayName: Documentation Sufficiency Reviewer
+        description: Judges whether the docs coverage is sufficient.
+        prompt: |
+          Judge whether the documentation found is enough to answer the user's request or whether key APIs,
+          libraries, packages, or implementation details are still missing.
+
+  - name: search-microsoft-learn-docs
+    type: Prompt
+    dependsOn:
+      - validate-and-scope
+    reasoningLevel: High
+    mcps:
+      - microsoft-learn
+    systemPrompt: |
+      You are an official Microsoft documentation researcher.
+      Use the Microsoft Learn MCP to find official Microsoft documentation and code samples relevant
+      to the scoped brief.
+
+      Requirements:
+      - use this step when the brief touches Microsoft products, Azure, .NET, Microsoft 365, Windows, Power Platform, GitHub-related Microsoft docs, or adjacent services; otherwise explicitly say Not applicable
+      - prioritize product docs, reference docs, official guidance, and official code samples over marketing pages
+      - return at most 6 high-value Microsoft Learn sources
+      - explain product, version, and service applicability for each source
+      - use your subagents to judge whether the Learn coverage is relevant and sufficient for the request
+
+      Produce these sections:
+      1. Search summary
+      2. Prioritized Microsoft Learn sources
+      3. Applicability and remaining gaps
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+    subagents:
+      - name: learn-doc-scout
+        displayName: Learn Doc Scout
+        description: Finds official Microsoft Learn documentation.
+        prompt: |
+          Use Microsoft Learn to find the official documentation pages that most directly answer the scoped brief.
+        mcps:
+          - microsoft-learn
+      - name: learn-sample-scout
+        displayName: Learn Sample Scout
+        description: Finds official Microsoft Learn code samples when applicable.
+        prompt: |
+          Use Microsoft Learn code search to find official code samples, reference snippets, and implementation examples
+          that strengthen the research brief.
+        mcps:
+          - microsoft-learn
+      - name: learn-coverage-reviewer
+        displayName: Learn Coverage Reviewer
+        description: Judges whether the Microsoft documentation lane is sufficient.
+        prompt: |
+          Judge whether the Microsoft Learn results are sufficient, correctly scoped, and product-appropriate
+          for the user's request. Flag missing Microsoft product or version coverage.
+
+  - name: search-recall-research
+    type: Prompt
+    dependsOn:
+      - validate-and-scope
+    reasoningLevel: High
+    mcps:
+      - recall
+    systemPrompt: |
+      You are an independent web research specialist.
+      Use Zakira.Recall to run a separate research lane using its Search, Fetch, and Research tools.
+
+      Requirements:
+      - use Recall Search for broad discovery, candidate links, and quick scanning of titles, URLs, and snippets
+      - use Recall Research when you need source-backed detail, automatic reading of top results, citations, or synthesis from multiple pages
+      - use Recall Fetch when you already have a specific URL and want that page's readable content
+      - prefer sources that add genuinely new evidence, corroboration, or overlooked context
+      - return at most 6 high-value sources
+      - note when Recall mainly confirms existing findings instead of extending them
+      - use your subagents to judge whether this lane materially improves coverage for the request
+
+      Produce these sections:
+      1. Search summary
+      2. Distinctive sources and findings
+      3. What this lane adds and what is still missing
+    userPrompt: |
+      Original research request:
+      {{param.researchRequest}}
+
+      Scoped brief:
+      {{validate-and-scope.output}}
+    subagents:
+      - name: recall-scout
+        displayName: Recall Scout
+        description: Uses Recall to run an independent search lane.
+        prompt: |
+          Use Zakira.Recall Search first to find high-value sources and candidate URLs that can answer the scoped brief.
+          Escalate to Recall Research only when you need grounded synthesis from the strongest results.
+        mcps:
+          - recall
+      - name: recall-fetch-analyst
+        displayName: Recall Fetch Analyst
+        description: Uses Recall fetch and research capabilities to inspect promising results.
+        prompt: |
+          Use Zakira.Recall Fetch when you already have a specific promising URL to inspect.
+          Use Recall Research when you need grounded synthesis across multiple promising sources.
+        mcps:
+          - recall
+      - name: triangulation-reviewer
+        displayName: Triangulation Reviewer
+        description: Judges whether Recall adds meaningful new coverage.
+        prompt: |
+          Judge whether the Recall lane adds meaningful new evidence, corroboration, or alternative angles,
+          or whether important coverage still remains missing.
 
   - name: normalize-source-list
     type: Transform
     dependsOn:
       - search-authoritative-sources
       - search-broad-coverage
+      - search-library-docs
+      - search-microsoft-learn-docs
+      - search-recall-research
     template: |
       # Authoritative Sources
       {{search-authoritative-sources.output}}
@@ -171,15 +373,25 @@ steps:
       # Broad Coverage Sources
       {{search-broad-coverage.output}}
 
+      # Library And API Documentation
+      {{search-library-docs.output}}
+
+      # Microsoft Learn Sources
+      {{search-microsoft-learn-docs.output}}
+
+      # Recall Research Sources
+      {{search-recall-research.output}}
+
   - name: fetch-key-pages
     type: Prompt
     dependsOn:
       - validate-and-scope
       - normalize-source-list
-    timeoutSeconds: 1200
     reasoningLevel: High
     mcps:
-      - web-fetch
+      - context7
+      - microsoft-learn
+      - recall
     retry:
       maxRetries: 1
       backoffSeconds: 2
@@ -188,13 +400,20 @@ steps:
     systemPrompt: |
       You are an evidence extraction specialist.
       Fetch and read the most important pages from the normalized source list.
+      Use Recall as the default web source lane.
+      Use Recall Fetch when you already have a specific URL and want that page's readable content.
+      Use Recall Research when you need source-backed reading, synthesis, or citations across multiple pages.
+      Context7 for library and API docs, and Microsoft Learn for Microsoft official docs.
+      Prefer the source-native MCP when it can expose the evidence more directly.
 
       Requirements:
       - fetch at most 10 pages that matter most for answering the research question
+      - because the source list already contains specific URLs, prefer Recall Fetch for ordinary web pages by default
       - extract concrete claims, dates, definitions, and data points
       - keep exact source URLs tied to every extracted item
       - note staleness, weak sourcing, and credibility concerns
       - separate direct evidence from interpretation
+      - use your subagents to judge whether the extracted evidence is sufficient and well-matched to the request
 
       Produce these sections:
       1. Extracted evidence by source
@@ -213,29 +432,40 @@ steps:
     subagents:
       - name: evidence-extractor
         displayName: Evidence Extractor
-        description: Pulls concrete evidence from fetched pages.
+        description: Pulls concrete evidence from Recall Fetch, Context7, and Microsoft Learn results.
         prompt: |
-          Read fetched pages carefully and extract the evidence that directly answers the research brief.
+          Use Recall Fetch for specific web-page URLs, and use Recall Research only if multi-page synthesis is needed.
+          Read the fetched or retrieved source content carefully and extract the evidence that directly answers the research brief.
         mcps:
-          - web-fetch
+          - context7
+          - microsoft-learn
+          - recall
       - name: source-auditor
         displayName: Source Auditor
         description: Checks source credibility and evidence quality.
         prompt: |
-          Evaluate whether the fetched pages are current, trustworthy, and strong enough to support major claims.
+          Evaluate whether the fetched or retrieved sources are current, trustworthy, and strong enough to support major claims.
         mcps:
-          - web-fetch
+          - context7
+          - microsoft-learn
+          - recall
+      - name: evidence-sufficiency-reviewer
+        displayName: Evidence Sufficiency Reviewer
+        description: Judges whether the fetched evidence is enough for synthesis.
+        prompt: |
+          Judge whether the extracted evidence is sufficient, relevant, and specific enough to support
+          a trustworthy research synthesis. Flag missing evidence that still blocks strong conclusions.
 
   - name: search-counterevidence
     type: Prompt
     dependsOn:
       - validate-and-scope
       - normalize-source-list
-    timeoutSeconds: 900
     reasoningLevel: High
     mcps:
-      - web-search
-      - web-fetch
+      - context7
+      - microsoft-learn
+      - recall
     retry:
       maxRetries: 1
       backoffSeconds: 2
@@ -247,9 +477,13 @@ steps:
 
       Requirements:
       - look for reputable evidence that challenges the current likely conclusion
-      - fetch pages before relying on conflicting claims
+      - use Recall Search first to discover conflicting claims and candidate sources
+      - use Recall Research when you need grounded synthesis from multiple conflicting sources
+      - use Recall Fetch, Context7, or Microsoft Learn when you already have a specific source to inspect before relying on conflicting claims
       - examine at most 6 counter-evidence sources
       - surface unresolved uncertainty clearly
+      - use Context7 and Microsoft Learn when contradictions depend on official API, product, or version behavior
+      - use your subagents to judge whether the adversarial pass was strong enough
 
       Produce these sections:
       1. Contradictions and counter-evidence
@@ -269,17 +503,30 @@ steps:
         displayName: Contradiction Hunter
         description: Searches for disagreements and counter-evidence.
         prompt: |
-          Look for reputable evidence that challenges, narrows, or contradicts the likely conclusion.
+          Use Recall Search first to look for reputable evidence that challenges, narrows,
+          or contradicts the likely conclusion. Use Recall Research only when you need
+          grounded synthesis from the strongest conflicting sources.
         mcps:
-          - web-search
-          - web-fetch
+          - context7
+          - microsoft-learn
+          - recall
       - name: gap-analyst
         displayName: Gap Analyst
         description: Finds the most important unanswered questions.
         prompt: |
-          Identify what is still missing before the research can be considered deep and trustworthy.
+          Identify what is still missing before the research can be considered deep and trustworthy,
+          including where Recall Search, Recall Fetch, Recall Research, Context7, or Microsoft Learn
+          should be used next.
         mcps:
-          - web-search
+          - context7
+          - microsoft-learn
+          - recall
+      - name: counterevidence-reviewer
+        displayName: Counterevidence Reviewer
+        description: Judges whether the skepticism pass was strong enough.
+        prompt: |
+          Judge whether the contradiction search meaningfully challenged the likely conclusion,
+          whether conflicting claims were checked against fetched evidence, and what still needs scrutiny.
 
   - name: normalize-evidence-pack
     type: Transform
@@ -299,11 +546,11 @@ steps:
       - validate-and-scope
       - normalize-source-list
       - normalize-evidence-pack
-    timeoutSeconds: 1800
     reasoningLevel: High
     mcps:
-      - web-search
-      - web-fetch
+      - context7
+      - microsoft-learn
+      - recall
     infiniteSessions:
       enabled: true
       backgroundCompactionThreshold: 0.8
@@ -314,7 +561,15 @@ steps:
 
       On any rerun triggered by review feedback, treat the latest feedback as mandatory.
       Address every item under Missing coverage, Required evidence, Open questions, and Revision guidance one by one.
-      Perform only the targeted additional search and page fetches needed to close those gaps, then rewrite the full dossier.
+      Perform only the targeted additional Recall, Context7, and Microsoft Learn work needed to close those gaps.
+      Use this Recall decision rule:
+      - use Search when you need options, discovery, titles, URLs, or snippets
+      - use Research when you need evidence, content, synthesis, or citations
+      - use Fetch when you need a specific known page
+      Then rewrite the full dossier.
+
+      Use your subagents to test whether the assembled dossier is sufficiently supported,
+      complete, and aligned to the user's actual research request before finalizing it.
 
       Requirements:
       - answer the actual research request directly
@@ -354,17 +609,31 @@ steps:
         displayName: Evidence Gap Closer
         description: Performs only the extra research needed to satisfy review feedback.
         prompt: |
-          When the dossier has missing evidence or coverage, use the available web tools to close only those specific gaps.
+          When the dossier has missing evidence or coverage, use only the specific Recall,
+          Context7, and Microsoft Learn calls needed to close those gaps.
+          Use Recall Search when you still need source options, Recall Research when you need
+          evidence or synthesis, and Recall Fetch when you already have the exact page to read.
         mcps:
-          - web-search
-          - web-fetch
+          - context7
+          - microsoft-learn
+          - recall
+      - name: coverage-critic
+        displayName: Coverage Critic
+        description: Checks whether the dossier fully answers the request.
+        prompt: |
+          Judge whether the dossier directly answers the user's request, covers each important sub-question,
+          and clearly identifies where evidence is still too thin.
+      - name: citation-auditor
+        displayName: Citation Auditor
+        description: Checks that material claims stay tied to evidence.
+        prompt: |
+          Review the dossier for citation discipline, source quality, and overreliance on any narrow or weak source lane.
 
   - name: quality-review
     type: Prompt
     dependsOn:
       - validate-and-scope
       - research-dossier
-    timeoutSeconds: 300
     reasoningLevel: Medium
     systemPrompt: |
       You are the quality gate for a deep research pipeline.
@@ -376,6 +645,7 @@ steps:
       - material claims are backed by cited sources
       - major uncertainties and contradictions are surfaced
       - the research is deep rather than superficial
+      - the research lanes that were materially applicable were used well enough to support the conclusions
 
       Your response must use exactly one of these final decision lines:
       - FINAL_DECISION: APPROVED
@@ -406,6 +676,12 @@ steps:
         description: Ensures the dossier is properly sourced and trustworthy.
         prompt: |
           Check whether important claims have credible support and whether weak evidence remains.
+      - name: depth-guardian
+        displayName: Depth Guardian
+        description: Ensures the research depth is sufficient.
+        prompt: |
+          Check whether the dossier is genuinely deep, whether relevant research lanes were used well,
+          and whether the remaining gaps are acceptably narrow.
     loop:
       target: research-dossier
       maxIterations: 3
@@ -415,7 +691,6 @@ steps:
     type: Prompt
     dependsOn:
       - quality-review
-    timeoutSeconds: 120
     systemPrompt: |
       You are the enforcement gate.
       If the quality review contains FINAL_DECISION: APPROVED, respond with APPROVED FOR REPORT.
@@ -429,7 +704,6 @@ steps:
     dependsOn:
       - research-dossier
       - enforce-approval
-    timeoutSeconds: 600
     reasoningLevel: Medium
     systemPrompt: |
       You are a senior research writer.

@@ -1,6 +1,7 @@
 {
   "name": "icm-auto-acknowledge",
   "description": "Periodically checks for active IcM incidents that have not been acknowledged, acknowledges each one via the IcM MCP server, creates an ActionView entry summarizing what was done, and produces a final markdown summary. Runs every 15 seconds. Uses a gate step to complete early if no unacknowledged incidents are found.",
+  "tags": ["ZTS", "MSFT", "OCE", "ICM", "auto"],
   "mcps": [
     {
       "name": "icm",
