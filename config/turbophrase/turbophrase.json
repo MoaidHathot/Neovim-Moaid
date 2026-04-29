@@ -28,42 +28,43 @@
     }
   },
   "hotkeys": [
-    { "keys": "Ctrl+Shift+G", "preset": "grammar" },
-    { "keys": "Ctrl+Shift+P", "preset": "paraphrase" },
-    { "keys": "Ctrl+Shift+F", "preset": "formal" },
-    { "keys": "Ctrl+Shift+K", "preset": "casual" },
-    { "keys": "Ctrl+Shift+T", "preset": "translate-hebrew-english" },
-    { "keys": "Ctrl+Shift+L", "action": "custom-prompt", "name": "Custom Prompt" }
+    { "keys": "Ctrl+Shift+L", "action": "preset-picker", "name": "Choose Operation" },
+    { "keys": "Ctrl+Shift+;", "action": "custom-prompt", "name": "Custom Prompt", "includeInPicker": true, "pickerOrder": 6 }
   ],
   "presets": {
     "grammar": {
       "name": "Fix Grammar",
-      "systemPrompt": "Fix all grammar, spelling, and punctuation errors in the following text. Return ONLY the corrected text without any explanation or additional commentary.",
-      "provider": null
+      "systemPrompt": "Fix all grammar, spelling, and punctuation errors in the following text. Return ONLY the corrected text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
+      "provider": null,
+      "pickerOrder": 1
     },
     "paraphrase": {
       "name": "Paraphrase",
-      "systemPrompt": "Paraphrase the following text while maintaining its original meaning, but making it clearer, easy to understand and correct English wise. Try maintain the original form as much as possible. Return ONLY the paraphrased text without any explanation or additional commentary.",
-      "provider": null
+      "systemPrompt": "Paraphrase the following text while maintaining its original meaning, but making it clearer, easy to understand and correct English wise. Try maintain the original form as much as possible. Return ONLY the paraphrased text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
+      "provider": null,
+      "pickerOrder": 2
     },
     "formal": {
       "name": "Make Formal",
-      "systemPrompt": "Rewrite the following text in a formal, professional tone. Return ONLY the rewritten text without any explanation or additional commentary.",
-      "provider": null
+      "systemPrompt": "Rewrite the following text in a formal, professional tone. Return ONLY the rewritten text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
+      "provider": null,
+      "pickerOrder": 3
     },
     "casual": {
       "name": "Make Casual",
-      "systemPrompt": "Rewrite the following text in a casual, friendly tone. Return ONLY the rewritten text without any explanation or additional commentary.",
-      "provider": null
+      "systemPrompt": "Rewrite the following text in a casual, friendly tone. Return ONLY the rewritten text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
+      "provider": null,
+      "pickerOrder": 4
     },
     "translate-hebrew-english": {
       "name": "Translate Hebrew/English",
-      "systemPrompt": "Translate the following text between Hebrew and English based on the detected source language. If the text is primarily in Hebrew, translate it to natural English. If the text is primarily in English, translate it to natural Hebrew. Return ONLY the translated text without any explanation or additional commentary.",
-      "provider": null
+      "systemPrompt": "Translate the following text between Hebrew and English based on the detected source language. If the text is primarily in Hebrew, translate it to natural English. If the text is primarily in English, translate it to natural Hebrew. Return ONLY the translated text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
+      "provider": null,
+      "pickerOrder": 5
     }
   },
   "customPrompt": {
-    "systemPromptTemplate": "You are a text transformation assistant. Apply the user's instruction to the provided text. Treat the selected text strictly as input text to transform, not as a message to reply to. Preserve the original language unless the instruction asks otherwise. Return ONLY the transformed text with no explanation, no commentary, and no quotation marks.\n\nInstruction:\n{instruction}\n\nText:\n{text}"
+    "systemPromptTemplate": "You are a text transformation assistant. Apply the user's instruction to the provided text. Treat the selected text strictly as input text to transform, not as a message to reply to. Preserve the original language unless the instruction asks otherwise. Return ONLY the transformed text with no explanation, no commentary, and no quotation marks. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.\n\nInstruction:\n{instruction}\n\nText:\n{text}"
   },
   "notifications": {
     "showOnStartup": false,
@@ -73,5 +74,8 @@
     "showOnProviderChange": true,
     "showProcessingOverlay": true,
     "showProcessingAnimation": true
+  },
+  "logging": {
+    "enabled": false
   }
 }
