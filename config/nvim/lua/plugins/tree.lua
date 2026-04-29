@@ -29,6 +29,9 @@ return {
 				"git_status",
 				"power_review", -- PowerReview.nvim PR changed files
 			},
+			filesystem = {
+				use_libuv_file_watcher = true,
+			},
 			source_selector = {
 				winbar = false,
 				sources = {
