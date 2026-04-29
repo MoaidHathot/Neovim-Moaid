@@ -263,10 +263,10 @@ keybindings:
     # bindings: ['alt+enter']
 
   # Focus the next/previous workspace defined in `workspaces` config.
-  - commands: ['focus --next-workspace']
-    bindings: ['alt+T']
-  - commands: ['focus --prev-workspace']
-    bindings: ['alt+shift+t']
+  # - commands: ['focus --next-workspace']
+  #   bindings: ['alt+T']
+  # - commands: ['focus --prev-workspace']
+  #   bindings: ['alt+shift+t']
 
   # Focus the workspace that last had focus.
   - commands: ['focus --recent-workspace']
