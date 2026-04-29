@@ -19,7 +19,7 @@
     },
     "copilot": {
       "type": "copilot",
-      "model": "claude-opus-4.6"
+      "model": "gpt-5.4"
     },
     "ollama": {
       "type": "ollama",
@@ -28,11 +28,13 @@
     }
   },
   "hotkeys": [
-  { "keys": "Ctrl+Alt+G", "preset": "grammar" },
-  { "keys": "Ctrl+Alt+P", "preset": "paraphrase" },
-  { "keys": "Ctrl+Alt+F", "preset": "formal" },
-  { "keys": "Ctrl+Alt+K", "preset": "casual" }
-],  
+    { "keys": "Ctrl+Shift+G", "preset": "grammar" },
+    { "keys": "Ctrl+Shift+P", "preset": "paraphrase" },
+    { "keys": "Ctrl+Shift+F", "preset": "formal" },
+    { "keys": "Ctrl+Shift+K", "preset": "casual" },
+    { "keys": "Ctrl+Shift+T", "preset": "translate-hebrew-english" },
+    { "keys": "Ctrl+Shift+L", "action": "custom-prompt", "name": "Custom Prompt" }
+  ],
   "presets": {
     "grammar": {
       "name": "Fix Grammar",
@@ -53,10 +55,18 @@
       "name": "Make Casual",
       "systemPrompt": "Rewrite the following text in a casual, friendly tone. Return ONLY the rewritten text without any explanation or additional commentary.",
       "provider": null
+    },
+    "translate-hebrew-english": {
+      "name": "Translate Hebrew/English",
+      "systemPrompt": "Translate the following text between Hebrew and English based on the detected source language. If the text is primarily in Hebrew, translate it to natural English. If the text is primarily in English, translate it to natural Hebrew. Return ONLY the translated text without any explanation or additional commentary.",
+      "provider": null
     }
   },
+  "customPrompt": {
+    "systemPromptTemplate": "You are a text transformation assistant. Apply the user's instruction to the provided text. Treat the selected text strictly as input text to transform, not as a message to reply to. Preserve the original language unless the instruction asks otherwise. Return ONLY the transformed text with no explanation, no commentary, and no quotation marks.\n\nInstruction:\n{instruction}\n\nText:\n{text}"
+  },
   "notifications": {
-    "showOnStartup": true,
+    "showOnStartup": false,
     "showOnSuccess": true,
     "showOnError": true,
     "showOnConfigReload": true,
