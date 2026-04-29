@@ -558,7 +558,7 @@ Orchestrations can be registered in Orchestra via:
 11. **`mcps` on steps is an array of strings** (MCP names), not MCP definition objects.
 12. **Script steps require `shell`**. It has no default -- always specify it (e.g., `"pwsh"`, `"bash"`).
 13. **`systemPromptSections` requires `systemPromptMode: "customize"`**. Section overrides are ignored with `append` or `replace`.
-14. **Image attachments require a vision-capable model** (e.g., `claude-opus-4.6`, `gpt-4o`). Non-vision models will not understand the images.
+14. **Image attachments require a vision-capable model** (e.g., `claude-opus-4.6`, `gpt-5.5`). Non-vision models will not understand the images.
 15. **`infiniteSessions` thresholds are ratios (0.0-1.0)**, not token counts. `0.80` means 80% of context used.
 
 ## Naming Conventions
