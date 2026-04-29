@@ -5,22 +5,26 @@ export default function (): Hooks {
     provider: {
       id: "github-copilot",
       async models(provider) {
-        const base = provider.models["claude-opus-4.6"];
-        if (!base) return provider.models;
-        provider.models["claude-opus-4.6-1m"] = {
-          ...base,
-          id: "claude-opus-4.6-1m",
-          name: "Claude Opus 4.6 (1M)",
-          api: {
-            ...base.api,
-            id: "claude-opus-4.6-1m",
-          },
-          limit: {
-            ...base.limit,
-            context: 1000000,
-            input: 900000,
-          },
-        };
+        for (const id of ["claude-opus-4.6", "claude-opus-4.7"] as const) {
+          const base = provider.models[id];
+          if (!base) continue;
+          const oneMillionID = `${id}-1m`;
+          provider.models[oneMillionID] = {
+            ...base,
+            id: oneMillionID,
+            name: `${base.name} (1M)`,
+            api: {
+              ...base.api,
+              id: oneMillionID,
+            },
+            limit: {
+              ...base.limit,
+              context: 1000000,
+              input: 900000,
+              output: 128000,
+            },
+          };
+        }
         return provider.models;
       },
     },
