@@ -7,7 +7,7 @@ export const PalantirPlugin: Plugin = async ({ $, directory }) => {
 
   const notify = async (...args: string[]) => {
     try {
-      await $`cmd /c dnx Palantir --yes -- -q ${args}`
+      await $`cmd /c dnx Palantir --yes --add-source https://api.nuget.org/v3/index.json -- -q ${args}`
     } catch {
       // Silently ignore notification failures
     }
