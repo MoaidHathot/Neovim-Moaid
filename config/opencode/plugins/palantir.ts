@@ -6,11 +6,7 @@ export const PalantirPlugin: Plugin = async ({ $, directory }) => {
   let wasBusy = false
 
   const notify = async (...args: string[]) => {
-    try {
-      await $`cmd /c dnx Palantir --yes --add-source https://api.nuget.org/v3/index.json -- -q ${args} >nul 2>nul`
-    } catch {
-      // Silently ignore notification failures
-    }
+    await $`cmd /c dnx Palantir --yes --add-source https://api.nuget.org/v3/index.json -- -q ${args}`.nothrow().quiet()
   }
 
   const cancelPending = () => {
@@ -62,7 +58,7 @@ export const PalantirPlugin: Plugin = async ({ $, directory }) => {
           "-m", "Session encountered an error",
           "-b", directory,
         )
-      } else if (event.type === "permission.asked") {
+      } else if ((event.type as string) === "permission.asked") {
         const props = event.properties as { sessionID: string }
         if (childSessions.has(props.sessionID)) return
         cancelPending()
