@@ -51,10 +51,10 @@ config/configstore
 config/nushell
 config/k9s
 config/Orchestra/.orchestra.pids.json
+config/turbophrase/turbophrase.log
 
 tags
 test.sh
 .luarc.json
 
 spell/
-
