@@ -62,15 +62,16 @@ export const PalantirPlugin: Plugin = async ({ $, directory }) => {
           "-m", "Session encountered an error",
           "-b", directory,
         )
+      } else if (event.type === "permission.asked") {
+        const props = event.properties as { sessionID: string }
+        if (childSessions.has(props.sessionID)) return
+        cancelPending()
+        await notify(
+          "--preset", "opencode-action",
+          "-m", "Action requires your approval",
+          "-b", directory,
+        )
       }
-    },
-
-    "permission.ask": async (_input, _output) => {
-      await notify(
-        "--preset", "opencode-action",
-        "-m", "Action requires your approval",
-        "-b", directory,
-      )
     },
   }
 }
