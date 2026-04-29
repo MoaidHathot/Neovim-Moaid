@@ -1,4 +1,13 @@
 local roslyn_filetypes = { 'cs', 'vb', 'csproj', 'sln', 'slnx', 'props', 'csx', 'targets', 'tproj', 'slngen', 'fproj', 'razor' }
+local roslyn_analysis_scope = "openFiles"
+local roslyn_analyzers_enabled = true
+local diagnostic_severity_index = 1
+
+local diagnostic_severity_modes = {
+	{ label = "all", severity = nil },
+	{ label = "warnings and errors", severity = vim.diagnostic.severity.WARN },
+	{ label = "errors only", severity = vim.diagnostic.severity.ERROR },
+}
 
 local function normalize_path(path)
 	if not path or path == "" then
@@ -123,6 +132,180 @@ local function select_roslyn_target_broad()
 	end
 end
 
+local function get_roslyn_capabilities()
+	local capabilities = vim.lsp.protocol.make_client_capabilities()
+	local ok, cmp_nvim_lsp = pcall(require, "cmp_nvim_lsp")
+	if ok then
+		capabilities = cmp_nvim_lsp.default_capabilities(capabilities)
+	end
+
+	capabilities.textDocument = capabilities.textDocument or {}
+	capabilities.textDocument.diagnostic = capabilities.textDocument.diagnostic or {}
+	capabilities.textDocument.diagnostic.dynamicRegistration = true
+
+	capabilities.workspace = capabilities.workspace or {}
+	capabilities.workspace.didChangeWatchedFiles = capabilities.workspace.didChangeWatchedFiles or {}
+	capabilities.workspace.didChangeWatchedFiles.dynamicRegistration = false
+
+	return capabilities
+end
+
+local function get_roslyn_clients(buf)
+	if buf then
+		return vim.lsp.get_clients({ name = "roslyn", bufnr = buf })
+	end
+
+	return vim.lsp.get_clients({ name = "roslyn" })
+end
+
+local function update_roslyn_settings(mutator)
+	local clients = get_roslyn_clients()
+	if #clients == 0 then
+		vim.notify("Roslyn is not running", vim.log.levels.WARN, { title = "Roslyn" })
+		return
+	end
+
+	for _, client in ipairs(clients) do
+		client.config.settings = client.config.settings or {}
+		mutator(client.config.settings)
+		client:notify("workspace/didChangeConfiguration", { settings = client.config.settings })
+	end
+end
+
+local function toggle_roslyn_analysis_scope()
+	roslyn_analysis_scope = roslyn_analysis_scope == "openFiles" and "fullSolution"
+		or roslyn_analysis_scope == "fullSolution" and "none"
+		or "openFiles"
+
+	update_roslyn_settings(function(settings)
+		settings["csharp|background_analysis"] = settings["csharp|background_analysis"] or {}
+		settings["csharp|background_analysis"].dotnet_analyzer_diagnostics_scope = roslyn_analysis_scope
+		settings["csharp|background_analysis"].dotnet_compiler_diagnostics_scope = roslyn_analysis_scope
+	end)
+
+	vim.notify("Background analysis: " .. roslyn_analysis_scope, vim.log.levels.INFO, { title = "Roslyn" })
+end
+
+local function toggle_roslyn_analyzers()
+	roslyn_analyzers_enabled = not roslyn_analyzers_enabled
+
+	update_roslyn_settings(function(settings)
+		settings.roslyn = settings.roslyn or {}
+		settings.roslyn.enable_roslyn_analysers = roslyn_analyzers_enabled
+	end)
+
+	local state = roslyn_analyzers_enabled and "enabled" or "disabled"
+	vim.notify("Roslyn analyzers " .. state, vim.log.levels.INFO, { title = "Roslyn" })
+end
+
+local function cycle_diagnostic_severity()
+	diagnostic_severity_index = diagnostic_severity_index % #diagnostic_severity_modes + 1
+	local mode = diagnostic_severity_modes[diagnostic_severity_index]
+	local severity_filter = mode.severity and { min = mode.severity } or nil
+
+	vim.diagnostic.config({
+		severity_sort = true,
+		virtual_text = severity_filter and { severity = severity_filter } or true,
+		signs = severity_filter and { severity = severity_filter } or true,
+		underline = severity_filter and { severity = severity_filter } or true,
+	})
+
+	vim.notify("Diagnostics: " .. mode.label, vim.log.levels.INFO, { title = "Diagnostics" })
+end
+
+local function toggle_inlay_hints(buf)
+	buf = buf or vim.api.nvim_get_current_buf()
+	if not vim.lsp.inlay_hint then
+		vim.notify("Inlay hints are not available", vim.log.levels.WARN, { title = "LSP" })
+		return
+	end
+
+	local enabled = vim.lsp.inlay_hint.is_enabled({ bufnr = buf })
+	vim.lsp.inlay_hint.enable(not enabled, { bufnr = buf })
+end
+
+local function refresh_codelens(buf)
+	buf = buf or vim.api.nvim_get_current_buf()
+	pcall(vim.lsp.codelens.refresh, { bufnr = buf })
+end
+
+local function run_codelens(buf)
+	buf = buf or vim.api.nvim_get_current_buf()
+	local line = vim.api.nvim_win_get_cursor(0)[1] - 1
+	local line_lenses = vim.tbl_filter(function(lens)
+		return lens.range and lens.range.start.line == line and lens.command
+	end, vim.lsp.codelens.get(buf))
+
+	if #line_lenses == 0 then
+		vim.notify("No executable codelens found at current line", vim.log.levels.INFO, { title = "CodeLens" })
+		return
+	end
+
+	local function run_lens(lens)
+		if lens.command.command == "roslyn.client.peekReferences" then
+			vim.lsp.buf.references()
+			return
+		end
+
+		vim.lsp.codelens.run()
+	end
+
+	if #line_lenses == 1 then
+		run_lens(line_lenses[1])
+		return
+	end
+
+	vim.ui.select(line_lenses, {
+		prompt = "Code lenses:",
+		format_item = function(lens)
+			return lens.command.title
+		end,
+	}, function(lens)
+		if lens then
+			run_lens(lens)
+		end
+	end)
+end
+
+local function refresh_roslyn_after_project_change(buf)
+	buf = buf or vim.api.nvim_get_current_buf()
+	if #get_roslyn_clients(buf) == 0 then
+		return
+	end
+
+	refresh_codelens(buf)
+	pcall(function()
+		vim.lsp.diagnostic._refresh()
+	end)
+
+	vim.notify(
+		"Project file saved. Roslyn should reload it; run .NET restore if package references changed.",
+		vim.log.levels.INFO,
+		{ title = "Roslyn" }
+	)
+end
+
+local function show_roslyn_info()
+	local clients = get_roslyn_clients()
+	local selected_solution = vim.g.roslyn_nvim_selected_solution
+	local lines = {
+		"Roslyn clients: " .. tostring(#clients),
+		"Target: " .. (selected_solution and vim.fn.fnamemodify(selected_solution, ":.") or "none"),
+		"Background analysis: " .. roslyn_analysis_scope,
+		"Analyzers: " .. (roslyn_analyzers_enabled and "enabled" or "disabled"),
+	}
+
+	for _, client in ipairs(clients) do
+		lines[#lines + 1] = string.format(
+			"Client %d root: %s",
+			client.id,
+			client.config.root_dir and vim.fn.fnamemodify(client.config.root_dir, ":.") or "none"
+		)
+	end
+
+	vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO, { title = "Roslyn" })
+end
+
 local function toggle_roslyn_semantic_tokens(buf, client)
 	buf = buf or vim.api.nvim_get_current_buf()
 	client = client or vim.lsp.get_clients({ name = "roslyn", bufnr = buf })[1]
@@ -195,6 +378,7 @@ return {
 			require("roslyn").setup(opts)
 
 			vim.lsp.config("roslyn", {
+				capabilities = get_roslyn_capabilities(),
 				filetypes = roslyn_filetypes,
 				root_dir = roslyn_root_dir,
 				settings = {
@@ -211,6 +395,20 @@ return {
 					["csharp|completion"] = {
 						dotnet_show_completion_items_from_unimported_namespaces = true,
 					},
+					["csharp|inlay_hints"] = {
+						csharp_enable_inlay_hints_for_implicit_object_creation = true,
+						csharp_enable_inlay_hints_for_implicit_variable_types = true,
+						csharp_enable_inlay_hints_for_lambda_parameter_types = true,
+						csharp_enable_inlay_hints_for_types = true,
+						dotnet_enable_inlay_hints_for_indexer_parameters = true,
+						dotnet_enable_inlay_hints_for_literal_parameters = true,
+						dotnet_enable_inlay_hints_for_object_creation_parameters = true,
+						dotnet_enable_inlay_hints_for_other_parameters = true,
+						dotnet_enable_inlay_hints_for_parameters = true,
+						dotnet_suppress_inlay_hints_for_parameters_that_differ_only_by_suffix = true,
+						dotnet_suppress_inlay_hints_for_parameters_that_match_argument_name = true,
+						dotnet_suppress_inlay_hints_for_parameters_that_match_method_intent = true,
+					},
 					["csharp|formatting"] = {
 						dotnet_organize_imports_on_format = true,
 					},
@@ -221,7 +419,8 @@ return {
 						dotnet_search_reference_assemblies = true,
 					},
 					["csharp|code_lens"] = {
-						dotnet_enable_references_code_lens = false
+						dotnet_enable_references_code_lens = true,
+						dotnet_enable_tests_code_lens = true,
 					},
 				}
 			})
@@ -237,6 +436,28 @@ return {
 			-- "williamboman/mason-lspconfig.nvim",
 		},
 		config = function()
+			pcall(vim.api.nvim_create_user_command, "RoslynInfo", show_roslyn_info, {
+				desc = "Show Roslyn target and client state",
+			})
+
+			vim.api.nvim_create_autocmd({ "BufEnter", "InsertLeave", "BufWritePost" }, {
+				group = vim.api.nvim_create_augroup("moaid_roslyn_codelens", { clear = true }),
+				pattern = "*.cs",
+				callback = function(ev)
+					if #get_roslyn_clients(ev.buf) > 0 then
+						refresh_codelens(ev.buf)
+					end
+				end,
+			})
+
+			vim.api.nvim_create_autocmd("BufWritePost", {
+				group = vim.api.nvim_create_augroup("moaid_roslyn_project_changed", { clear = true }),
+				pattern = { "*.csproj", "*.props", "*.targets", "*.sln", "*.slnx", "*.slnf", "global.json", "Directory.Packages.props" },
+				callback = function(ev)
+					refresh_roslyn_after_project_change(ev.buf)
+				end,
+			})
+
 			vim.api.nvim_create_autocmd("LspAttach", {
 				group = vim.api.nvim_create_augroup("moaid_lsp_attach", { clear = true }),
 				callback = function(ev)
@@ -247,10 +468,25 @@ return {
 					end
 
 					if client and client.name == "roslyn" then
+						if client:supports_method("textDocument/inlayHint") then
+							pcall(vim.lsp.inlay_hint.enable, true, { bufnr = buf })
+						end
+
+						if client:supports_method("textDocument/codeLens") then
+							refresh_codelens(buf)
+						end
+
 						vim.b[buf].roslyn_semantic_tokens_provider = client.server_capabilities.semanticTokensProvider
 						vim.b[buf].roslyn_semantic_tokens_enabled = client.server_capabilities.semanticTokensProvider ~= nil
 						vim.keymap.set('n', '<leader>lT', select_roslyn_target_broad, bopts("Select Roslyn Target"))
 						vim.keymap.set('n', '<leader>lR', '<cmd>Roslyn restart<CR>', bopts("Restart Roslyn"))
+						vim.keymap.set('n', '<leader>lI', show_roslyn_info, bopts("Show Roslyn Info"))
+						vim.keymap.set('n', '<leader>lH', function() toggle_inlay_hints(buf) end, bopts("Toggle Inlay Hints"))
+						vim.keymap.set('n', '<leader>lc', function() run_codelens(buf) end, bopts("Run CodeLens"))
+						vim.keymap.set('n', '<leader>lC', function() refresh_codelens(buf) end, bopts("Refresh CodeLens"))
+						vim.keymap.set('n', '<leader>lA', toggle_roslyn_analyzers, bopts("Toggle Roslyn Analyzers"))
+						vim.keymap.set('n', '<leader>lB', toggle_roslyn_analysis_scope, bopts("Cycle Background Analysis"))
+						vim.keymap.set('n', '<leader>lD', cycle_diagnostic_severity, bopts("Cycle Diagnostic Severity"))
 						vim.keymap.set('n', '<leader>lS', function()
 							toggle_roslyn_semantic_tokens(buf, client)
 						end, bopts("Toggle Roslyn Semantic Tokens"))

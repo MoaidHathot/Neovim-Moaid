@@ -19,6 +19,15 @@ local function get_lsp_name()
 	return language_servers
 end
 
+local function get_roslyn_target()
+	local target = vim.g.roslyn_nvim_selected_solution
+	if not target or target == "" then
+		return ""
+	end
+
+	return "Roslyn: " .. vim.fn.fnamemodify(target, ":t")
+end
+
 return {
 	{
 		'nvim-lualine/lualine.nvim',
@@ -32,6 +41,10 @@ return {
 				icon_enabled = true
 			},
 			sections = {
+				lualine_c = {
+					'filename',
+					get_roslyn_target,
+				},
 				lualine_x = {
 					get_lsp_name,
 					--'selectioncount',

@@ -17,7 +17,7 @@ return {
 			{ "<leader>g", group = "Git" },
 			{ "<leader>m", group = "Misc" },
 			{ "<leader>n", group = ".NET" },
-			{ "<leader>nr", group = ".NET References" },
+			{ "<leader>nR", group = ".NET References" },
 			{ "<leader>np", group = ".NET Packages" },
 			{ "<leader>P", group = "Preview" },
 			{ "<leader>p", group = "PowerReview" },
