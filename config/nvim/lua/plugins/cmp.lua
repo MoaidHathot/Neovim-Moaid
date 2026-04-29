@@ -334,15 +334,19 @@ return {
 				border = "rounded"
 			},
 			always_trigger = false,
+			cursorhold_update = false,
 			extra_trigger_chars = { "(", "," },
-			select_signature_key = "<C-Right>",
 			zindex = 200,
 		},
 		config = function(_, opts)
 			require("lsp_signature").setup(opts)
-			vim.keymap.set('i', '<C-Left>', function()
+
+			local cycle_signature = function()
 				require('lsp_signature').signature({ trigger = 'NextSignature' })
-			end, { desc = 'Next signature overload', silent = true })
+			end
+
+			vim.keymap.set('i', '<C-Right>', cycle_signature, { desc = 'Next signature overload', silent = true })
+			vim.keymap.set('i', '<C-Left>', cycle_signature, { desc = 'Next signature overload', silent = true })
 		end,
 	}
 }
