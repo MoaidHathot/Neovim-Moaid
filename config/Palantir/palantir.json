@@ -21,7 +21,7 @@
       "expandShortcodes": true,
       "title": "❌ Session error",
       "audio": "alarm2",
-      "duration": "long",
+      "duration": "short",
       "scenario": "reminder"
     },
     "opencode-permission": {
@@ -29,7 +29,7 @@
       "expandShortcodes": true,
       "title": "❓ Approval needed",
       "audio": "reminder",
-      "duration": "long",
+      "duration": "short",
       "scenario": "reminder"
     }
   }
