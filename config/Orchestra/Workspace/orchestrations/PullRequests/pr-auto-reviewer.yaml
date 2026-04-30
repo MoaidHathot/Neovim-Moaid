@@ -13,6 +13,7 @@ variables:
   repoLocalPath: "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS"
   zakiraCategory: pr-code-review-state
   staleReviewMinutes: "60"
+  skillsDirPowerReview: "./skills-powerreview"
 
 defaultRetryPolicy:
   maxRetries: 2
@@ -140,6 +141,8 @@ steps:
 
       If prsToReview is empty, call orchestra_complete. Otherwise output the JSON.
     mcps: [zakira, powerreview]
+    skillDirectories:
+      - "{{vars.skillsDirPowerReview}}"
 
   - name: invoke-reviews
     type: Prompt

@@ -95,7 +95,6 @@ steps:
 
       Output confirmation of what was saved.
     mcps: [zakira]
-    timeoutSeconds: 60
 
   - name: fetch-pr-diff
     type: Prompt
@@ -160,7 +159,8 @@ steps:
 
       IMPORTANT: The workingDirectory field is critical -- it tells downstream agents where to find the source code for the PR branch.
     mcps: [powerreview]
-    timeoutSeconds: 60
+    skillDirectories:
+      - "{{vars.skillsDirPowerReview}}"
 
   - name: fetch-work-items
     type: Prompt
@@ -778,6 +778,7 @@ steps:
     mcps: [powerreview]
     skillDirectories:
       - "{{vars.skillsDirActionView}}"
+      - "{{vars.skillsDirPowerReview}}"
 
   - name: submit-action-view-entry
     type: Command
