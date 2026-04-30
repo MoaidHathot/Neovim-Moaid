@@ -74,14 +74,3 @@ vim.opt.winborder = 'rounded'
 -- Is not supported in Windows Terminal. This is a new feature in 0.10.0 for preventing screen flippering
 -- https://gist.github.com/christianparpart/d8a62cc1ab659194337d73e399004036
 vim.opt.termsync = false
-
--- Use PowerShell for :terminal on Windows
-if vim.fn.has("win32") == 1 then
-	local pwsh = vim.fn.executable("pwsh") == 1 and "pwsh" or "powershell"
-	vim.opt.shell = pwsh
-	vim.opt.shellcmdflag = "-NoLogo -ExecutionPolicy RemoteSigned -Command"
-	vim.opt.shellquote = ""
-	vim.opt.shellxquote = ""
-	vim.opt.shellredir = "2>&1 | %%{ \"$_\" } | Out-File %s; exit $LastExitCode"
-	vim.opt.shellpipe = "2>&1 | %%{ \"$_\" } | Tee-Object %s; exit $LastExitCode"
-end
