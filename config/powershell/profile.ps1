@@ -364,6 +364,26 @@ function Apply-TerminalSettings {
     Write-Host "Windows Terminal settings applied from: $sourcePath" -ForegroundColor Green
 }
 
+function Set-TabState
+{
+	[CmdletBinding()]
+	param (
+		[string]$Title,
+		[ValidateRange(0, 4)]
+		[int]$State = 0,
+		[ValidateRange(0, 100)]
+		[int]$Percent = 0
+	)
+
+	$e = [char]27
+	$out = ""
+	if ($PSBoundParameters.ContainsKey('Title')) {
+		$out += "$e]0;$Title$e\"
+	}
+	$out += "$e]9;4;$State;$Percent$e\"
+	[Console]::Write($out)
+}
+
 function mkcd
 {
 	param (
