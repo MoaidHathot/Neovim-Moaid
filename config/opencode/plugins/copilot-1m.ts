@@ -33,7 +33,7 @@ export default function (): Hooks {
             name: "Claude Opus 4.7 (1M)",
             api: {
               ...opus47.api,
-              id: "claude-opus-4.7",
+              id: "claude-opus-4.7-1m-internal",
               url: "https://api.githubcopilot.com",
               npm: "@ai-sdk/github-copilot",
             },
@@ -51,24 +51,6 @@ export default function (): Hooks {
 
         return provider.models;
       },
-    },
-    "chat.params": async (incoming, output) => {
-      if (incoming.model.id !== "claude-opus-4.7-1m") return;
-
-      const effort = output.options.reasoningEffort;
-      delete output.options.reasoningEffort;
-
-      if (effort === "high") {
-        output.options.thinking_budget = 32000;
-        return;
-      }
-      if (effort === "medium") {
-        output.options.thinking_budget = 4000;
-        return;
-      }
-      if (effort === "low") {
-        output.options.thinking_budget = 1024;
-      }
     },
     "chat.headers": async (incoming, output) => {
       if (!incoming.model.providerID.includes("github-copilot")) return;
