@@ -7,6 +7,13 @@ import { basename } from "node:path"
 // OSC 0       → tab title
 // OSC 9;4;s;p → tab progress bar  (state s, percent p)
 //   s=0 clear, s=1 green, s=2 red, s=3 pulsing yellow, s=4 solid yellow
+//
+// Visual encoding (state, percent) — chosen so each is distinguishable at
+// a glance even without the title prefix:
+//   idle      → (0, 0)    no bar
+//   busy      → (3, 0)    pulsing yellow indeterminate
+//   question  → (1, 50)   half-filled green bar (literally "half progress")
+//   error     → (2, 0)    solid red
 export const TabStatusPlugin: Plugin = async ({ directory }) => {
   const label = basename(directory)
   const children = new Set<string>()
@@ -28,7 +35,7 @@ export const TabStatusPlugin: Plugin = async ({ directory }) => {
   }
 
   const render = () => {
-    if (pending.size) return emit(`${ICON.ask} ${label}`, 4)
+    if (pending.size) return emit(`${ICON.ask} ${label}`, 1, 50)
     if (busy) return emit(`${ICON.busy} ${label}`, 3)
     return emit(`${ICON.idle} ${label}`, 0)
   }
