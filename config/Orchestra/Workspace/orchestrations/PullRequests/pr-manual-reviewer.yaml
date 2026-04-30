@@ -1,0 +1,139 @@
+name: pr-manual-reviewer
+description: |
+  Reviews a single Azure DevOps Pull Request specified by URL. Given a PR URL, this orchestration fetches the PR's metadata (id, title, author, branches, reviewers, latest iteration) using the Azure DevOps MCP, then invokes the pr-code-reviewer orchestration with that data. This is the on-demand companion to pr-auto-reviewer: instead of discovering PRs assigned to the user, the caller targets a specific PR.
+version: 1.0.0
+tags: ["ZTS", "MSFT", "PR", "Code-Review", "on-demand"]
+defaultModel: gpt-5.4
+
+inputs:
+  prUrl:
+    type: string
+    description: |
+      Full Azure DevOps Pull Request URL, e.g.
+      https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}
+      or https://{org}.visualstudio.com/{project}/_git/{repo}/pullrequest/{id}
+    required: true
+
+variables:
+  organization: msazure
+  project: One
+  repository: ZTS
+  reviewerName: Moaid Hathot
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+timeoutSeconds: 34400
+
+mcps:
+  - name: orchestra
+    type: remote
+    endpoint: "{{server.url}}/mcp/data"
+
+steps:
+  - name: fetch-pr-metadata
+    type: Prompt
+    systemPrompt: |
+      You are an Azure DevOps assistant. Given a Pull Request URL, fetch the PR's metadata using the Azure DevOps MCP tools. Return structured data only -- no commentary, no markdown fences.
+
+      The URL may take any of these shapes:
+        - https://dev.azure.com/{organization}/{project}/_git/{repository}/pullrequest/{id}
+        - https://{organization}.visualstudio.com/{project}/_git/{repository}/pullrequest/{id}
+      The numeric segment after `/pullrequest/` is the PR id. Parse organization, project, repository, and PR id from the URL. If the URL omits a project or repository, fall back to project '{{vars.project}}' and repository '{{vars.repository}}'.
+    userPrompt: |
+      Fetch the metadata for this Pull Request:
+
+      PR URL: {{param.prUrl}}
+
+      Steps:
+      1. Parse organization, project, repository, and PR id from the URL.
+      2. Use the Azure DevOps MCP tools to retrieve the PR. Include: id, title, createdBy (display name), creationDate, sourceRefName, targetRefName, reviewers (array of display names), and the latest iteration id.
+
+      Return ONLY a JSON OBJECT (not an array) with exactly these fields:
+      {
+        "id": <number>,
+        "title": "...",
+        "createdBy": "...",
+        "creationDate": "...",
+        "sourceRefName": "...",
+        "targetRefName": "...",
+        "reviewers": ["..."],
+        "iterationId": <number>
+      }
+
+      If the PR cannot be found or the URL cannot be parsed, call orchestra_complete with status 'failed' and an explanatory reason.
+    outputHandlerPrompt: |
+      Ensure the output is a single valid JSON object matching the schema above. Strip any markdown fences or commentary.
+    mcps: [azdo]
+    retry:
+      maxRetries: 3
+      backoffSeconds: 10
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: invoke-review
+    type: Prompt
+    dependsOn: [fetch-pr-metadata]
+    systemPrompt: |
+      You are an orchestration coordinator. Your job is to invoke the pr-code-reviewer orchestration synchronously for a single PR and report the outcome.
+
+      Use the orchestra MCP `invoke_orchestration` tool with:
+        - orchestration name: 'pr-code-reviewer'
+        - mode: 'sync'
+        - timeoutSeconds: 14000
+        - parameters: { "prData": <JSON string of the PR metadata object> }
+
+      The prData parameter must be a JSON-stringified object with the fields: id, title, createdBy, creationDate, sourceRefName, targetRefName, reviewers, iterationId. Do NOT include any extra fields.
+
+      After the invocation completes, report success or failure. Do NOT update Zakira state -- pr-code-reviewer manages its own state.
+    userPrompt: |
+      Invoke pr-code-reviewer for this PR:
+
+      PR Metadata (JSON object):
+      {{fetch-pr-metadata.output}}
+
+      Original PR URL (for reference): {{param.prUrl}}
+
+      Steps:
+      1. Serialize the PR metadata object as a JSON string and pass it as the 'prData' parameter to invoke_orchestration.
+      2. Invoke 'pr-code-reviewer' with mode 'sync' and timeoutSeconds 14000.
+      3. Wait for completion and capture the executionId, status, and summary.
+
+      Output a JSON object:
+      {
+        "prId": <id>,
+        "prTitle": "...",
+        "prUrl": "{{param.prUrl}}",
+        "executionId": "...",
+        "status": "succeeded|failed",
+        "summary": "...",
+        "error": null | "..."
+      }
+    mcps: [orchestra]
+
+  - name: generate-summary
+    type: Prompt
+    dependsOn: [invoke-review, fetch-pr-metadata]
+    systemPrompt: |
+      You are a reporting assistant. Produce a clear, concise markdown summary of this on-demand PR review run.
+    userPrompt: |
+      Create a final markdown summary of this on-demand PR review.
+
+      PR Metadata:
+      {{fetch-pr-metadata.output}}
+
+      Invocation Result:
+      {{invoke-review.output}}
+
+      Produce a polished markdown report:
+      1. Header: '## On-Demand PR Review Summary'
+      2. PR title, id, author, source -> target branch, and link ({{param.prUrl}})
+      3. Outcome: succeeded or failed, with the executionId of the pr-code-reviewer run
+      4. Brief summary from the review
+      5. Any errors encountered
+
+trigger:
+  type: manual
