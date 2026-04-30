@@ -38,22 +38,22 @@
       "name": "Fix Grammar",
       "systemPrompt": "Fix all grammar, spelling, and punctuation errors in the following text. Return ONLY the corrected text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
       "provider": null,
-      "pickerOrder": 1
+      "pickerOrder": 2
     },
     "paraphrase": {
       "name": "Paraphrase",
       "systemPrompt": "Paraphrase the following text while maintaining its original meaning, but making it clearer, easy to understand and correct English wise. Try maintain the original form as much as possible. Return ONLY the paraphrased text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
       "provider": null,
-      "pickerOrder": 2
+      "pickerOrder": 1
     },
     "formal": {
-      "name": "Make Formal",
+      "name": "Formal",
       "systemPrompt": "Rewrite the following text in a formal, professional tone. Return ONLY the rewritten text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
       "provider": null,
       "pickerOrder": 3
     },
     "casual": {
-      "name": "Make Casual",
+      "name": "Casual",
       "systemPrompt": "Rewrite the following text in a casual, friendly tone. Return ONLY the rewritten text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
       "provider": null,
       "pickerOrder": 4
