@@ -1,64 +1,36 @@
 {
-  "presets": {
-    "build-ok": {
-      "title": "Build Succeeded",
-      "audio": "default",
-      "duration": "short",
-      "attribution": "Via Build Pipeline"
-    },
-    "build-fail": {
-      "title": "Build Failed",
-      "audio": "alarm",
-      "duration": "long",
-      "scenario": "reminder",
-      "attribution": "Via Build Pipeline"
-    },
-    "deploy": {
-      "scenario": "reminder",
-      "audio": "mail",
-      "duration": "long",
-      "attribution": "Via CI/CD"
-    },
-    "urgent": {
-      "scenario": "alarm",
-      "audio": "alarm",
-      "loop": true,
-      "duration": "long"
-    },
-    "ping": {
-      "audio": "im",
-      "duration": "short"
-    },
-    "email": {
-      "audio": "mail",
-      "duration": "short"
-    },
-    "timer": {
-      "scenario": "alarm",
-      "audio": "alarm2",
-      "loop": true,
-      "duration": "long",
-      "title": "Timer"
-    },
-    "download": {
-      "progressValue": "indeterminate",
-      "progressStatus": "Downloading...",
-      "duration": "long"
-    },
-    "silent": {
-      "silent": true,
-      "duration": "short"
-    },
+  "paths": {
+    "cache": "${LOCALAPPDATA}/Palantir/cache"
+  },
+  "personalities": {
     "opencode": {
-      "title": "OpenCode",
-      "audio": "im",
-      "attribution": "OpenCode"
+      "displayName": "OpenCode",
+      "icon": "https://opencode.ai/apple-touch-icon.png"
+    }
+  },
+  "presets": {
+    "opencode-idle": {
+      "personality": "opencode",
+      "expandShortcodes": true,
+      "title": "✅ Task complete",
+      "audio": "default",
+      "duration": "short"
     },
-    "opencode-action": {
-      "title": "OpenCode",
+    "opencode-error": {
+      "personality": "opencode",
+      "expandShortcodes": true,
+      "title": "❌ Session error",
+      "audio": "alarm2",
+      "duration": "long",
+      "scenario": "reminder"
+    },
+    "opencode-permission": {
+      "personality": "opencode",
+      "expandShortcodes": true,
+      "title": "❓ Approval needed",
       "audio": "reminder",
       "duration": "long",
-      "attribution": "OpenCode"
+      "scenario": "reminder"
     }
   }
 }
