@@ -1,7 +1,7 @@
 name: pr-manual-reviewer
 description: |
-  Reviews a single Azure DevOps Pull Request specified by URL. Given a PR URL, this orchestration fetches the PR's metadata (id, title, author, branches, reviewers, latest iteration) using the Azure DevOps MCP, then invokes the pr-code-reviewer orchestration with that data. This is the on-demand companion to pr-auto-reviewer: instead of discovering PRs assigned to the user, the caller targets a specific PR.
-version: 1.0.0
+  Reviews a single Azure DevOps Pull Request specified by URL. Given a PR URL, this orchestration fetches the PR's metadata (id, title, author, branches, reviewers, latest iteration) using the Azure DevOps MCP, then invokes the pr-code-reviewer orchestration with that data via a first-class Orchestration step. This is the on-demand companion to pr-auto-reviewer: instead of discovering PRs assigned to the user, the caller targets a specific PR.
+version: 1.1.0
 tags: ["ZTS", "MSFT", "PR", "Code-Review", "on-demand"]
 defaultModel: gpt-5.4
 
@@ -27,11 +27,6 @@ defaultRetryPolicy:
   retryOnTimeout: true
 
 timeoutSeconds: 34400
-
-mcps:
-  - name: orchestra
-    type: remote
-    endpoint: "{{server.url}}/mcp/data"
 
 steps:
   - name: fetch-pr-metadata
@@ -74,159 +69,22 @@ steps:
       backoffMultiplier: 2.0
       retryOnTimeout: true
 
-  - name: invoke-review
-    type: Prompt
+  # First-class Orchestration step: launches pr-code-reviewer in-process via the engine's
+  # IChildOrchestrationLauncher. No MCP transport is involved, so there is no 3-minute MCP
+  # request timeout to worry about. The step blocks until the child reaches a terminal state.
+  # Failure of the child propagates as a step failure (no `outputHandlerPrompt` hack needed).
+  - name: review-pr
+    type: Orchestration
     dependsOn: [fetch-pr-metadata]
-    systemPrompt: |
-      You are an orchestration coordinator. Your job is to invoke the pr-code-reviewer orchestration asynchronously for a single PR and report the dispatch outcome.
-
-      Use the orchestra MCP `invoke_orchestration` tool with:
-        - orchestration name: 'pr-code-reviewer'
-        - mode: 'async'
-        - timeoutSeconds: 94000
-        - parameters: { "prData": <JSON string of the PR metadata object> }
-
-      The prData parameter must be a JSON-stringified object with the fields: id, title, createdBy, creationDate, sourceRefName, targetRefName, reviewers, iterationId. Do NOT include any extra fields.
-
-      Because the call is async, the tool returns as soon as the child orchestration is dispatched. Capture the executionId returned by the tool. Do NOT wait for the child to complete. Do NOT update Zakira state -- pr-code-reviewer manages its own state.
-
-      Report 'dispatched' if invoke_orchestration returned an executionId, otherwise report 'failed' with the error.
-    userPrompt: |
-      Invoke pr-code-reviewer for this PR:
-
-      PR Metadata (JSON object):
-      {{fetch-pr-metadata.output}}
-
-      Original PR URL (for reference): {{param.prUrl}}
-
-      Steps:
-      1. Serialize the PR metadata object as a JSON string and pass it as the 'prData' parameter to invoke_orchestration.
-      2. Invoke 'pr-code-reviewer' with mode 'async' and timeoutSeconds 94000.
-      3. Capture the executionId returned by the dispatch. Do not poll or wait for completion.
-
-      Output a JSON object:
-      {
-        "prId": <id>,
-        "prTitle": "...",
-        "prUrl": "{{param.prUrl}}",
-        "executionId": "...",
-        "status": "dispatched|failed",
-        "summary": "...",
-        "error": null | "..."
-      }
-    outputHandlerPrompt: |
-      Validate the step output. The output MUST be a single valid JSON object matching the schema above (no markdown fences, no commentary).
-
-      If the JSON's `status` field is "failed" OR `executionId` is null/empty/missing, you MUST fail this step by emitting an error rather than returning the JSON as success. Treat any reported error (including MCP transport errors, timeouts, or missing executionId) as a hard failure of this step so the parent orchestration is marked failed.
-
-      Only return the JSON when `status` is "dispatched" AND `executionId` is a non-empty string.
-    mcps: [orchestra]
-
-  - name: wait-for-review-completion
-    type: Script
-    dependsOn: [invoke-review]
-    shell: pwsh
+    orchestration: pr-code-reviewer
+    parameters:
+      prData: "{{fetch-pr-metadata.output}}"
+    mode: sync
     timeoutSeconds: 15300
-    script: |
-      $ErrorActionPreference = 'Stop'
-      $ProgressPreference = 'SilentlyContinue'
-
-      # Configuration
-      $serverUrl = '{{server.url}}'.TrimEnd('/')
-      $childOrchestrationName = 'pr-code-reviewer'
-      $pollIntervalSeconds = 30
-      $maxAttempts = 500    # 500 * 30s = 15000s == child orchestration timeoutSeconds
-      $apiTimeoutSeconds = 30
-
-      # Parse the dispatch result emitted by 'invoke-review'
-      $dispatchJson = @'
-      {{invoke-review.output}}
-      '@
-
-      try {
-          $dispatch = $dispatchJson | ConvertFrom-Json -ErrorAction Stop
-      } catch {
-          Write-Error "wait-for-review-completion: failed to parse invoke-review output as JSON: $($_.Exception.Message)"
-          exit 1
-      }
-
-      $executionId = $dispatch.executionId
-      if ([string]::IsNullOrWhiteSpace($executionId)) {
-          Write-Error "wait-for-review-completion: invoke-review output did not contain a non-empty 'executionId' field."
-          exit 1
-      }
-
-      Write-Host "Polling child orchestration '$childOrchestrationName' executionId=$executionId every $pollIntervalSeconds s (max $maxAttempts attempts)."
-
-      $finalRun = $null
-
-      for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-          # 1) Check if the execution is still active
-          $stillActive = $false
-          $currentStep = $null
-          try {
-              $active = Invoke-RestMethod -Uri "$serverUrl/api/active" -Method Get -TimeoutSec $apiTimeoutSeconds
-              if ($null -ne $active) {
-                  $match = @($active) | Where-Object { $_.executionId -eq $executionId }
-                  if ($match) {
-                      $stillActive = $true
-                      $currentStep = $match[0].currentStep
-                  }
-              }
-          } catch {
-              Write-Host "[$attempt/$maxAttempts] WARN: /api/active query failed: $($_.Exception.Message)"
-          }
-
-          if ($stillActive) {
-              $stepInfo = if ($currentStep) { " (step: $currentStep)" } else { '' }
-              Write-Host "[$attempt/$maxAttempts] running$stepInfo"
-              Start-Sleep -Seconds $pollIntervalSeconds
-              continue
-          }
-
-          # 2) Not active anymore — try to fetch the historical run record
-          try {
-              $finalRun = Invoke-RestMethod -Uri "$serverUrl/api/history/$childOrchestrationName/$executionId" -Method Get -TimeoutSec $apiTimeoutSeconds
-              Write-Host "[$attempt/$maxAttempts] terminal status=$($finalRun.status)"
-              break
-          } catch {
-              # Could be a brief gap between leaving the active list and being indexed in history
-              Write-Host "[$attempt/$maxAttempts] not in active and not yet in history (may be transitioning): $($_.Exception.Message)"
-              Start-Sleep -Seconds $pollIntervalSeconds
-              continue
-          }
-      }
-
-      if ($null -eq $finalRun) {
-          Write-Error "wait-for-review-completion: polling exhausted after $maxAttempts attempts (~$([int]($maxAttempts * $pollIntervalSeconds / 60)) min); child orchestration did not reach a terminal state."
-          exit 1
-      }
-
-      $status = "$($finalRun.status)".ToLowerInvariant()
-      $finalContent = $finalRun.finalContent
-
-      # Emit a structured JSON summary for downstream steps
-      $payload = [ordered]@{
-          executionId       = $executionId
-          orchestrationName = $childOrchestrationName
-          status            = $status
-          attempts          = $attempt
-          startedAt         = $finalRun.startedAt
-          completedAt       = $finalRun.completedAt
-          summary           = $finalContent
-      }
-      $payload | ConvertTo-Json -Depth 20
-
-      if ($status -ne 'succeeded') {
-          Write-Error "wait-for-review-completion: child orchestration ended with status '$status'. See run $executionId for details."
-          exit 1
-      }
-
-      exit 0
 
   - name: generate-summary
     type: Prompt
-    dependsOn: [invoke-review, wait-for-review-completion, fetch-pr-metadata]
+    dependsOn: [review-pr, fetch-pr-metadata]
     systemPrompt: |
       You are a reporting assistant. Produce a clear, concise markdown summary of this on-demand PR review run.
     userPrompt: |
@@ -235,18 +93,15 @@ steps:
       PR Metadata:
       {{fetch-pr-metadata.output}}
 
-      Dispatch Result:
-      {{invoke-review.output}}
-
-      Child Orchestration Final Status:
-      {{wait-for-review-completion.output}}
+      Child Orchestration Final Output:
+      {{review-pr.output}}
 
       Produce a polished markdown report:
       1. Header: '## On-Demand PR Review Summary'
       2. PR title, id, author, source -> target branch, and link ({{param.prUrl}})
-      3. Outcome: succeeded or failed (from the child orchestration final status), with the executionId of the pr-code-reviewer run
-      4. The summary content from the child orchestration's final output (if available)
-      5. Any errors encountered
+      3. Outcome (succeeded — the orchestration only reaches this step on success)
+      4. The summary content from the child orchestration's final output
+      5. Any notes the child review surfaced
 
 trigger:
   type: manual
