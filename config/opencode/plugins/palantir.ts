@@ -21,8 +21,8 @@ export const PalantirPlugin: Plugin = async ({ $, directory }) => {
     debounceTimer = setTimeout(() => {
       debounceTimer = null
       notify(
-        "--preset", "opencode",
-        "-m", "Task completed - ready for input",
+        "--preset", "opencode-idle",
+        "-m", "Ready for input",
         "-b", directory,
       )
     }, 3000)
@@ -54,7 +54,7 @@ export const PalantirPlugin: Plugin = async ({ $, directory }) => {
         cancelPending()
         wasBusy = false
         await notify(
-          "--preset", "opencode-action",
+          "--preset", "opencode-error",
           "-m", "Session encountered an error",
           "-b", directory,
         )
@@ -63,7 +63,7 @@ export const PalantirPlugin: Plugin = async ({ $, directory }) => {
         if (childSessions.has(props.sessionID)) return
         cancelPending()
         await notify(
-          "--preset", "opencode-action",
+          "--preset", "opencode-permission",
           "-m", "Action requires your approval",
           "-b", directory,
         )
