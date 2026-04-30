@@ -28,8 +28,10 @@
     }
   },
   "hotkeys": [
-    { "keys": "Ctrl+Shift+;", "action": "preset-picker", "name": "Choose Operation" },
-    { "keys": "Ctrl+Shift+L", "action": "custom-prompt", "name": "Custom Prompt", "includeInPicker": true, "pickerOrder": 6 }
+    { "keys": "Ctrl+Shift+;", "action": "preset-picker", "name": "Choose Operation" }
+  ],
+  "pickerActions": [
+    { "action": "custom-prompt", "name": "Custom Prompt", "includeInPicker": true, "pickerOrder": 6 }
   ],
   "presets": {
     "grammar": {
