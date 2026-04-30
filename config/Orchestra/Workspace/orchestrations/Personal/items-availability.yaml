@@ -6,7 +6,7 @@ tags: ["personal", "family", "shopping", "lily", "auto"]
 defaultModel: gpt-5.4
 
 variables:
-  watchlistPath: "C:\\Users\\moaid\\OneDrive\\Documents\\Obsidian Vault\\Family\\Lily\\Baby\\Tracking out of stock items.md"
+  watchlistPath: "{{env.USERPROFILE}}\\OneDrive\\Documents\\Obsidian Vault\\Family\\Lily\\Baby\\Tracking out of stock items.md"
 
 mcps:
   - name: playwright

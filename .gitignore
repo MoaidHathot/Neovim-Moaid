@@ -58,3 +58,25 @@ test.sh
 .luarc.json
 
 spell/
+
+# Defensive: never commit credential / secret files
+*.pem
+*.key
+*.pfx
+*.p12
+*.cer
+*.crt
+*.jks
+*.keystore
+.env
+.env.*
+!.env.example
+auth.json
+credentials.json
+**/secrets/
+**/.secrets/
+*.tokens
+*_token
+*_secret
+.netrc
+.npmrc

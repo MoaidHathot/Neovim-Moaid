@@ -1,6 +1,6 @@
 ---
 name: pr-review-as-ohads
-description: Use when reviewing a Pull Request and you want to apply Ohad Schneider's reviewing perspective, covering Docker and pipeline hygiene, deployment modeling, and operational safety.
+description: Use when reviewing a Pull Request and you want to apply the ohads reviewing perspective, covering Docker and pipeline hygiene, deployment modeling, and operational safety.
 version: 1.0.0
 author: GitHub Copilot
 tags:

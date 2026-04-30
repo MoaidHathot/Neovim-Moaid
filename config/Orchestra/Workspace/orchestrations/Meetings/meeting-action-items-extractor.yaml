@@ -12,7 +12,7 @@ defaultModel: gpt-5.4
 
 variables:
   lookBackHours: "8"
-  actionItemsDir: 'C:\Users\moaid\OneDrive - Microsoft\Notes\Obsidian\Work\OrcStra\Meeting Action Items'
+  actionItemsDir: '{{env.USERPROFILE}}\OneDrive - Microsoft\Notes\Obsidian\Work\OrcStra\Meeting Action Items'
   zakiraCategory: meeting-action-items-state
   myName: Moaid Hathot
   myAlias: moaid

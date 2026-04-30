@@ -1,6 +1,6 @@
 name: pr-code-reviewer
 description: |
-  Reviews a single Pull Request using six expert reviewers (.NET Expert, Principal Software Engineer, Security Expert, DurableTasksFramework Expert, Lior Abadi persona, Ohad Schneider persona). The core expert reviewers use subagents for documentation lookup, code analysis, and test coverage checks, while the persona reviewers run as prompt-based reviewers. Uses PowerReview MCP to create review sessions and leave draft comments. Correlates with WorkIQ for meeting notes, chats, emails, and documents related to the PR. Tracks PR review state via Zakira.Exchange. Produces an ActionView summary of all findings.
+  Reviews a single Pull Request using six expert reviewers (.NET Expert, Principal Software Engineer, Security Expert, DurableTasksFramework Expert, liabadi persona, ohads persona). The core expert reviewers use subagents for documentation lookup, code analysis, and test coverage checks, while the persona reviewers run as prompt-based reviewers. Uses PowerReview MCP to create review sessions and leave draft comments. Correlates with WorkIQ for meeting notes, chats, emails, and documents related to the PR. Tracks PR review state via Zakira.Exchange. Produces an ActionView summary of all findings.
 version: 1.0.0
 tags: ["ZTS", "MSFT", "PR", "Code-Review", "auto"]
 defaultModel: gpt-5.4
@@ -20,10 +20,10 @@ variables:
   repoLocalPath: "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS"
   zakiraCategory: pr-code-review-state
   personasDir: "./Personas"
-  liorAbadiDir: "{{vars.personasDir}}/LiorAbadi"
-  liorAbadiSkillsDir: "{{vars.liorAbadiDir}}/Skills"
-  ohadSchneiderDir: "{{vars.personasDir}}/OhadSchneider"
-  ohadSchneiderSkillsDir: "{{vars.ohadSchneiderDir}}/Skills"
+  liabadiDir: "{{vars.personasDir}}/liabadi"
+  liabadiSkillsDir: "{{vars.liabadiDir}}/Skills"
+  ohadsDir: "{{vars.personasDir}}/ohads"
+  ohadsSkillsDir: "{{vars.ohadsDir}}/Skills"
   skillsDirPowerReview: "./skills-powerreview"
   skillsDirActionView: "./skills-actionview"
   promptsDir: "P:\\Github\\OrcStra-Uruk\\Prompts\\PR-Reviews"
@@ -597,33 +597,33 @@ steps:
         mcps: [powerreview]
         infer: true
 
-  - name: review-lior-abadi
+  - name: review-liabadi
     type: Prompt
     dependsOn: [fetch-pr-diff, open-review-session, fetch-work-items]
-    systemPromptFile: "{{vars.liorAbadiDir}}/pr.persona.liorAbadi.systemPrompt.md"
-    userPromptFile: "{{vars.liorAbadiDir}}/pr.persona.liorAbadi.userPrompt.md"
+    systemPromptFile: "{{vars.liabadiDir}}/pr.persona.liabadi.systemPrompt.md"
+    userPromptFile: "{{vars.liabadiDir}}/pr.persona.liabadi.userPrompt.md"
     model: claude-opus-4.6
     mcps: [powerreview]
     reasoningLevel: High
     skillDirectories:
-      - "{{vars.liorAbadiSkillsDir}}"
+      - "{{vars.liabadiSkillsDir}}"
       - "{{vars.skillsDirPowerReview}}"
 
-  - name: review-ohad-schneider
+  - name: review-ohads
     type: Prompt
     dependsOn: [fetch-pr-diff, open-review-session, fetch-work-items]
-    systemPromptFile: "{{vars.ohadSchneiderDir}}/pr.persona.ohadSchneider.systemPrompt.md"
-    userPromptFile: "{{vars.ohadSchneiderDir}}/pr.persona.ohadSchneider.userPrompt.md"
+    systemPromptFile: "{{vars.ohadsDir}}/pr.persona.ohads.systemPrompt.md"
+    userPromptFile: "{{vars.ohadsDir}}/pr.persona.ohads.userPrompt.md"
     model: claude-opus-4.6
     mcps: [powerreview]
     reasoningLevel: High
     skillDirectories:
-      - "{{vars.ohadSchneiderSkillsDir}}"
+      - "{{vars.ohadsSkillsDir}}"
       - "{{vars.skillsDirPowerReview}}"
 
   - name: consolidate-reviews
     type: Prompt
-    dependsOn: [review-dotnet-expert, review-principal-engineer, review-security-expert, review-durable-tasks-expert, review-lior-abadi, review-ohad-schneider, workiq-context]
+    dependsOn: [review-dotnet-expert, review-principal-engineer, review-security-expert, review-durable-tasks-expert, review-liabadi, review-ohads, workiq-context]
     systemPrompt: |
       You are a review consolidation assistant. You combine the findings from multiple expert reviewers into a unified review summary. You also incorporate contextual intelligence from WorkIQ to flag any requirements misalignment.
 
@@ -653,11 +653,11 @@ steps:
       ## Durable Tasks Expert Review
       {{review-durable-tasks-expert.output}}
 
-      ## Lior Abadi Persona Review
-      {{review-lior-abadi.output}}
+      ## liabadi Persona Review
+      {{review-liabadi.output}}
 
-      ## Ohad Schneider Persona Review
-      {{review-ohad-schneider.output}}
+      ## ohads Persona Review
+      {{review-ohads.output}}
 
       ## WorkIQ Context & Requirements Alignment
       {{workiq-context.output}}

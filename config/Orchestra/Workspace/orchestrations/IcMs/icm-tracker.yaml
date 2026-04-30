@@ -6,7 +6,7 @@ tags: ["ZTS", "MSFT", "Resource Provider", "ICM", "auto", "track"]
 defaultModel: gpt-5.4
 
 variables:
-  watchlistPath: "C:\\Users\\moaid\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\ZTS\\Orchestration Data\\icm-watchlist.json.md"
+  watchlistPath: "{{env.USERPROFILE}}\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\ZTS\\Orchestration Data\\icm-watchlist.json.md"
   icmSource: "https://pkgs.dev.azure.com/msazure/One/_packaging/ZTS/nuget/v3/index.json"
 
 mcps:

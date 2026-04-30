@@ -19,7 +19,7 @@
     },
     "copilot": {
       "type": "copilot",
-      "model": "gpt-5.4"
+      "model": "gpt-5.5"
     },
     "ollama": {
       "type": "ollama",
@@ -28,8 +28,8 @@
     }
   },
   "hotkeys": [
-    { "keys": "Ctrl+Shift+L", "action": "preset-picker", "name": "Choose Operation" },
-    { "keys": "Ctrl+Shift+;", "action": "custom-prompt", "name": "Custom Prompt", "includeInPicker": true, "pickerOrder": 6 }
+    { "keys": "Ctrl+Shift+;", "action": "preset-picker", "name": "Choose Operation" },
+    { "keys": "Ctrl+Shift+L", "action": "custom-prompt", "name": "Custom Prompt", "includeInPicker": true, "pickerOrder": 6 }
   ],
   "presets": {
     "grammar": {

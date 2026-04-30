@@ -1,6 +1,6 @@
 ---
 name: pr-review-as-liabadi
-description: Use when reviewing a Pull Request and you want to apply Lior Abadi's reviewing perspective, covering Resource Providers, RPAAS, UserRP ARM, Azure deployment and RP semantics, orchestration correctness, and observability.
+description: Use when reviewing a Pull Request and you want to apply the liabadi reviewing perspective, covering Resource Providers, RPAAS, UserRP ARM, Azure deployment and RP semantics, orchestration correctness, and observability.
 version: 1.0.0
 author: GitHub Copilot
 tags:
@@ -17,7 +17,7 @@ tags:
 
 # When to activate
 
-Use this skill when reviewing backend, cloud platform, deployment, RP, orchestration, automation, or test-infrastructure changes and you want feedback through Lior Abadi's lens.
+Use this skill when reviewing backend, cloud platform, deployment, RP, orchestration, automation, or test-infrastructure changes and you want feedback through the liabadi lens.
 
 Activate especially when the PR touches:
 - Azure deployment artifacts, EV2, Bicep, RP registration, namespace configuration, or rollout steps

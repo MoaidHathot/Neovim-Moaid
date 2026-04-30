@@ -34,7 +34,7 @@ variables:
   oncallEngineer: Moaid Hathot
   zakiraInvestigatorCategory: icm-investigator-state
   zakiraOncallCategory: oncall-activity-log
-  handoffDir: "C:\\Users\\moaid\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\OnCall Handoffs"
+  handoffDir: "{{env.USERPROFILE}}\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\OnCall Handoffs"
   organization: msazure
   project: One
 

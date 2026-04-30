@@ -7,7 +7,7 @@ return {
 			-- in the WT tab text instead of just the progress bar color),
 			-- change to: allow = { "0", "2", "9;4" }
 			-- Default-off because it competes with nvim's own 'title' setting.
-			allow = { "9;4" },
+			allow = { "0", "2", "9;4" },
 		},
 	},
 }

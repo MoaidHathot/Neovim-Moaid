@@ -203,7 +203,7 @@ function Get-ProjectDll {
 	}
 }
 
-set-alias ilspyprev "C:\Users\moaid\Downloads\ILSpy_binaries_9.0.0.7833-preview3-x64\ILSpy.exe"
+set-alias ilspyprev "$env:USERPROFILE\Downloads\ILSpy_binaries_9.0.0.7833-preview3-x64\ILSpy.exe"
 
 function Decompile {
     param (

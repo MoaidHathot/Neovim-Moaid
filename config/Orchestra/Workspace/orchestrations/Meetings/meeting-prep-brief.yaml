@@ -7,7 +7,7 @@ defaultModel: gpt-5.4
 
 variables:
   lookAheadHours: "10"
-  briefingsDir: "C:\\Users\\moaid\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\Meeting Briefs"
+  briefingsDir: "{{env.USERPROFILE}}\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\Meeting Briefs"
   zakiraCategory: meeting-prep-state
   organization: msazure
   project: One
