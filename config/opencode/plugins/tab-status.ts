@@ -14,6 +14,8 @@ import { basename } from "node:path"
 //   busy      → (3, 0)    pulsing yellow indeterminate
 //   question  → (1, 50)   half-filled green bar (literally "half progress")
 //   error     → (2, 0)    solid red
+const DEBUG = process.env.OPENCODE_TAB_STATUS_DEBUG === "1"
+
 export const TabStatusPlugin: Plugin = async ({ directory }) => {
   const label = basename(directory)
   const children = new Set<string>()
@@ -22,6 +24,7 @@ export const TabStatusPlugin: Plugin = async ({ directory }) => {
 
   const esc = "\x1b"
   const emit = (title: string, state: number, pct = 0) => {
+    if (DEBUG) process.stderr.write(`[tab-status] emit state=${state} pct=${pct} title="${title}"\n`)
     process.stdout.write(`${esc}]0;${title}${esc}\\${esc}]9;4;${state};${pct}${esc}\\`)
   }
 
@@ -56,6 +59,8 @@ export const TabStatusPlugin: Plugin = async ({ directory }) => {
       const t = event.type as string
       const p = event.properties as any
 
+      if (DEBUG) process.stderr.write(`[tab-status] event type=${t} props=${JSON.stringify(p)}\n`)
+
       if (t === "session.created" && p?.info?.parentID) {
         children.add(p.info.id)
         return
@@ -70,6 +75,16 @@ export const TabStatusPlugin: Plugin = async ({ directory }) => {
 
       if (t === "session.status") {
         busy = p.status?.type === "busy"
+        return render()
+      }
+      // Defensive: some flows only fire session.idle without a paired
+      // session.status idle event. Treat it as an authoritative "done" signal.
+      if (t === "session.idle") {
+        busy = false
+        return render()
+      }
+      if (t === "session.compacted") {
+        busy = false
         return render()
       }
       if (t === "session.error") {
@@ -88,3 +103,4 @@ export const TabStatusPlugin: Plugin = async ({ directory }) => {
     },
   }
 }
+
