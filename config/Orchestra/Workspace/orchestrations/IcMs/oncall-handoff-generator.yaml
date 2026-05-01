@@ -1,7 +1,7 @@
 name: oncall-handoff-generator
 description: |
   Generates a structured on-call handoff document at the end of an on-call shift. Correlates multiple sources: IcM incidents (active, mitigated, resolved during the shift), Zakira.Exchange investigation records (what YOU actually did), IcM acknowledgments and comments you made, and any ongoing issues requiring attention. Produces a handoff markdown file and ActionView entry.
-version: 1.0.0
+version: 1.1.0
 tags: ["oncall", "handoff", "ICM", "MSFT", "OCE", "auto"]
 defaultModel: gpt-5.4
 
@@ -69,10 +69,6 @@ mcps:
       - mcp
       - "--category"
       - "{{vars.zakiraOncallCategory}}"
-
-  - name: orchestra
-    type: remote
-    endpoint: "{{server.url}}/mcp/data"
 
   - name: workiq
     type: local
@@ -349,25 +345,26 @@ steps:
       Create the ActionView entry. Save as JSON.
     timeoutSeconds: 120
 
-  - name: submit-actionview-entry
-    type: Prompt
+  - name: read-actionview-entry-file
+    type: Script
     dependsOn: [create-actionview-entry]
-    systemPrompt: |
-      You are an orchestration coordinator. Submit the ActionView entry by invoking the actionview-submit orchestration.
+    shell: pwsh
+    script: |
+      Get-Content -LiteralPath '{{create-actionview-entry.files[0]}}' -Raw
+    timeoutSeconds: 60
 
-      Rules:
-      1. Read the saved ActionView JSON file using orchestra_read_file
-      2. Invoke the 'actionview-submit' orchestration using the orchestra MCP invoke_orchestration tool
-      3. Pass the entry JSON as the 'entryJson' parameter
-      4. Use synchronous mode (waitForResult: true) with a timeout of 300 seconds
-      5. Report the result
-    userPrompt: |
-      ActionView entry file:
-      {{create-actionview-entry.files[0]}}
-
-      Read the file and invoke the actionview-submit orchestration to submit it.
-    mcps: [orchestra]
-    timeoutSeconds: 360
+  # First-class Orchestration step: launches actionview-submit in-process via the engine's
+  # IChildOrchestrationLauncher. No MCP transport is involved, so the 3-minute MCP request
+  # timeout does not apply. The step blocks until the child reaches a terminal state and
+  # propagates failures as native step failures.
+  - name: submit-actionview-entry
+    type: Orchestration
+    dependsOn: [read-actionview-entry-file]
+    orchestration: actionview-submit
+    parameters:
+      entryJson: "{{read-actionview-entry-file.output}}"
+    mode: sync
+    timeoutSeconds: 600
 
   - name: generate-summary
     type: Prompt

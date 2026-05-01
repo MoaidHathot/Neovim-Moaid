@@ -1,7 +1,7 @@
 name: pr-comment-responder
 description: |
   Responds to reviewer comments on a single Pull Request created by me. Reads incoming comments from reviewers, analyzes code context, and uses a coordinator agent with specialized subagents (code-context-reader, code-fixer, docs-checker) to decide whether to reply, make code fixes, mark as won't fix, or resolve threads. Uses PowerReview MCP for all comment and code fix operations. Creates draft replies and code fix proposals that require user approval before submission. Produces an ActionView entry of type 'pr-comment-response' with per-comment approve/delete/reject actions. Tracks processed comment state via Zakira.Exchange.
-version: 1.0.0
+version: 1.1.0
 tags: ["ZTS", "MSFT", "PR", "Comment-Response", "auto"]
 defaultModel: gpt-5.4
 
@@ -57,10 +57,6 @@ mcps:
     arguments:
       - "-y"
       - "@upstash/context7-mcp"
-
-  - name: orchestra
-    type: remote
-    endpoint: "{{server.url}}/mcp/data"
 
 steps:
   - name: prepare-pr-data
@@ -562,19 +558,19 @@ steps:
     skillDirectories:
       - "{{vars.skillsDirActionView}}"
 
+  # First-class Orchestration step: launches actionview-submit in-process via the engine's
+  # IChildOrchestrationLauncher. No MCP transport is involved, so the 3-minute MCP request
+  # timeout does not apply. The step blocks until the child reaches a terminal state and
+  # propagates failures as native step failures.
   - name: submit-action-view-entry
-    type: Prompt
+    type: Orchestration
     dependsOn: [create-action-view-entry]
-    systemPrompt: |
-      You are an orchestration invoker. Invoke the 'actionview-submit' orchestration to validate and submit the ActionView entry.
-    userPrompt: |
-      Use invoke_orchestration to invoke 'actionview-submit' with mode 'sync' and the following parameters:
-      - entryJson: the entry JSON below
-      - template: pr-comment-response
-
-      Entry JSON:
-      {{create-action-view-entry.output}}
-    mcps: [orchestra]
+    orchestration: actionview-submit
+    parameters:
+      entryJson: "{{create-action-view-entry.output}}"
+      template: pr-comment-response
+    mode: sync
+    timeoutSeconds: 600
 
   - name: update-tracking-state
     type: Prompt

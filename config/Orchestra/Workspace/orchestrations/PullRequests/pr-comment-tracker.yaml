@@ -1,7 +1,7 @@
 name: pr-comment-tracker
 description: |
   Discovers active Pull Requests created by me in Azure DevOps, checks for new reviewer comments/threads using PowerReview, and invokes the pr-comment-responder orchestration for each PR that has unaddressed comments. Tracks which comments have been processed via Zakira.Exchange to avoid duplicate responses. Runs on an hourly schedule.
-version: 1.0.0
+version: 1.1.0
 tags: ["ZTS", "MSFT", "PR", "Comment-Response", "auto"]
 defaultModel: gpt-5.4
 
@@ -214,18 +214,18 @@ steps:
 
       Save the JSON using orchestra_save_file. Output ONLY the raw JSON.
 
+  # First-class Orchestration step: launches actionview-submit in-process via the engine's
+  # IChildOrchestrationLauncher. No MCP transport is involved, so the 3-minute MCP request
+  # timeout does not apply. The step blocks until the child reaches a terminal state and
+  # propagates failures as native step failures.
   - name: submit-action-view-entry
-    type: Prompt
+    type: Orchestration
     dependsOn: [create-action-view-entry]
-    systemPrompt: |
-      You are an orchestration invoker. Invoke the 'actionview-submit' orchestration to validate and submit the ActionView entry.
-    userPrompt: |
-      Use invoke_orchestration to invoke 'actionview-submit' with mode 'sync' and the following parameters:
-      - entryJson: the entry JSON below
-
-      Entry JSON:
-      {{create-action-view-entry.output}}
-    mcps: [orchestra]
+    orchestration: actionview-submit
+    parameters:
+      entryJson: "{{create-action-view-entry.output}}"
+    mode: sync
+    timeoutSeconds: 600
 
   - name: generate-summary
     type: Prompt

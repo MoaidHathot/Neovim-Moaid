@@ -6,7 +6,7 @@ description: |
   analyzes transcripts and other meeting-related evidence, deduplicates
   against previously extracted items via Zakira.Exchange, and saves results as
   structured markdown files plus ActionView notifications.
-version: 1.0.0
+version: 1.1.0
 tags: ["productivity", "meetings", "action-items", "WorkIQ", "MSFT", "auto", "ZTS"]
 defaultModel: gpt-5.4
 
@@ -45,10 +45,6 @@ mcps:
       - mcp
       - "--category"
       - "{{vars.zakiraCategory}}"
-
-  - name: orchestra
-    type: remote
-    endpoint: "{{server.url}}/mcp/data"
 
 trigger:
   type: scheduler
@@ -481,24 +477,26 @@ steps:
       I am {{vars.myName}}. Create the ActionView entry. Highlight MY action
       items prominently. Save as JSON.
 
-  - name: submit-actionview-entry
-    type: Prompt
+  - name: read-actionview-entry-file
+    type: Script
     dependsOn: [create-actionview-entry]
-    systemPrompt: |
-      You are an orchestration coordinator. Submit the ActionView entry by invoking the actionview-submit orchestration.
+    shell: pwsh
+    script: |
+      Get-Content -LiteralPath '{{create-actionview-entry.files[0]}}' -Raw
+    timeoutSeconds: 60
 
-      Rules:
-      1. Read the saved ActionView JSON file using orchestra_read_file
-      2. Invoke the 'actionview-submit' orchestration using the orchestra MCP invoke_orchestration tool
-      3. Pass the entry JSON as the 'entryJson' parameter
-      4. Use synchronous mode (waitForResult: true) with a timeout of 300 seconds
-      5. Report the result
-    userPrompt: |
-      ActionView entry file:
-      {{create-actionview-entry.files[0]}}
-
-      Read the file and invoke the actionview-submit orchestration to submit it.
-    mcps: [orchestra]
+  # First-class Orchestration step: launches actionview-submit in-process via the engine's
+  # IChildOrchestrationLauncher. No MCP transport is involved, so the 3-minute MCP request
+  # timeout does not apply. The step blocks until the child reaches a terminal state and
+  # propagates failures as native step failures.
+  - name: submit-actionview-entry
+    type: Orchestration
+    dependsOn: [read-actionview-entry-file]
+    orchestration: actionview-submit
+    parameters:
+      entryJson: "{{read-actionview-entry-file.output}}"
+    mode: sync
+    timeoutSeconds: 600
 
   - name: generate-summary
     type: Prompt
