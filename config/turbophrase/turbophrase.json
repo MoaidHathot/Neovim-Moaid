@@ -31,7 +31,7 @@
     { "keys": "Ctrl+Shift+;", "action": "preset-picker", "name": "Choose Operation" }
   ],
   "pickerActions": [
-    { "action": "custom-prompt", "name": "Custom Prompt", "includeInPicker": true, "pickerOrder": 8 }
+    { "action": "custom-prompt", "name": "Custom Prompt", "includeInPicker": true, "pickerOrder": 9 }
   ],
   "presets": {
     "grammar": {
@@ -75,6 +75,12 @@
       "systemPrompt": "Rewrite the following text to improve clarity and readability without changing its meaning, tone, or length significantly. Resolve ambiguity, simplify confusing phrasing, and tighten sentence structure. Return ONLY the clarified text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
       "provider": null,
       "pickerOrder": 7
+    },
+    "expand": {
+      "name": "Expand",
+      "systemPrompt": "Expand the following text into a fuller, more detailed version while preserving its original meaning, tone, and language. Add relevant elaboration, context, and supporting detail without introducing new facts or changing the intent. Return ONLY the expanded text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
+      "provider": null,
+      "pickerOrder": 8
     }
   },
   "customPrompt": {
