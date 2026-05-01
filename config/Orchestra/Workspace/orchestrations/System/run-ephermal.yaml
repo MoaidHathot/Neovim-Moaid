@@ -1,0 +1,126 @@
+# yaml-language-server: $schema=../schemas/orchestration.schema.json
+name: run-ephermal
+description: |
+  Given a natural-language task, generates a one-off ("ephermal") orchestration
+  via the meta `generate-orchestration` orchestration, saves it to the
+  workspace `Ephermal/` folder, and immediately executes it as a child
+  Orchestration step.
+
+  Generated orchestrations are unregistered (relying on the workspace
+  filesystem watcher for discovery) and tagged ["ephermal", "temp"] so a
+  separate cleanup process can purge them later.
+version: 1.0.0
+tags: ["meta", "ephermal", "system", "manual"]
+defaultModel: gpt-5.4
+
+variables:
+  # Absolute path so it works regardless of which directory the engine is
+  # launched from. Forward slashes are tolerated on Windows.
+  ephermalDir: "P:/Github/Neovim-Moaid/config/Orchestra/workspace/orchestrations/Ephermal"
+  # Working directory exposed to the generator's filesystem MCP. Must include
+  # the Ephermal directory so the generator can write the output file.
+  workspaceRoot: "P:/Github/Neovim-Moaid/config/Orchestra/workspace"
+  # Deterministic, unique name for the ephermal orchestration. Used both as
+  # the YAML `name:` field inside the generated file AND as the lookup key
+  # for the subsequent Orchestration step.
+  ephermalName: "ephermal-{{orchestration.runId}}"
+  ephermalFile: "{{vars.ephermalDir}}/{{vars.ephermalName}}.yaml"
+
+defaultStepTimeoutSeconds: 1800
+
+inputs:
+  task:
+    type: string
+    description: |
+      Natural-language description of the task to perform. The runner will
+      generate a tailored ephermal orchestration that fulfills this task and
+      then execute it. Be specific about steps, tools/MCPs, inputs, and
+      expected outputs — the description is forwarded verbatim to the
+      meta-generator.
+    required: true
+    multiline: true
+
+steps:
+  # ── Step 1: Generate the ephermal orchestration ────────────────────────
+  # Delegates to the system `generate-orchestration` meta-orchestration.
+  # We forward the user's task verbatim and append a strict requirements
+  # block that pins the generated orchestration's `name` and `tags` so the
+  # next step can locate and launch it.
+  - name: generate-ephermal
+    type: Orchestration
+    orchestration: generate-orchestration
+    parameters:
+      description: |
+        Generate an ephermal (one-off) orchestration that fulfills the
+        following user task:
+
+        ----- BEGIN TASK -----
+        {{param.task}}
+        ----- END TASK -----
+
+        STRICT NON-NEGOTIABLE REQUIREMENTS (these override anything implied
+        by the task description above and must always be honored):
+
+        1. The top-level `name:` field MUST be exactly:
+             {{vars.ephermalName}}
+        2. The top-level `tags:` field MUST be exactly:
+             ["ephermal", "temp"]
+        3. The top-level `metadata:` field MUST be present and MUST include
+           AT LEAST these two keys (additional keys are allowed if useful):
+             metadata:
+               ephermal: true
+               createdAt: "{{orchestration.startedAt}}"
+           Use the `createdAt` value verbatim as shown above and keep it
+           wrapped in double quotes so YAML preserves it as a string rather
+           than coercing it to a native date node. The `ephermal` key MUST
+           be the literal boolean `true` (not the string "true"). This
+           metadata is consumed by the ephermal-cleanup tooling to identify
+           and age out generated orchestrations.
+        4. The orchestration must be self-contained — do NOT depend on other
+           orchestrations or workspace files unless explicitly required by
+           the user task above.
+        5. Do NOT add any scheduler/webhook/loop triggers — this
+           orchestration is launched once, on demand, by a parent runner.
+      register: "false"
+      outputPath: "{{vars.ephermalFile}}"
+      workingDirectory: "{{vars.workspaceRoot}}"
+    mode: sync
+    timeoutSeconds: 1800
+
+  # ── Step 2: Execute the freshly-generated ephermal orchestration ───────
+  # The workspace filesystem watcher (orchestra.json -> scan.watch:true)
+  # picks up the new YAML file and registers the orchestration in-engine.
+  # We retry a few times to absorb watcher debounce latency.
+  - name: execute-ephermal
+    type: Orchestration
+    dependsOn: [generate-ephermal]
+    orchestration: "{{vars.ephermalName}}"
+    mode: sync
+    timeoutSeconds: 7200
+    retry:
+      maxRetries: 5
+      backoffSeconds: 3
+      backoffMultiplier: 1.5
+      retryOnTimeout: false
+
+  # ── Step 3: Format the final user-facing summary ───────────────────────
+  - name: format-output
+    type: Transform
+    dependsOn: [execute-ephermal, generate-ephermal]
+    template: |
+      # Ephermal Task Run — Summary
+
+      **Parent run ID:**         {{orchestration.runId}}
+      **Ephermal orchestration:** {{vars.ephermalName}}
+      **Generated file:**        {{vars.ephermalFile}}
+      **Tags:**                  ["ephermal", "temp"]
+      **Registered:**            false (filesystem-watcher discovery)
+
+      ## Original Task
+      {{param.task}}
+
+      ## Generator Output
+      {{generate-ephermal.output}}
+
+      ## Ephermal Orchestration Output
+      {{execute-ephermal.output}}

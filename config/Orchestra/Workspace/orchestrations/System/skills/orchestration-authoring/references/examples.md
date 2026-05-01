@@ -2,10 +2,14 @@
 
 Real-world examples demonstrating common orchestration patterns. All examples use `claude-opus-4.6` as the default model.
 
+> **A note on `$schema` paths.** The examples below use repository-relative paths like `../schemas/orchestration.schema.json` because they live inside the Orchestra repo. If you are authoring orchestrations outside this repo, replace those paths with **either** the public URL (`https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json`) **or** a local copy produced by running `orchestra schemas` in your project (default location `./.orchestra/schemas/`). See [SKILL.md](../SKILL.md#format) for the full list of options.
+
 ## Contents
 - [Minimal Orchestration](#minimal-orchestration)
 - [Code Review Pipeline (YAML)](#code-review-pipeline-yaml)
+- [Free-Form Metadata (JSON & YAML)](#free-form-metadata-json--yaml)
 - [Typed Inputs with Validation](#typed-inputs-with-validation)
+- [Lifecycle Hooks for Failure Triage](#lifecycle-hooks-for-failure-triage)
 - [Script Step with Inline PowerShell](#script-step-with-inline-powershell)
 - [Multi-Step DAG with All Step Types](#multi-step-dag-with-all-step-types)
 - [Loop/Checker Pattern](#loopchecker-pattern)
@@ -95,6 +99,78 @@ steps:
 
 ---
 
+## Free-Form Metadata (JSON & YAML)
+
+The `metadata` top-level field accepts any JSON-compatible structure (string, number, boolean, array, nested object). It is purely informational -- the runtime never inspects it. Use it to record authorship, datetime, ticket links, environment, SLA, or any other semi-structured data that orchestration authors and managers want to keep alongside the file.
+
+### JSON form
+
+```json
+{
+  "$schema": "../schemas/orchestration.schema.json",
+  "name": "deployment-with-metadata",
+  "description": "Demonstrates the free-form metadata field.",
+  "version": "1.0.0",
+  "metadata": {
+    "createdAt": "2026-04-30T12:00:00Z",
+    "author": "platform-team",
+    "owners": ["alice@example.com", "bob@example.com"],
+    "ticket": "JIRA-1234",
+    "environment": "staging",
+    "sla": {
+      "responseTimeMinutes": 15,
+      "businessHoursOnly": true
+    }
+  },
+  "steps": [
+    {
+      "name": "deploy",
+      "type": "Prompt",
+      "dependsOn": [],
+      "systemPrompt": "You are a deployment assistant.",
+      "userPrompt": "Deploy the service.",
+      "model": "claude-opus-4.6"
+    }
+  ]
+}
+```
+
+### YAML form (use the modeline so editors validate the file)
+
+```yaml
+# yaml-language-server: $schema=../schemas/orchestration.schema.json
+name: deployment-with-metadata
+description: Demonstrates the free-form metadata field.
+version: "1.0.0"
+
+metadata:
+  createdAt: "2026-04-30T12:00:00Z"   # quote ISO-8601 dates so YAML keeps them as strings
+  author: platform-team
+  owners:
+    - alice@example.com
+    - bob@example.com
+  ticket: JIRA-1234
+  environment: staging
+  sla:
+    responseTimeMinutes: 15
+    businessHoursOnly: true
+
+steps:
+  - name: deploy
+    type: Prompt
+    dependsOn: []
+    model: claude-opus-4.6
+    systemPrompt: You are a deployment assistant.
+    userPrompt: Deploy the service.
+```
+
+**Notes**
+- The schema declares `additionalProperties: true` for `metadata`, so any keys/value types are accepted.
+- The runtime preserves the original JSON shape on parse (objects stay objects, arrays stay arrays, mixed types are kept).
+- Metadata is **not** available in template expressions like `{{vars.*}}` -- it is purely a sidecar for humans and external tooling.
+
+---
+
 ## Typed Inputs with Validation
 
 Demonstrates typed input schema with type validation, enum constraints, and default values:
@@ -160,6 +236,55 @@ Demonstrates typed input schema with type validation, enum constraints, and defa
   ]
 }
 ```
+
+---
+
+## Lifecycle Hooks for Failure Triage
+
+Demonstrates orchestration-level hooks that fire after failures and write a structured JSON payload to disk:
+
+```yaml
+$schema: ../schemas/orchestration.schema.json
+name: hooks-step-failure
+description: Demonstrates a step failure hook that only runs for selected step names and receives the current step payload.
+version: 1.0.0
+
+hooks:
+  - name: capture-build-or-deploy-failure
+    on: step.failure
+    when:
+      steps:
+        names: [build, deploy]
+        status: failed
+        match: any
+    payload:
+      detail: compact
+      steps: current
+      includeRefs: true
+    action:
+      type: script
+      shell: pwsh
+      scriptFile: ./hooks/write-hook-payload.ps1
+      arguments:
+        - ./artifacts/step-failure-payload.json
+    failurePolicy: warn
+
+steps:
+  - name: build
+    type: Command
+    command: dotnet
+    arguments: [build, ./does-not-exist/Nope.csproj]
+    includeStdErr: true
+
+  - name: summarize
+    type: Prompt
+    dependsOn: [build]
+    systemPrompt: You summarize build output.
+    userPrompt: Summarize the build output.
+    model: claude-opus-4.6
+```
+
+This example demonstrates: top-level `hooks`, `step.failure` subscriptions, `when.steps` filtering, payload shaping with `detail` and `steps`, script-based hook actions, and `failurePolicy`.
 
 ---
 
@@ -450,7 +575,7 @@ mcps:
     command: npx
     arguments:
       - "-y"
-      - "@anthropic/mcp-server-filesystem"
+      - "@modelcontextprotocol/server-filesystem"
       - "{{workingDirectory}}"
 
 steps:
@@ -679,4 +804,4 @@ steps:
       {{code-review.output}}
 ```
 
-This example demonstrates: `systemPromptMode: customize` with section overrides (`replace`, `remove`, `append`), image attachments via file path with template expressions, infinite sessions with custom thresholds (enabled/disabled per step), and read-only enforcement via `code_change_rules` replacement. Session hooks automatically capture a structured audit log for every step, visible in the portal's Audit Log trace section.
+This example demonstrates: `systemPromptMode: customize` with section overrides (`replace`, `remove`, `append`), image attachments via file path with template expressions, infinite sessions with custom thresholds (enabled/disabled per step), and read-only enforcement via `code_change_rules` replacement.

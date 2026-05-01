@@ -6,7 +6,9 @@ This is the complete property-level reference for every field, step type, trigge
 
 - [File Structure Overview](#file-structure-overview)
 - [Top-Level Properties](#top-level-properties)
+- [Editor Schema Validation](#editor-schema-validation)
 - [Typed Inputs](#typed-inputs)
+- [Hooks](#hooks)
 - [Steps](#steps)
   - [Base Step Properties](#base-step-properties)
   - [Prompt Step](#prompt-step)
@@ -65,6 +67,68 @@ steps:
 | `timeoutSeconds` | `int` | No | `3600` | Maximum time in seconds for the entire orchestration run. Set to `0` or `null` to disable. |
 | `variables` | `object` | No | `{}` | Key-value pairs of user-defined variables. Values can contain template expressions. Accessed via `{{vars.name}}`. |
 | `tags` | `string[]` | No | `[]` | Tags for categorizing and filtering orchestrations. |
+| `hooks` | `Hook[]` | No | `[]` | Lifecycle hooks that run after step or orchestration outcomes. Hooks receive structured JSON payloads on stdin and can execute follow-up scripts. |
+| `metadata` | `object` | No | `{}` | Free-form metadata. Values may be any JSON type (string, number, boolean, array, nested object). Purely informational -- the runtime never inspects this dictionary. Use for authorship, datetime, ticket links, environment, SLA, or any other semi-structured data. |
+
+---
+
+## Editor Schema Validation
+
+The `schemas/orchestration.schema.json` JSON Schema works for both JSON and YAML files in any editor that supports JSON Schema. Once bound, you get autocomplete, hover documentation, type validation, and unknown-field errors.
+
+**JSON files** -- editors auto-detect via the `$schema` property:
+
+```json
+{
+  "$schema": "../schemas/orchestration.schema.json",
+  "name": "my-orchestration",
+  "description": "...",
+  "steps": []
+}
+```
+
+**YAML files** -- because YAML has no built-in schema indirection, declare it explicitly. Two conventions are supported:
+
+```yaml
+# yaml-language-server: $schema=../schemas/orchestration.schema.json
+name: my-orchestration
+description: ...
+steps: []
+```
+
+or
+
+```yaml
+$schema: ../schemas/orchestration.schema.json
+name: my-orchestration
+description: ...
+steps: []
+```
+
+The modeline form is recommended -- it works in VS Code (Red Hat YAML extension), JetBrains IDEs (Rider/IntelliJ), Neovim/Helix via `yaml-language-server`, and any other editor built on the same LSP. The top-level `$schema` form works in JetBrains IDEs and recent versions of `yaml-language-server`.
+
+### Metadata field caveats in YAML
+
+The `metadata` field accepts any JSON-compatible shape (`additionalProperties: true` in the schema). Two YAML-specific gotchas:
+
+1. **Quote ISO-8601 datetimes** (`"2026-04-30T12:00:00Z"`) so YAML does not coerce them to native date nodes. Quoted values stay as strings, which is what most consumers expect.
+2. **Indentation matters** for nested objects -- standard YAML rules apply.
+
+Example:
+
+```yaml
+metadata:
+  createdAt: "2026-04-30T12:00:00Z"
+  author: platform-team
+  owners:
+    - alice@example.com
+    - bob@example.com
+  ticket: JIRA-1234
+  environment: staging
+  sla:
+    responseTimeMinutes: 15
+    businessHoursOnly: true
+```
 
 ---
 
@@ -93,6 +157,99 @@ Each key in the `inputs` object is the input name. Each value is an `InputDefini
 2. **Type validation**: Boolean inputs must be `"true"` or `"false"`. Number inputs must be parseable as a numeric value.
 3. **Enum constraints**: When `enum` is non-empty, the provided value must match one of the allowed values (case-insensitive comparison).
 4. **Default application**: Optional inputs (`required: false`) that are not provided receive their `default` value automatically.
+
+---
+
+## Hooks
+
+Hooks are top-level orchestration configuration that run after step or orchestration lifecycle events. They are intended for follow-up automation such as notifications, archival, incident creation, or failure triage. They do not participate in the execution DAG.
+
+### HookDefinition Properties
+
+| Property | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `name` | `string` | No | `null` | Optional hook name for diagnostics and reporting. |
+| `on` | `string` | **Yes** | -- | Hook event to subscribe to. One of: `"orchestration.success"`, `"orchestration.failure"`, `"orchestration.after"`, `"step.success"`, `"step.failure"`, `"step.after"`. |
+| `when` | `HookWhen` | No | `null` | Optional filter deciding whether the hook should run. |
+| `payload` | `HookPayload` | No | schema defaults | Controls how much run and step data is included in the hook payload. |
+| `action` | `HookAction` | **Yes** | -- | Action to execute when the hook fires. |
+| `failurePolicy` | `string` | No | `"warn"` | What to do if the hook action fails. One of: `"warn"`, `"ignore"`. |
+
+Example:
+
+```yaml
+hooks:
+  - name: capture-deploy-failures
+    on: orchestration.failure
+    when:
+      steps:
+        names: [build, deploy]
+        status: failed
+        match: any
+    payload:
+      detail: standard
+      steps: failed
+      includeRefs: true
+    action:
+      type: script
+      shell: pwsh
+      scriptFile: ./hooks/write-hook-payload.ps1
+      arguments:
+        - ./artifacts/orchestration-failure-payload.json
+```
+
+### HookWhen
+
+Filtering is intentionally small in v1 and currently only supports step-based conditions.
+
+| Property | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `steps` | `HookStepCondition` | No | `null` | Filter the hook based on the status of one or more named steps. |
+
+### HookStepCondition
+
+| Property | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `names` | `string[]` | No | `[]` | Optional list of step names to evaluate. |
+| `status` | `string` | No | `"any"` | One of: `"any"`, `"succeeded"`, `"failed"`, `"cancelled"`, `"skipped"`, `"noAction"`, `"nonSucceeded"`. |
+| `match` | `string` | No | `"any"` | Whether `any` or `all` named steps must satisfy the status condition. |
+
+Example:
+
+```yaml
+when:
+  steps:
+    names: [build, deploy]
+    status: failed
+    match: any
+```
+
+### HookPayload
+
+The hook payload is serialized as structured JSON and provided to the hook action on stdin.
+
+| Property | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `detail` | `string` | No | `"compact"` | Preset detail level for included step records. One of: `"compact"`, `"standard"`, `"full"`. |
+| `steps` | `string` or `string[]` | No | implementation default | Step records to include: `"none"`, `"current"`, `"failed"`, `"nonSucceeded"`, `"terminal"`, `"all"`, or an explicit list of step names. |
+| `includeRefs` | `bool` | No | `false` | Includes API and MCP references for fetching more run data. |
+
+### HookAction
+
+In v1, hooks support `script` actions only.
+
+| Property | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `type` | `string` | **Yes** | -- | Hook action type. Must be `"script"`. |
+| `shell` | `string` | No | `"pwsh"` | Shell/interpreter used to execute the hook script. |
+| `script` | `string` | **Yes*** | -- | Inline script content. The hook payload is provided through stdin. |
+| `scriptFile` | `string` | **Yes*** | -- | Path to a script file. Relative paths resolve from the orchestration file directory. |
+| `arguments` | `string[]` | No | `[]` | Optional arguments passed to the script. |
+| `workingDirectory` | `string` | No | `null` | Optional working directory for the hook process. Relative paths resolve from the orchestration file directory. |
+| `environment` | `object` | No | `{}` | Optional environment variables for the hook process. |
+| `includeStdErr` | `bool` | No | `false` | When true, stderr is included in the script output if it succeeds. |
+
+*Exactly one of `script` or `scriptFile` is required.
 
 ---
 

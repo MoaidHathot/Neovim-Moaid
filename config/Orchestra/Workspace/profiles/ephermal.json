@@ -1,0 +1,21 @@
+{
+  "id": "Ephermal",
+  "name": "Ephermal",
+  "description": "Ephermal orchestrations",
+  "isActive": false,
+  "activatedAt": "2026-04-02T07:40:25.1856958+00:00",
+  "deactivatedAt": "2026-04-02T08:29:39.8094059+00:00",
+  "filter": {
+    "tags": [
+		"ephermal"
+    ],
+    "orchestrationIds": [],
+    "excludeOrchestrationIds": [],
+    "isWildcard": false
+  },
+  "createdAt": "2026-04-01T23:19:43.8389734+00:00",
+  "updatedAt": "2026-04-02T08:29:39.8094063+00:00"
+}
+
+
+

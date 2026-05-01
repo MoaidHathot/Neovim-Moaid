@@ -42,7 +42,8 @@ steps:
         "resultCount": <number>,
         "results": [
           { "type": "...", "title": "...", "snippet": "...", "source": "..." }
-        ]
+        ],
+      <any other propertys returned by the tool>
       }
     mcps: [workiq]
 
@@ -63,7 +64,9 @@ steps:
         "resultCount": <number>,
         "results": [
           { "type": "...", "title": "...", "snippet": "...", "source": "..." }
-        ]
+        ],
+          <any other propertys returned by the tool>
+
       }
     mcps: [m365-copilot]
 

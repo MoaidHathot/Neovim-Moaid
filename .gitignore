@@ -51,6 +51,10 @@ config/configstore
 config/nushell
 config/k9s
 config/Orchestra/.orchestra.pids.json
+# Ephermal orchestrations are generated on demand by the run-ephermal
+# orchestration and reaped by cleanup-ephermal. Never commit them.
+config/Orchestra/workspace/orchestrations/Ephermal/*
+!config/Orchestra/workspace/orchestrations/Ephermal/.gitkeep
 config/turbophrase/turbophrase.log
 
 tags

@@ -1,0 +1,193 @@
+# yaml-language-server: $schema=../schemas/orchestration.schema.json
+name: cleanup-ephermal
+description: |
+  Sweeps the workspace `Ephermal/` orchestrations folder and deletes
+  ephermal orchestration YAML files older than the configured retention
+  window (default: 7 days).
+
+  A file is eligible for deletion only when ALL of the following hold:
+    1. It lives directly under the Ephermal directory (no recursion).
+    2. Its top-level `metadata.ephermal` field equals the literal boolean
+       `true` (parsed via regex from the YAML source).
+    3. Its `metadata.createdAt` ISO-8601 timestamp parses cleanly and is
+       older than `retentionDays` ago (UTC comparison).
+
+  Files without the marker, files whose metadata cannot be parsed, and any
+  orchestration outside the Ephermal directory are LEFT UNTOUCHED. A
+  dry-run mode is available for inspection.
+version: 1.0.0
+tags: ["ephermal", "system"]
+defaultModel: gpt-5.4
+
+variables:
+  ephermalDir: "P:/Github/Neovim-Moaid/config/Orchestra/workspace/orchestrations/Ephermal"
+
+inputs:
+  retentionDays:
+    type: number
+    description: |
+      Maximum age (in days) for ephermal orchestrations. Files whose
+      `metadata.createdAt` is older than this threshold are deleted.
+      Use `0` to purge every ephermal regardless of age (use with care).
+    required: false
+    default: "7"
+  dryRun:
+    type: boolean
+    description: |
+      When `true`, the orchestration only reports what it WOULD delete
+      without actually removing any files. Useful for inspection or CI.
+    required: false
+    default: "false"
+
+steps:
+  # ── Step 1: Sweep the Ephermal directory ───────────────────────────────
+  # Lists *.yaml files (top-level only, no recursion), inspects each one's
+  # top-level `metadata:` block via regex, classifies it, and either
+  # deletes (or, in dry-run, records "would-delete"). Emits a JSON report
+  # on stdout for the next step to render.
+  - name: sweep-ephermal-dir
+    type: Script
+    shell: pwsh
+    timeoutSeconds: 300
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      $ephermalDir   = '{{vars.ephermalDir}}'
+      $retentionDays = [double]'{{param.retentionDays}}'
+      $dryRun        = ('{{param.dryRun}}' -ieq 'true')
+      $nowUtc        = (Get-Date).ToUniversalTime()
+      $cutoffUtc     = $nowUtc.AddDays(-1 * $retentionDays)
+
+      $report = [ordered]@{
+        ephermalDir    = $ephermalDir
+        retentionDays  = $retentionDays
+        dryRun         = $dryRun
+        cutoffUtc      = $cutoffUtc.ToString('o')
+        scannedAt      = $nowUtc.ToString('o')
+        scanned        = 0
+        deleted        = @()
+        keptYoung      = @()
+        skippedNoFlag  = @()
+        skippedParse   = @()
+        errors         = @()
+      }
+
+      if (-not (Test-Path -LiteralPath $ephermalDir -PathType Container)) {
+        $report.errors += @{ message = "Ephermal directory does not exist: $ephermalDir" }
+        $report | ConvertTo-Json -Depth 10
+        return
+      }
+
+      $files = @(Get-ChildItem -LiteralPath $ephermalDir -Filter '*.yaml' -File -ErrorAction SilentlyContinue)
+      $report.scanned = $files.Count
+
+      foreach ($f in $files) {
+        try {
+          $raw = Get-Content -LiteralPath $f.FullName -Raw
+
+          # --- Extract the top-level `metadata:` block ---------------------
+          # The generator we control emits `metadata:` at column 0 with its
+          # children indented by spaces. Capture from `metadata:` up to the
+          # next non-indented (column-0) line. Multiline mode only, so `.`
+          # never crosses a newline.
+          $metaMatch = [regex]::Match(
+            $raw,
+            '(?m)^metadata:\s*\r?\n((?:[ \t]+[^\r\n]*\r?\n?)+)'
+          )
+          if (-not $metaMatch.Success) {
+            $report.skippedNoFlag += @{ file = $f.Name; reason = 'no top-level metadata: block' }
+            continue
+          }
+          $block = $metaMatch.Groups[1].Value
+
+          # --- Guard 1: metadata.ephermal must be literal `true` ----------
+          $flagMatch = [regex]::Match(
+            $block,
+            '(?im)^\s+ephermal\s*:\s*(true|false)\s*$'
+          )
+          $isEphermal = $flagMatch.Success -and $flagMatch.Groups[1].Value.ToLowerInvariant() -eq 'true'
+          if (-not $isEphermal) {
+            $report.skippedNoFlag += @{ file = $f.Name; reason = 'metadata.ephermal != true' }
+            continue
+          }
+
+          # --- Guard 2: metadata.createdAt must be a parseable ISO-8601 ---
+          $tsMatch = [regex]::Match(
+            $block,
+            '(?m)^\s+createdAt\s*:\s*"?([^"\r\n]+?)"?\s*$'
+          )
+          if (-not $tsMatch.Success) {
+            $report.skippedParse += @{ file = $f.Name; reason = 'metadata.createdAt missing' }
+            continue
+          }
+          $tsRaw = $tsMatch.Groups[1].Value.Trim()
+          try {
+            $createdAt = [DateTimeOffset]::Parse(
+              $tsRaw,
+              [System.Globalization.CultureInfo]::InvariantCulture,
+              [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
+            )
+          } catch {
+            $report.skippedParse += @{ file = $f.Name; reason = "metadata.createdAt unparseable: '$tsRaw'" }
+            continue
+          }
+          $createdAtUtc = $createdAt.UtcDateTime
+          $ageDays = [Math]::Round(($nowUtc - $createdAtUtc).TotalDays, 2)
+
+          # --- Guard 3: must be older than the cutoff ---------------------
+          if ($createdAtUtc -gt $cutoffUtc) {
+            $report.keptYoung += @{
+              file      = $f.Name
+              createdAt = $createdAtUtc.ToString('o')
+              ageDays   = $ageDays
+            }
+            continue
+          }
+
+          # --- Eligible: delete (or pretend to) ---------------------------
+          if ($dryRun) {
+            $report.deleted += @{
+              file      = $f.Name
+              createdAt = $createdAtUtc.ToString('o')
+              ageDays   = $ageDays
+              action    = 'would-delete'
+            }
+          } else {
+            Remove-Item -LiteralPath $f.FullName -Force
+            $report.deleted += @{
+              file      = $f.Name
+              createdAt = $createdAtUtc.ToString('o')
+              ageDays   = $ageDays
+              action    = 'deleted'
+            }
+          }
+        } catch {
+          $report.errors += @{ file = $f.Name; error = $_.Exception.Message }
+        }
+      }
+
+      $report | ConvertTo-Json -Depth 10
+
+  # ── Step 2: Render a human-friendly summary ────────────────────────────
+  - name: format-summary
+    type: Transform
+    dependsOn: [sweep-ephermal-dir]
+    template: |
+      # Ephermal Cleanup — Summary
+
+      **Run ID:**         {{orchestration.runId}}
+      **Started at:**     {{orchestration.startedAt}}
+      **Retention:**      {{param.retentionDays}} day(s)
+      **Dry run:**        {{param.dryRun}}
+
+      ## Sweep Report
+
+      ```json
+      {{sweep-ephermal-dir.output}}
+      ```
+
+      Files listed under `deleted` were removed (or, when `dryRun` was true,
+      flagged as `would-delete`). Files under `keptYoung` are still within
+      the retention window. `skippedNoFlag` and `skippedParse` were left
+      untouched because they failed the metadata guards. `errors` lists any
+      unexpected failures during the sweep.
