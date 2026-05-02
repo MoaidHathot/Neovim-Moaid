@@ -67,6 +67,15 @@ export const PalantirPlugin: Plugin = async ({ $, directory }) => {
           "-m", "Action requires your approval",
           "-b", directory,
         )
+      } else if ((event.type as string) === "question.asked") {
+        const props = event.properties as { sessionID: string }
+        if (childSessions.has(props.sessionID)) return
+        cancelPending()
+        await notify(
+          "--preset", "opencode-permission",
+          "-m", "OpenCode is asking a question",
+          "-b", directory,
+        )
       }
     },
   }

@@ -20,6 +20,7 @@ export const TabStatusPlugin: Plugin = async ({ directory }) => {
   const label = basename(directory)
   const children = new Set<string>()
   const pending = new Set<string>() // sessions awaiting permission
+  const questions = new Set<string>() // open question request IDs
   let busy = false
 
   const esc = "\x1b"
@@ -38,13 +39,14 @@ export const TabStatusPlugin: Plugin = async ({ directory }) => {
   }
 
   const render = () => {
-    if (pending.size) return emit(`${ICON.ask} ${label}`, 1, 50)
+    if (pending.size || questions.size) return emit(`${ICON.ask} ${label}`, 1, 50)
     if (busy) return emit(`${ICON.busy} ${label}`, 3)
     return emit(`${ICON.idle} ${label}`, 0)
   }
 
   const reset = () => {
     pending.clear()
+    questions.clear()
     busy = false
     emit(`${ICON.idle} ${label}`, 0)
   }
@@ -98,6 +100,19 @@ export const TabStatusPlugin: Plugin = async ({ directory }) => {
       }
       if (t === "permission.replied") {
         if (sid) pending.delete(sid)
+        return render()
+      }
+      // Multi-choice questions ("Open questions for you" style prompts).
+      // These are tracked by request ID, not session ID, since multiple
+      // questions can be open within a single session.
+      if (t === "question.asked") {
+        const qid = p?.id
+        if (qid) questions.add(qid)
+        return render()
+      }
+      if (t === "question.replied" || t === "question.rejected") {
+        const qid = p?.requestID
+        if (qid) questions.delete(qid)
         return render()
       }
     },
