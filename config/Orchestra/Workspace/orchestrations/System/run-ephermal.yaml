@@ -17,9 +17,6 @@ variables:
   # Absolute path so it works regardless of which directory the engine is
   # launched from. Forward slashes are tolerated on Windows.
   ephermalDir: "P:/Github/Neovim-Moaid/config/Orchestra/workspace/orchestrations/Ephermal"
-  # Working directory exposed to the generator's filesystem MCP. Must include
-  # the Ephermal directory so the generator can write the output file.
-  workspaceRoot: "P:/Github/Neovim-Moaid/config/Orchestra/workspace"
   # Deterministic, unique name for the ephermal orchestration. Used both as
   # the YAML `name:` field inside the generated file AND as the lookup key
   # for the subsequent Orchestration step.
@@ -42,13 +39,14 @@ inputs:
 
 steps:
   # ── Step 1: Generate the ephermal orchestration ────────────────────────
-  # Delegates to the system `generate-orchestration` meta-orchestration.
+  # Delegates to the system `generate-orchestration-fast` meta-orchestration
+  # (the fast variant — single LLM call, deterministic pwsh sanitize+save).
   # We forward the user's task verbatim and append a strict requirements
   # block that pins the generated orchestration's `name` and `tags` so the
   # next step can locate and launch it.
   - name: generate-ephermal
     type: Orchestration
-    orchestration: generate-orchestration
+    orchestration: generate-orchestration-fast
     parameters:
       description: |
         Generate an ephermal (one-off) orchestration that fulfills the
@@ -81,9 +79,8 @@ steps:
            the user task above.
         5. Do NOT add any scheduler/webhook/loop triggers — this
            orchestration is launched once, on demand, by a parent runner.
-      register: "false"
+        6. Orchestration can be long-running, if not specified, use a 45 minutes orchestration-level timeout. Don't add step-timeouts.
       outputPath: "{{vars.ephermalFile}}"
-      workingDirectory: "{{vars.workspaceRoot}}"
     mode: sync
     timeoutSeconds: 1800
 

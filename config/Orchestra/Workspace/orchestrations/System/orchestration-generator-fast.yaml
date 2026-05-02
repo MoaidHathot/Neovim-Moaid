@@ -1,0 +1,288 @@
+# yaml-language-server: $schema=../schemas/orchestration.schema.json
+name: generate-orchestration-fast
+description: |
+  Fast variant of `generate-orchestration`. Generates Orchestra orchestration
+  YAML files from natural-language descriptions in a SINGLE LLM call, then
+  uses deterministic PowerShell post-processing to sanitize and save the
+  output.
+
+  Trade-offs vs. `generate-orchestration` (the slow/thorough one):
+    - 1 LLM call vs ~5 (no validate-loop, no intent/best-practices subagents,
+      no LLM-driven file save).
+    - No semantic review of the generated YAML — relies on a strong system
+      prompt + regex-based structural validation only.
+    - Immune to the LLM agent context-leak bug (no LLM ever writes the file,
+      so artifacts like `---` + "Context from previous steps:" cannot leak
+      into the saved YAML).
+
+  Use this for ephermal/throwaway orchestrations where iteration speed
+  matters more than rigorous review. Use the slow generator for
+  production-quality long-lived orchestrations.
+version: 1.0.0
+tags: [meta, generator, tooling, system, fast]
+defaultModel: gpt-5.4
+
+inputs:
+  description:
+    type: string
+    description: |
+      Natural-language description of the orchestration to generate. Be
+      specific about steps, triggers, MCPs, and inputs/outputs.
+    required: true
+    multiline: true
+  outputPath:
+    type: string
+    description: |
+      Absolute file path where the generated orchestration YAML should be
+      saved. Parent directories are created automatically.
+    required: true
+
+steps:
+  # ── Step 1: Generate the YAML in ONE LLM call ──────────────────────────
+  # No outputHandlerPrompt (which would be a second LLM call and is itself
+  # a documented noise source), no subagents, no loop. The system prompt
+  # is the contract: "Output ONLY YAML, no fences, no commentary, no
+  # document separators."
+  - name: generate
+    type: Prompt
+    parameters:
+      - description
+    skillDirectories:
+      - ./skills/orchestration-authoring
+      - ./skills/mcp-catalog
+    reasoningLevel: Low
+    systemPrompt: |
+      You are an expert Orchestra orchestration author. Generate a single
+      valid Orchestra orchestration YAML file based on the user's
+      description.
+
+      OUTPUT FORMAT (NON-NEGOTIABLE — your output is piped directly into a
+      file with deterministic post-processing; any deviation from these
+      rules will fail validation):
+
+      1. Output ONLY raw YAML. The first character of your output must be
+         the first character of the YAML file. The last character of your
+         output must be the last character of the YAML file.
+      2. Do NOT wrap the YAML in markdown code fences (no ```yaml ... ```).
+      3. Do NOT include explanations, commentary, preamble, postamble, or
+         any human-facing text whatsoever.
+      4. Do NOT include YAML document separators (`---`). Output exactly
+         ONE YAML document.
+      5. Do NOT include lines like "Context from previous steps:" or any
+         other meta-narration of your own reasoning.
+      6. Do NOT repeat or duplicate the orchestration content for any
+         reason.
+
+      CONTENT RULES:
+
+      a. Use only documented Orchestra properties (refer to your loaded
+         skills). Never invent fields.
+      b. Set `defaultModel: gpt-5.4` at the top level. Do NOT repeat
+         `model:` on every step.
+      c. Use kebab-case for orchestration and step names; camelCase for
+         variables and inputs.
+      d. Use the typed `inputs:` block (NOT the legacy `parameters:`
+         array) for orchestration-level inputs.
+      e. Add a `description:` field to every input.
+      f. Design efficient DAGs: parallelize independent steps where it
+         makes sense.
+      g. Provide meaningful `systemPrompt:` and `userPrompt:` content for
+         every Prompt step.
+
+      MCP RULES (CRITICAL — most common failure mode):
+
+      h. You MUST consult the loaded `mcp-catalog` skill before using ANY
+         MCP. The catalog is the single source of truth for which MCP
+         servers are wired up in this workspace.
+
+      i. The catalog has TWO classes:
+         - PRE-REGISTERED MCPs (declared globally in
+           `config/Orchestra/orchestra.mcp.json`): currently `calendar`,
+           `mail`, `me`, `m365-copilot`, `azdo`, `azure`, `icm-full`,
+           `icm-readonly`, `powerreview`, `debug-mcp`. For these, just
+           reference the name in a step's `mcps:` array. **Do NOT add
+           them to your orchestration's top-level `mcps:` block** —
+           re-declaring is redundant noise.
+         - INLINE-ONLY MCPs (NOT in the global registry): currently
+           `workiq`, `zakira`, `recall`, `context7`, `microsoft-learn`,
+           `playwright`, `orchestra`, `filesystem`. For these, you MUST
+           include a top-level `mcps:` block entry with full
+           configuration before any step references the name. Copy the
+           snippet verbatim from the catalog entry.
+
+      j. Never invent an MCP. If a name does not appear in the catalog,
+         it is not registered, regardless of how plausible it sounds.
+         Common hallucinations include `graph`, `microsoft-graph`,
+         `msgraph`, `outlook`, `web`, `search`, `bing`, `google`,
+         `docs`, `documentation`, `memory`, `state`, `kv`, `browser`,
+         `chromium`, `fs`, `files`, `disk`. None of these exist — use
+         the catalog's recommended alternative.
+
+      k. Endpoint discipline:
+         - `{{server.url}}/mcp/data` belongs to `orchestra` only.
+         - `http://localhost:5113/mcp/<name>` belongs to the M365 HTTP
+           proxy MCPs (`calendar`, `mail`, `me`, `m365-copilot`); the
+           path segment must match the MCP name exactly. **And those
+           four are pre-registered, so you should not be writing
+           endpoints for them — just reference the name from a step.**
+         - `https://mcp.context7.com/mcp` belongs to `context7` only.
+         - `https://learn.microsoft.com/api/mcp` belongs to
+           `microsoft-learn` only.
+
+      l. For Microsoft 365 tasks, the catalog offers two paths: the
+         broad `workiq` super-MCP (inline-only, preferred when multiple
+         M365 concerns are involved or for parity with existing
+         workspace orchestrations), or one of the focused HTTP proxy
+         MCPs (`calendar`, `mail`, `me`, `m365-copilot` — pre-registered,
+         no top-level declaration needed) when a smaller, more focused
+         toolset is desirable. Pick one path, do not mix both for the
+         same concern.
+
+      m. If the user's task seems to require a capability not provided
+         by any catalogued MCP, add a clear `# TODO:` comment in the
+         orchestration `description:` rather than fabricating an MCP.
+
+      Begin your output with the YAML directly (e.g.
+      `# yaml-language-server:` modeline, or `name:` line). End with the
+      final character of the orchestration. Nothing else.
+    userPrompt: |
+      Generate an Orchestra orchestration for this description:
+
+      {{param.description}}
+
+  # ── Step 2: Sanitize + structurally validate the LLM output ────────────
+  # Deterministic. Receives raw LLM output via stdin (so any embedded
+  # quotes/backticks/etc don't risk breaking shell quoting).
+  - name: sanitize-and-validate
+    type: Script
+    dependsOn:
+      - generate
+    shell: pwsh
+    timeoutSeconds: 30
+    stdin: "{{generate.output}}"
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $raw = [Console]::In.ReadToEnd()
+
+      if ([string]::IsNullOrWhiteSpace($raw)) {
+        Write-Error 'Sanitizer: empty LLM output'
+        exit 1
+      }
+
+      # 1. Strip leading/trailing markdown code fences if the model added them.
+      $raw = $raw -replace '(?ms)\A\s*```(?:yaml|yml)?\s*\r?\n', ''
+      $raw = $raw -replace '(?ms)\r?\n\s*```\s*\Z', ''
+
+      # 2. Truncate at the first `Context from previous steps:` marker
+      #    (anywhere). This is the documented context-leak signature.
+      $ctxMatch = [regex]::Match($raw, '(?m)^\s*Context from previous steps\s*:')
+      if ($ctxMatch.Success) {
+        $raw = $raw.Substring(0, $ctxMatch.Index)
+      }
+
+      # 3. Truncate at the first column-0 `---` that appears AFTER any real
+      #    content. A leading `---` (before any other line) is the YAML
+      #    "start of document" marker and is allowed; a trailing one
+      #    indicates a multi-document leak and we cut from there.
+      $lines = $raw -split "`r?`n"
+      $cleaned = New-Object 'System.Collections.Generic.List[string]'
+      $seenContent = $false
+      foreach ($line in $lines) {
+        if ($line -match '^---\s*$') {
+          if ($seenContent) { break }
+          # Leading start-of-document marker — drop it but continue.
+          continue
+        }
+        if (-not $seenContent -and $line.Trim() -ne '') {
+          $seenContent = $true
+        }
+        [void]$cleaned.Add($line)
+      }
+
+      $content = ($cleaned -join "`n").TrimEnd() + "`n"
+
+      # 4. Structural validation — fail fast on missing required fields or
+      #    residual leakage signatures.
+      $errors = @()
+      if ([string]::IsNullOrWhiteSpace($content)) {
+        $errors += 'empty output after sanitize'
+      }
+      if ($content -notmatch '(?m)^name\s*:') {
+        $errors += 'missing top-level `name:`'
+      }
+      if ($content -notmatch '(?m)^description\s*:') {
+        $errors += 'missing top-level `description:`'
+      }
+      if ($content -notmatch '(?m)^steps\s*:') {
+        $errors += 'missing top-level `steps:`'
+      }
+      if ($content -match '(?m)^\s*Context from previous steps\s*:') {
+        $errors += 'context-leak marker still present after sanitize'
+      }
+      if ($content -match '(?m)^```') {
+        $errors += 'unstripped markdown fence'
+      }
+      # Any `---` at column 0 that is NOT the first line of the document is
+      # a multi-document leak.
+      $stripIdx = $content.IndexOf("`n---")
+      if ($stripIdx -ge 0) {
+        $errors += 'YAML document separator detected after content (multi-doc leak)'
+      }
+
+      if ($errors.Count -gt 0) {
+        Write-Error ('Sanitizer validation failed: ' + ($errors -join '; '))
+        exit 1
+      }
+
+      [Console]::Out.Write($content)
+
+  # ── Step 3: Save to disk (no LLM, no filesystem MCP) ───────────────────
+  # Receives the cleaned content via stdin. Writes it byte-for-byte using
+  # .NET's WriteAllText with a no-BOM UTF-8 encoding so the file matches
+  # the rest of the workspace (LF line endings, no BOM).
+  - name: save
+    type: Script
+    dependsOn:
+      - sanitize-and-validate
+    parameters:
+      - outputPath
+    shell: pwsh
+    timeoutSeconds: 30
+    stdin: "{{sanitize-and-validate.output}}"
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $content = [Console]::In.ReadToEnd()
+      $outputPath = '{{param.outputPath}}'
+
+      if ([string]::IsNullOrWhiteSpace($outputPath)) {
+        Write-Error 'outputPath is required'
+        exit 1
+      }
+
+      $dir = [System.IO.Path]::GetDirectoryName($outputPath)
+      if ($dir -and -not (Test-Path -LiteralPath $dir -PathType Container)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+      }
+
+      $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+      [System.IO.File]::WriteAllText($outputPath, $content, $utf8NoBom)
+
+      Write-Output $outputPath
+
+  # ── Step 4: Format the final summary ───────────────────────────────────
+  - name: format-output
+    type: Transform
+    dependsOn:
+      - save
+      - sanitize-and-validate
+    template: |
+      # Orchestration Generated Successfully (fast)
+
+      **Run ID:**   {{orchestration.runId}}
+      **Saved to:** {{save.output}}
+
+      ## Generated Orchestration
+
+      ```yaml
+      {{sanitize-and-validate.output}}
+      ```
