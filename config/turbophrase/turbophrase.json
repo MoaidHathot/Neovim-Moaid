@@ -1,5 +1,5 @@
 {
-  "defaultProvider": "copilot",
+  "defaultProvider": "azure-openai",
   "providers": {
     "openai": {
       "type": "openai",
@@ -8,9 +8,9 @@
     },
     "azure-openai": {
       "type": "azure-openai",
-      "endpoint": "${AZURE_OPENAI_ENDPOINT}",
-      "apiKey": "${AZURE_OPENAI_KEY}",
-      "deploymentName": "gpt-4"
+      "endpoint": "${TURBOPHRASE_API_ENDPOINT}",
+      "apiKey": "${TURBOPHRASE_API_KEY}",
+      "deploymentName": "gpt-4.1-mini"
     },
     "anthropic": {
       "type": "anthropic",
