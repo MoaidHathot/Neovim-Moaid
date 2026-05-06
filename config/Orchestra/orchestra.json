@@ -8,6 +8,7 @@
 		"watch": true,
 		"recursive": true
 	},
+	"autoResumeCheckpointsOnStartup": true,
 	"shutdownTimeoutSeconds": 30,
 	"logLevel": "Debug",
 	"retention": {

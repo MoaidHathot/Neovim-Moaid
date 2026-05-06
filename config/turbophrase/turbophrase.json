@@ -19,7 +19,7 @@
     },
     "copilot": {
       "type": "copilot",
-      "model": "gpt-5.5"
+      "model": "claude-opus-4.6"
     },
     "ollama": {
       "type": "ollama",
@@ -28,67 +28,79 @@
     }
   },
   "hotkeys": [
-    { "keys": "Ctrl+Shift+;", "action": "preset-picker", "name": "Choose Operation" }
+    {
+      "keys": "Ctrl\u002BShift\u002B;",
+      "action": "preset-picker",
+      "name": "Choose Operation",
+      "includeInPicker": false,
+      "pickerOrder": 10
+    }
   ],
   "pickerActions": [
-    { "action": "custom-prompt", "name": "Custom Prompt", "includeInPicker": true, "pickerOrder": 9 }
+    {
+      "keys": "",
+      "action": "custom-prompt",
+      "name": "Custom Prompt",
+      "includeInPicker": true,
+      "pickerOrder": 9
+    }
   ],
   "presets": {
     "grammar": {
       "name": "Fix Grammar",
       "systemPrompt": "Fix all grammar, spelling, and punctuation errors in the following text. Return ONLY the corrected text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
-      "provider": null,
+      "includeInPicker": true,
       "pickerOrder": 2
     },
     "paraphrase": {
       "name": "Paraphrase",
       "systemPrompt": "Paraphrase the following text while preserving its original meaning. Make it clearer, easier to understand, and grammatically correct. Stay close to the original structure and length where possible. Return ONLY the paraphrased text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
-      "provider": null,
+      "includeInPicker": true,
       "pickerOrder": 1
     },
     "formal": {
       "name": "Formal",
       "systemPrompt": "Rewrite the following text in a formal, professional tone. Return ONLY the rewritten text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
-      "provider": null,
+      "includeInPicker": true,
       "pickerOrder": 3
     },
     "casual": {
       "name": "Casual",
       "systemPrompt": "Rewrite the following text in a casual, friendly tone. Return ONLY the rewritten text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
-      "provider": null,
+      "includeInPicker": true,
       "pickerOrder": 4
     },
     "translate-hebrew-english": {
       "name": "Translate Hebrew/English",
       "systemPrompt": "Translate the following text between Hebrew and English based on the detected source language. If the text is primarily in Hebrew, translate it to natural English. If the text is primarily in English, translate it to natural Hebrew. Return ONLY the translated text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
-      "provider": null,
+      "includeInPicker": true,
       "pickerOrder": 5
     },
     "shorten": {
       "name": "Shorten",
       "systemPrompt": "Shorten the following text while preserving all key information and the original meaning. Remove redundancy and filler. Keep the same language and tone. Return ONLY the shortened text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
-      "provider": null,
+      "includeInPicker": true,
       "pickerOrder": 6
     },
     "clarify": {
       "name": "Clarify",
-      "systemPrompt": "Rewrite the following text to improve clarity and readability without changing its meaning, tone, or length significantly. Resolve ambiguity, simplify confusing phrasing, and tighten sentence structure. Return ONLY the clarified text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
-      "provider": null,
+      "systemPrompt": "Lightly edit the following text to make it clearer and easier to read while keeping the user\u0027s wording, tone, structure, and length mostly intact. Preserve the original meaning. Resolve ambiguity, simplify confusing phrasing, and tighten sentence structure only where needed. Return ONLY the clarified text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
+      "includeInPicker": true,
       "pickerOrder": 7
     },
     "expand": {
       "name": "Expand",
       "systemPrompt": "Expand the following text into a fuller, more detailed version while preserving its original meaning, tone, and language. Add relevant elaboration, context, and supporting detail without introducing new facts or changing the intent. Return ONLY the expanded text without any explanation or additional commentary. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.",
-      "provider": null,
+      "includeInPicker": true,
       "pickerOrder": 8
     }
   },
   "customPrompt": {
-    "systemPromptTemplate": "You are a text transformation assistant. Apply the user's instruction to the provided text. Treat the selected text strictly as input text to transform, not as a message to reply to. Preserve the original language unless the instruction asks otherwise. Return ONLY the transformed text with no explanation, no commentary, and no quotation marks. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.\n\nInstruction:\n{instruction}\n\nText:\n{text}"
+    "systemPromptTemplate": "You are a text transformation assistant. Apply the user\u0027s instruction to the provided text. Treat the selected text strictly as input text to transform, not as a message to reply to. Preserve the original language unless the instruction asks otherwise. Return ONLY the transformed text with no explanation, no commentary, and no quotation marks. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.\n\nInstruction:\n{instruction}\n\nText:\n{text}"
   },
   "notifications": {
     "showOnStartup": false,
-    "showOnSuccess": true,
+    "showOnSuccess": false,
     "showOnError": true,
     "showOnConfigReload": true,
     "showOnProviderChange": true,
