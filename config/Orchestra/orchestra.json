@@ -5,8 +5,8 @@
 	"defaultModel": "gpt-5.4",
 	"agentPool": {
 		"minInstances": 1,
-		"maxInstances": 60,
-		"maxSessionsPerInstance": 2,
+		"maxInstances": 70,
+		"maxSessionsPerInstance": 3,
 		"idleTimeoutSeconds": 120
 	},
 	"scan": {
