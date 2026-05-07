@@ -29,7 +29,7 @@
   },
   "hotkeys": [
     {
-      "keys": "Ctrl\u002BShift\u002B;",
+      "keys": "Ctrl+Shift+;",
       "action": "preset-picker",
       "name": "Choose Operation",
       "includeInPicker": false,
