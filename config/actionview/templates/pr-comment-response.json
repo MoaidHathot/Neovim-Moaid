@@ -1,6 +1,6 @@
 {
   "type": "pr-comment-response",
-  "description": "Summary of AI agent responses to incoming PR comments. Shows each reviewer comment paired with the AI's draft reply and/or proposed code fix. Per-response actions let you approve/delete individual replies and approve/reject individual code fix proposals. Entry-level actions support bulk approve, submit replies, apply proposals, and cleanup.",
+  "description": "Summary of AI agent responses to incoming PR comments. Shows each reviewer comment paired with the AI's draft reply, draft operation, and/or proposed code fix. Per-response actions let you approve/delete individual replies and draft operations, and approve/reject individual code fix proposals. Entry-level actions support opening the PR, approving/submitting draft replies and operations, and cleanup; proposals should be approved/rejected per response unless bulk proposal commands are available.",
   "defaults": {
     "icon": "message-square-reply",
     "severity": "medium",
@@ -21,14 +21,14 @@
       "type": "table",
       "label": "Response Summary",
       "required": true,
-      "description": "Overview of how the AI responded. Expected columns: Action, Count. Rows: Replies, Code Fixes, Won't Fix, Total Comments Addressed."
+      "description": "Overview of how the AI responded. Expected columns: Action, Count. Rows: Replies, Code Fixes, Won't Fix / By Design, Draft Operations, Total Comments Addressed."
     },
     {
       "type": "section",
       "title": "Comment Responses",
       "titleAliases": ["Responses", "AI Responses", "All Responses"],
       "required": true,
-      "description": "Each nested section represents one incoming reviewer comment and the AI's response to it. Contains the original comment, the AI's draft reply, an optional proposed code fix diff, and per-response actions.",
+      "description": "Each nested section represents one incoming reviewer comment and the AI's response to it. Contains the original comment, the AI's draft reply and/or draft operation, an optional proposed code fix diff, and per-response actions.",
       "nestedSections": {
         "repeatable": true,
         "contentTemplate": [
@@ -36,7 +36,7 @@
             "type": "keyValue",
             "label": "Details",
             "required": false,
-            "description": "Response metadata. Expected keys: Thread ID, Commenter (who left the original comment), File (relative path), Lines (line range), Action (Reply / Code Fix / Won't Fix), Agent (AI agent name), Reply Draft ID (PowerReview draft UUID), Proposal ID (PowerReview proposal UUID, if code fix)."
+            "description": "Response metadata. Expected keys: Thread ID, Commenter (who left the original comment), File (relative path), Lines (line range), Action (Reply / Code Fix / Won't Fix / By Design / Fixed / Acknowledge), Agent (AI agent name), Reply Draft ID (PowerReview draft UUID), Draft Operation ID (PowerReview draft operation UUID, if status/reaction), Draft Operation Type (ThreadStatusChange or CommentReaction, if any), Proposal ID (PowerReview proposal UUID, if code fix)."
           },
           {
             "type": "markdown",
@@ -53,8 +53,8 @@
           {
             "type": "code",
             "label": "Code Context",
-            "required": true,
-            "description": "The code diff or snippet around the commented area. Always include this to show what code the reviewer commented on. For code fix actions, also include the proposed fix diff. Use language 'diff' for unified diffs or the file's language for code snippets."
+            "required": false,
+            "description": "Optional targeted code diff or snippet around the commented area. Include when the comment is file/line-specific and the context is useful for review. Avoid fetching or embedding full PR diffs just to satisfy this block. For code fix actions, include the proposed fix diff in the Proposed Fix block. Use language 'diff' for unified diffs or the file's language for snippets."
           },
           {
             "type": "code",
@@ -83,6 +83,16 @@
             "label": "Reject Proposal",
             "style": "danger",
             "description": "Reject the proposed code fix. CLI: powerreview proposal reject --pr-url <url> --proposal-id <id>"
+          },
+          {
+            "label": "Approve Operation",
+            "style": "success",
+            "description": "Approve the draft thread-status or reaction operation. CLI: powerreview action approve --pr-url <url> --action-id <id>"
+          },
+          {
+            "label": "Delete Operation",
+            "style": "danger",
+            "description": "Delete the draft thread-status or reaction operation. CLI: powerreview action delete --pr-url <url> --action-id <id>"
           }
         ]
       }
@@ -116,7 +126,7 @@
     {
       "label": "Approve All Replies",
       "style": "success",
-      "description": "Approve all draft replies. CLI: powerreview comment approve-all --pr-url <url>"
+      "description": "Approve all draft replies and draft operations when supported by the installed PowerReview CLI. CLI: powerreview comment approve-all --pr-url <url> and/or powerreview action approve --pr-url <url> --action-id <id> per operation."
     },
     {
       "label": "Submit Replies",
@@ -126,17 +136,17 @@
     {
       "label": "Approve All Proposals",
       "style": "success",
-      "description": "Approve all proposed code fixes. Requires per-proposal approval via CLI."
+      "description": "Optional only if the installed PowerReview CLI supports bulk proposal approval. Otherwise approve proposals individually from each response section."
     },
     {
       "label": "Apply All Proposals",
       "style": "success",
-      "description": "Apply all approved proposals (cherry-pick into PR branch and push). Requires proposals to be approved first."
+      "description": "Optional only if the installed PowerReview CLI supports bulk proposal apply. Otherwise apply approved proposals individually. Requires proposals to be approved first."
     },
     {
       "label": "Delete All",
       "style": "danger",
-      "description": "Delete all AI draft replies and reject all proposals."
+      "description": "Delete all AI draft replies when supported. Delete draft operations and reject proposals individually from each response section unless the installed CLI supports safe bulk cleanup."
     }
   ]
 }
