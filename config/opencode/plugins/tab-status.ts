@@ -24,9 +24,21 @@ export const TabStatusPlugin: Plugin = async ({ directory }) => {
   let busy = false
 
   const esc = "\x1b"
+  // Whether to also emit OSC 0 (title). Off by default because:
+  //  1. nvim's own 'title' management overwrites it on focus changes
+  //  2. when emitted with OSC 9;4 in one write, some terminals/parsers
+  //     treat the whole blob as a single sequence and the trailing OSC
+  //     gets lost (caused stuck busy bar bug)
+  const EMIT_TITLE = process.env.OPENCODE_TAB_STATUS_TITLE === "1"
   const emit = (title: string, state: number, pct = 0) => {
     if (DEBUG) process.stderr.write(`[tab-status] emit state=${state} pct=${pct} title="${title}"\n`)
-    process.stdout.write(`${esc}]0;${title}${esc}\\${esc}]9;4;${state};${pct}${esc}\\`)
+    const titleSeq = EMIT_TITLE ? `${esc}]0;${title}${esc}\\` : ""
+    const progressSeq = `${esc}]9;4;${state};${pct}${esc}\\`
+    if (titleSeq) {
+      // Emit as two separate writes so terminals see two distinct OSCs.
+      process.stdout.write(titleSeq)
+    }
+    process.stdout.write(progressSeq)
   }
 
   // Tab titles render in Windows Terminal's UI font (Segoe UI Variable),
