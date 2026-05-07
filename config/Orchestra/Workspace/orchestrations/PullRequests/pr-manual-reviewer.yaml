@@ -1,7 +1,7 @@
 name: pr-manual-reviewer
 description: |
-  Reviews a single Azure DevOps Pull Request specified by URL. Given a PR URL, this orchestration fetches the PR's metadata (id, title, author, branches, reviewers, latest iteration) using the Azure DevOps MCP, then invokes the pr-code-reviewer orchestration with that data via a first-class Orchestration step. This is the on-demand companion to pr-auto-reviewer: instead of discovering PRs assigned to the user, the caller targets a specific PR.
-version: 1.1.0
+  On-demand companion to pr-auto-reviewer. Reviews a single Azure DevOps Pull Request specified by URL by delegating to pr-review-dispatcher with manual mode and forceReview enabled.
+version: 2.0.0
 tags: ["ZTS", "MSFT", "PR", "Code-Review", "on-demand"]
 defaultModel: gpt-5.4
 
@@ -14,12 +14,6 @@ inputs:
       or https://{org}.visualstudio.com/{project}/_git/{repo}/pullrequest/{id}
     required: true
 
-variables:
-  organization: msazure
-  project: One
-  repository: ZTS
-  reviewerName: Moaid Hathot
-
 defaultRetryPolicy:
   maxRetries: 2
   backoffSeconds: 5
@@ -29,79 +23,35 @@ defaultRetryPolicy:
 timeoutSeconds: 34400
 
 steps:
-  - name: fetch-pr-metadata
-    type: Prompt
-    systemPrompt: |
-      You are an Azure DevOps assistant. Given a Pull Request URL, fetch the PR's metadata using the Azure DevOps MCP tools. Return structured data only -- no commentary, no markdown fences.
-
-      The URL may take any of these shapes:
-        - https://dev.azure.com/{organization}/{project}/_git/{repository}/pullrequest/{id}
-        - https://{organization}.visualstudio.com/{project}/_git/{repository}/pullrequest/{id}
-      The numeric segment after `/pullrequest/` is the PR id. Parse organization, project, repository, and PR id from the URL. If the URL omits a project or repository, fall back to project '{{vars.project}}' and repository '{{vars.repository}}'.
-    userPrompt: |
-      Fetch the metadata for this Pull Request:
-
-      PR URL: {{param.prUrl}}
-
-      Steps:
-      1. Parse organization, project, repository, and PR id from the URL.
-      2. Use the Azure DevOps MCP tools to retrieve the PR. Include: id, title, createdBy (display name), creationDate, sourceRefName, targetRefName, reviewers (array of display names), and the latest iteration id.
-
-      Return ONLY a JSON OBJECT (not an array) with exactly these fields:
-      {
-        "id": <number>,
-        "title": "...",
-        "createdBy": "...",
-        "creationDate": "...",
-        "sourceRefName": "...",
-        "targetRefName": "...",
-        "reviewers": ["..."],
-        "iterationId": <number>
-      }
-
-      If the PR cannot be found or the URL cannot be parsed, call orchestra_complete with status 'failed' and an explanatory reason.
-    outputHandlerPrompt: |
-      Ensure the output is a single valid JSON object matching the schema above. Strip any markdown fences or commentary.
-    mcps: [azdo]
-    retry:
-      maxRetries: 3
-      backoffSeconds: 10
-      backoffMultiplier: 2.0
-      retryOnTimeout: true
-
-  # First-class Orchestration step: launches pr-code-reviewer in-process via the engine's
-  # IChildOrchestrationLauncher. No MCP transport is involved, so there is no 3-minute MCP
-  # request timeout to worry about. The step blocks until the child reaches a terminal state.
-  # Failure of the child propagates as a step failure (no `outputHandlerPrompt` hack needed).
-  - name: review-pr
+  - name: dispatch-review
     type: Orchestration
-    dependsOn: [fetch-pr-metadata]
-    orchestration: pr-code-reviewer
+    orchestration: pr-review-dispatcher
     parameters:
-      prData: "{{fetch-pr-metadata.output}}"
+      prUrl: "{{param.prUrl}}"
+      mode: manual
+      forceReview: "true"
     mode: sync
-    timeoutSeconds: 15300
+    timeoutSeconds: 17000
 
   - name: generate-summary
     type: Prompt
-    dependsOn: [review-pr, fetch-pr-metadata]
+    dependsOn: [dispatch-review]
     systemPrompt: |
       You are a reporting assistant. Produce a clear, concise markdown summary of this on-demand PR review run.
     userPrompt: |
       Create a final markdown summary of this on-demand PR review.
 
-      PR Metadata:
-      {{fetch-pr-metadata.output}}
+      PR URL:
+      {{param.prUrl}}
 
-      Child Orchestration Final Output:
-      {{review-pr.output}}
+      Dispatcher output:
+      {{dispatch-review.output}}
 
       Produce a polished markdown report:
       1. Header: '## On-Demand PR Review Summary'
-      2. PR title, id, author, source -> target branch, and link ({{param.prUrl}})
-      3. Outcome (succeeded — the orchestration only reaches this step on success)
-      4. The summary content from the child orchestration's final output
-      5. Any notes the child review surfaced
+      2. PR link ({{param.prUrl}})
+      3. Outcome from the dispatcher/child review
+      4. Any notes the child review surfaced
 
 trigger:
   type: manual

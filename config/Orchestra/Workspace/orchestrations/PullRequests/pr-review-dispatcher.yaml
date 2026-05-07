@@ -1,0 +1,245 @@
+name: pr-review-dispatcher
+description: |
+  Shared dispatcher for PR code reviews. Accepts either a PR URL or PR data, opens or refreshes the PowerReview session, uses Zakira.Exchange plus PowerReview session/thread state to decide whether review work is needed, builds the enriched prData contract, and invokes pr-code-reviewer. Used by both scheduled and manual PR review entrypoints.
+version: 1.0.0
+tags: ["ZTS", "MSFT", "PR", "Code-Review", "dispatcher"]
+defaultModel: gpt-5.4
+
+inputs:
+  prUrl:
+    type: string
+    description: |
+      Optional full Azure DevOps Pull Request URL. Use this for manual/on-demand review.
+    required: false
+    default: ""
+  prData:
+    type: string
+    description: |
+      Optional JSON object containing PR metadata from discovery, including id, title, createdBy, creationDate, sourceRefName, targetRefName, reviewers, url/prUrl, and iterationId if available.
+    required: false
+    default: ""
+  mode:
+    type: string
+    description: |
+      Dispatch mode. Use 'auto' for scheduled review and 'manual' for explicit user-triggered review.
+    required: false
+    default: auto
+  forceReview:
+    type: boolean
+    description: |
+      When true, dispatches pr-code-reviewer even if state checks would normally skip the PR.
+    required: false
+    default: "false"
+
+variables:
+  organization: msazure
+  project: One
+  repository: ZTS
+  zakiraCategory: pr-code-review-state
+  staleReviewMinutes: "60"
+  reviewerAgentNames: ".NET Expert, Principal Engineer, Security Expert, DTFx Expert, liabadi, ohads"
+  skillsDirPowerReview: "./skills-powerreview"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 900
+timeoutSeconds: 17000
+
+mcps:
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - "--yes"
+      - "--"
+      - mcp
+      - "--category"
+      - "{{vars.zakiraCategory}}"
+
+steps:
+  - name: normalize-review-request
+    type: Command
+    command: pwsh
+    arguments:
+      - "-NoProfile"
+      - "-Command"
+      - |
+        $ErrorActionPreference = 'Stop'
+
+        $prUrlInput = $args[0]
+        $prDataInput = $args[1]
+        $mode = $args[2]
+        $forceReviewRaw = $args[3]
+
+        $forceReview = $false
+        if (-not [string]::IsNullOrWhiteSpace($forceReviewRaw)) {
+          $forceReview = $forceReviewRaw -match '^(?i:true|1|yes)$'
+        }
+
+        $pr = $null
+        if (-not [string]::IsNullOrWhiteSpace($prDataInput)) {
+          $pr = $prDataInput | ConvertFrom-Json
+        }
+
+        $prUrl = $prUrlInput
+        if ([string]::IsNullOrWhiteSpace($prUrl) -and $pr) { $prUrl = $pr.prUrl }
+        if ([string]::IsNullOrWhiteSpace($prUrl) -and $pr) { $prUrl = $pr.url }
+
+        $prId = if ($pr) { $pr.id } else { $null }
+        if (-not $prId -and $prUrl -match '/pullrequest/(\d+)') { $prId = [int]$Matches[1] }
+        if ([string]::IsNullOrWhiteSpace($prUrl) -and $prId) {
+          $prUrl = "https://dev.azure.com/{{vars.organization}}/{{vars.project}}/_git/{{vars.repository}}/pullrequest/$prId"
+        }
+        if ([string]::IsNullOrWhiteSpace($prUrl)) {
+          throw 'A PR URL or PR data with id/url is required.'
+        }
+
+        [pscustomobject]@{
+          id = $prId
+          title = if ($pr) { $pr.title } else { $null }
+          createdBy = if ($pr) { $pr.createdBy } else { $null }
+          creationDate = if ($pr) { $pr.creationDate } else { $null }
+          sourceRefName = if ($pr) { $pr.sourceRefName } else { $null }
+          targetRefName = if ($pr) { $pr.targetRefName } else { $null }
+          reviewers = if ($pr) { $pr.reviewers } else { @() }
+          iterationId = if ($pr) { $pr.iterationId } else { $null }
+          url = $prUrl
+          prUrl = $prUrl
+          inputReviewReason = if ($pr) { $pr.reviewReason } else { $null }
+          inputReviewEvents = if ($pr) { $pr.reviewEvents } else { @() }
+          dispatchMode = $mode
+          forceReview = $forceReview
+        } | ConvertTo-Json -Compress -Depth 20
+      - "{{param.prUrl}}"
+      - "{{param.prData}}"
+      - "{{param.mode}}"
+      - "{{param.forceReview}}"
+    timeoutSeconds: 120
+
+  - name: open-review-session
+    type: Command
+    dependsOn: [normalize-review-request]
+    command: pwsh
+    arguments:
+      - "-NoProfile"
+      - "-Command"
+      - |
+        $ErrorActionPreference = 'Stop'
+        $request = $args[0] | ConvertFrom-Json
+        $openOutput = & dnx --yes --add-source 'https://api.nuget.org/v3/index.json' PowerReview -- open --pr-url $request.prUrl 2>&1
+        if ($LASTEXITCODE -ne 0) { throw ($openOutput -join [Environment]::NewLine) }
+        $request | Add-Member -NotePropertyName powerReviewOpenStatus -NotePropertyValue 'opened-or-refreshed' -Force
+        $request | Add-Member -NotePropertyName powerReviewOpenedAt -NotePropertyValue ([DateTimeOffset]::UtcNow.ToString('o')) -Force
+        $request | ConvertTo-Json -Compress -Depth 20
+      - "{{normalize-review-request.output}}"
+    timeoutSeconds: 1200
+
+  - name: prepare-review-dispatch
+    type: Prompt
+    dependsOn: [open-review-session]
+    systemPrompt: |
+      You are a PR review dispatcher. Your job is to decide whether the given PR should be reviewed now, build the enriched prData contract expected by pr-code-reviewer, or skip the PR by calling orchestra_complete.
+
+      Use PowerReview as the PR/session/thread source of truth and Zakira.Exchange as the persisted review-state source.
+
+      Reviewer agents that create PowerReview comments/replies:
+      - .NET Expert
+      - Principal Engineer
+      - Security Expert
+      - DTFx Expert
+      - liabadi
+      - ohads
+
+      Decision rules:
+      - If forceReview is true, always dispatch review. Use reviewReason 'manual' unless a more specific input reason exists.
+      - If mode is 'manual', prefer dispatching review unless forceReview is explicitly false and the user-provided input reason says otherwise.
+      - In auto mode, dispatch when there is no successful reviewed state, the stored iteration/source commit differs from the current PowerReview session, the state is failed, the in-review state is stale, or a human replied to a reviewer-agent-created thread.
+      - Skip in auto mode when the PR was already reviewed at the current iteration/source commit and there are no unhandled reviewer-agent thread replies.
+      - A reviewer-agent-created thread can be identified by PowerReview metadata such as author_name/agentName or by the hidden marker `<!-- powerreview-agent: <agent name> -->` in a comment/reply body.
+      - For reviewer-agent thread replies, include reviewEvents with type, threadId, agentName, filePath, lineStart, latestReplyAuthor, latestReplyCreatedAt, and reason.
+
+      When dispatching, output ONLY the enriched PR JSON object for pr-code-reviewer. Do not wrap it.
+
+      When skipping, call orchestra_complete with status 'success' and a concise reason. Do not invoke pr-code-reviewer for skipped PRs.
+    userPrompt: |
+      Decide whether to dispatch this PR for code review.
+
+      Normalized request and PowerReview open result:
+      {{open-review-session.output}}
+
+      Steps:
+      1. Use Zakira.Exchange get_memory with the PR ID as key to retrieve stored review state.
+      2. Use PowerReview MCP tools as needed to read current PR/session metadata, iteration/source commit, changed files, threads, replies, draft state, and work item metadata.
+      3. Detect reviewer-agent thread replies that need follow-up.
+      4. Apply the decision rules from the system prompt.
+
+      If review is needed, output ONLY a JSON object shaped like:
+      {
+        "id": <number>,
+        "title": "...",
+        "createdBy": "...",
+        "creationDate": "...",
+        "sourceRefName": "...",
+        "targetRefName": "...",
+        "reviewers": ["..."],
+        "iterationId": <number>,
+        "url": "full PR URL",
+        "prUrl": "full PR URL",
+        "reviewReason": "manual|first-time|new-iteration|agent-thread-reply|stale-in-review|failed-retry",
+        "reviewEvents": [
+          {
+            "type": "agent-thread-reply",
+            "threadId": 123,
+            "agentName": ".NET Expert|Principal Engineer|Security Expert|DTFx Expert|liabadi|ohads",
+            "filePath": "path or empty for PR-level thread",
+            "lineStart": 42,
+            "latestReplyAuthor": "display name",
+            "latestReplyCreatedAt": "timestamp",
+            "reason": "short explanation"
+          }
+        ],
+        "dispatchMode": "auto|manual",
+        "forceReview": true|false,
+        "existingZakiraState": null | { "status": "...", "iterationId": "...", "startedAt": "..." },
+        "existingPowerReviewSession": null | { "sessionId": "...", "iterationId": "...", "sourceCommit": "...", "status": "..." }
+      }
+
+      If review is not needed, call orchestra_complete with a reason like 'PR 123 already reviewed at current iteration and has no reviewer-agent thread replies.'
+    mcps: [zakira, powerreview]
+    skillDirectories:
+      - "{{vars.skillsDirPowerReview}}"
+
+  - name: review-pr
+    type: Orchestration
+    dependsOn: [prepare-review-dispatch]
+    orchestration: pr-code-reviewer
+    parameters:
+      prData: "{{prepare-review-dispatch.output}}"
+    mode: sync
+    timeoutSeconds: 15300
+
+  - name: generate-summary
+    type: Prompt
+    dependsOn: [review-pr, prepare-review-dispatch]
+    systemPrompt: |
+      You are a reporting assistant. Produce a clear, concise markdown summary of this PR review dispatch run.
+    userPrompt: |
+      Create a final markdown summary of this PR review dispatch.
+
+      Dispatch input sent to pr-code-reviewer:
+      {{prepare-review-dispatch.output}}
+
+      pr-code-reviewer output:
+      {{review-pr.output}}
+
+      Produce a concise report with:
+      1. Header: '## PR Review Dispatch Summary'
+      2. PR title, id, author, and link
+      3. Dispatch mode and review reason
+      4. Outcome from pr-code-reviewer
+      5. Any notes or errors surfaced by the child review
