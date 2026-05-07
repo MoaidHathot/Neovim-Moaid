@@ -134,20 +134,9 @@
       "description": "Submit all approved replies to the remote provider. CLI: powerreview submit --pr-url <url>"
     },
     {
-      "label": "Approve All Proposals",
-      "style": "success",
-      "description": "Optional only if the installed PowerReview CLI supports bulk proposal approval. Otherwise approve proposals individually from each response section."
-    },
-    {
-      "label": "Apply All Proposals",
-      "style": "success",
-      "description": "Optional only if the installed PowerReview CLI supports bulk proposal apply. Otherwise apply approved proposals individually. Requires proposals to be approved first."
-    },
-    {
       "label": "Delete All",
       "style": "danger",
       "description": "Delete all AI draft replies when supported. Delete draft operations and reject proposals individually from each response section unless the installed CLI supports safe bulk cleanup."
     }
   ]
 }
-

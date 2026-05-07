@@ -1,0 +1,266 @@
+name: pr-comment-dispatcher
+description: |
+  Shared dispatcher for PR comment responses. Accepts either a PR URL or PR data, opens or refreshes the PowerReview session, uses Zakira.Exchange plus PowerReview session/thread state to decide whether reviewer comments need responses, builds the enriched prData contract, and invokes pr-comment-responder. Used by scheduled comment tracking and optional manual comment-response entrypoints.
+version: 1.0.0
+tags: ["ZTS", "MSFT", "PR", "Comment-Response", "dispatcher"]
+defaultModel: gpt-5.4
+
+inputs:
+  prUrl:
+    type: string
+    description: |
+      Optional full Azure DevOps Pull Request URL.
+    required: false
+    default: ""
+  prData:
+    type: string
+    description: |
+      Optional JSON object containing PR metadata from discovery, including id, title, createdBy, creationDate, sourceRefName, targetRefName, reviewers, url/prUrl, and iterationId if available.
+    required: false
+    default: ""
+  mode:
+    type: string
+    description: |
+      Dispatch mode. Use 'auto' for scheduled response and 'manual' for explicit user-triggered response.
+    required: false
+    default: auto
+  forceProcess:
+    type: boolean
+    description: |
+      When true, dispatches pr-comment-responder even if state checks would normally skip the PR.
+    required: false
+    default: "false"
+  threadIds:
+    type: string
+    description: |
+      Optional JSON array or comma-separated list of thread IDs to process. Useful for manual targeted response.
+    required: false
+    default: ""
+
+variables:
+  organization: msazure
+  project: One
+  repository: ZTS
+  authorName: Moaid Hathot
+  zakiraCategory: pr-comment-response-state
+  staleRespondingMinutes: "75"
+  agentName: PR Author Assistant
+  skillsDirPowerReview: "./skills-powerreview"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 900
+timeoutSeconds: 5000
+
+mcps:
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - "--yes"
+      - "--"
+      - mcp
+      - "--category"
+      - "{{vars.zakiraCategory}}"
+
+steps:
+  - name: normalize-comment-request
+    type: Command
+    command: pwsh
+    arguments:
+      - "-NoProfile"
+      - "-Command"
+      - |
+        $ErrorActionPreference = 'Stop'
+
+        $prUrlInput = $args[0]
+        $prDataInput = $args[1]
+        $mode = $args[2]
+        $forceProcessRaw = $args[3]
+        $threadIdsRaw = $args[4]
+
+        $forceProcess = $false
+        if (-not [string]::IsNullOrWhiteSpace($forceProcessRaw)) {
+          $forceProcess = $forceProcessRaw -match '^(?i:true|1|yes)$'
+        }
+
+        $pr = $null
+        if (-not [string]::IsNullOrWhiteSpace($prDataInput)) {
+          $pr = $prDataInput | ConvertFrom-Json
+        }
+
+        $threadIds = @()
+        if (-not [string]::IsNullOrWhiteSpace($threadIdsRaw)) {
+          if ($threadIdsRaw.TrimStart().StartsWith('[')) {
+            $threadIds = @($threadIdsRaw | ConvertFrom-Json)
+          } else {
+            $threadIds = @($threadIdsRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          }
+        }
+        if ($pr -and $pr.newCommentThreadIds) { $threadIds = @($threadIds + @($pr.newCommentThreadIds)) | Select-Object -Unique }
+        if ($pr -and $pr.commentEvents) { $threadIds = @($threadIds + @($pr.commentEvents | ForEach-Object { $_.threadId })) | Where-Object { $_ } | Select-Object -Unique }
+
+        $prUrl = $prUrlInput
+        if ([string]::IsNullOrWhiteSpace($prUrl) -and $pr) { $prUrl = $pr.prUrl }
+        if ([string]::IsNullOrWhiteSpace($prUrl) -and $pr) { $prUrl = $pr.url }
+
+        $prId = if ($pr) { $pr.id } else { $null }
+        if (-not $prId -and $prUrl -match '/pullrequest/(\d+)') { $prId = [int]$Matches[1] }
+        if ([string]::IsNullOrWhiteSpace($prUrl) -and $prId) {
+          $prUrl = "https://dev.azure.com/{{vars.organization}}/{{vars.project}}/_git/{{vars.repository}}/pullrequest/$prId"
+        }
+        if ([string]::IsNullOrWhiteSpace($prUrl)) {
+          throw 'A PR URL or PR data with id/url is required.'
+        }
+
+        [pscustomobject]@{
+          id = $prId
+          title = if ($pr) { $pr.title } else { $null }
+          createdBy = if ($pr) { $pr.createdBy } else { $null }
+          creationDate = if ($pr) { $pr.creationDate } else { $null }
+          sourceRefName = if ($pr) { $pr.sourceRefName } else { $null }
+          targetRefName = if ($pr) { $pr.targetRefName } else { $null }
+          reviewers = if ($pr) { $pr.reviewers } else { @() }
+          iterationId = if ($pr) { $pr.iterationId } else { $null }
+          url = $prUrl
+          prUrl = $prUrl
+          targetThreadIds = @($threadIds)
+          inputCommentEvents = if ($pr -and $pr.commentEvents) { $pr.commentEvents } else { @() }
+          dispatchMode = $mode
+          forceProcess = $forceProcess
+        } | ConvertTo-Json -Compress -Depth 20
+      - "{{param.prUrl}}"
+      - "{{param.prData}}"
+      - "{{param.mode}}"
+      - "{{param.forceProcess}}"
+      - "{{param.threadIds}}"
+    timeoutSeconds: 120
+
+  - name: open-review-session
+    type: Command
+    dependsOn: [normalize-comment-request]
+    command: pwsh
+    arguments:
+      - "-NoProfile"
+      - "-Command"
+      - |
+        $ErrorActionPreference = 'Stop'
+        $request = $args[0] | ConvertFrom-Json
+        $openOutput = & dnx --yes --add-source 'https://api.nuget.org/v3/index.json' PowerReview -- open --pr-url $request.prUrl 2>&1
+        if ($LASTEXITCODE -ne 0) { throw ($openOutput -join [Environment]::NewLine) }
+        $request | Add-Member -NotePropertyName powerReviewOpenStatus -NotePropertyValue 'opened-or-refreshed' -Force
+        $request | Add-Member -NotePropertyName powerReviewOpenedAt -NotePropertyValue ([DateTimeOffset]::UtcNow.ToString('o')) -Force
+        $request | ConvertTo-Json -Compress -Depth 20
+      - "{{normalize-comment-request.output}}"
+    timeoutSeconds: 1200
+
+  - name: prepare-comment-dispatch
+    type: Prompt
+    dependsOn: [open-review-session]
+    systemPrompt: |
+      You are a PR comment-response dispatcher. Decide whether the given PR has reviewer comments that need a response from the PR author assistant, build the enriched prData contract expected by pr-comment-responder, or skip by calling orchestra_complete.
+
+      Use PowerReview as the PR/session/thread source of truth and Zakira.Exchange as the persisted response-state source.
+
+      State in Zakira.Exchange may contain legacy `processedThreadIds` and newer `processedCommentCursors`. Prefer cursors when available. A cursor identifies the latest processed comment on a thread using threadId plus latestCommentId and/or latestCommentCreatedAt.
+
+      Dispatch when:
+      - forceProcess is true and there are target thread IDs or unaddressed reviewer comments.
+      - The state is failed.
+      - The state is responding but respondedAt is older than {{vars.staleRespondingMinutes}} minutes.
+      - A reviewer/human comment on an Active/Pending thread is newer than the stored cursor and has no later PR-author or PR Author Assistant draft/reply addressing it.
+
+      Skip when there are no target thread IDs and no unaddressed reviewer comments, or all candidate comments are already addressed by a later author/AI reply or a stored cursor.
+
+      Do not fetch file diffs here. The responder can fetch targeted code context on demand.
+
+      When dispatching, output ONLY the enriched PR JSON object for pr-comment-responder. Do not wrap it.
+
+      When skipping, call orchestra_complete with status 'success' and a concise reason. Do not invoke pr-comment-responder for skipped PRs.
+    userPrompt: |
+      Decide whether to dispatch this PR for comment response.
+
+      Normalized request and PowerReview open result:
+      {{open-review-session.output}}
+
+      Steps:
+      1. Use Zakira.Exchange get_memory with the PR ID as key to retrieve stored comment-response state.
+      2. Use PowerReview MCP tools as needed to sync/read current session, threads, replies, drafts, proposals, and PR metadata.
+      3. Identify reviewer comments needing response. Prefer explicit targetThreadIds when provided; otherwise inspect all Active/Pending threads.
+      4. Compare candidates against processedCommentCursors and legacy processedThreadIds. A processedThreadIds match should not suppress a newer comment in the same thread.
+      5. Apply the decision rules from the system prompt.
+
+      If response is needed, output ONLY a JSON object shaped like:
+      {
+        "id": <number>,
+        "title": "...",
+        "createdBy": "...",
+        "creationDate": "...",
+        "sourceRefName": "...",
+        "targetRefName": "...",
+        "reviewers": ["..."],
+        "iterationId": <number>,
+        "url": "full PR URL",
+        "prUrl": "full PR URL",
+        "processReason": "new-comments|stale-responding|failed-retry|manual|first-time",
+        "commentEvents": [
+          {
+            "type": "reviewer-comment",
+            "threadId": 123,
+            "commentId": 456,
+            "filePath": "path or empty for PR-level thread",
+            "lineStart": 42,
+            "lineEnd": 43,
+            "threadStatus": "Active|Pending",
+            "commenter": "display name",
+            "commentBody": "latest reviewer comment body",
+            "commentCreatedAt": "timestamp",
+            "reason": "short explanation"
+          }
+        ],
+        "newCommentThreadIds": [123],
+        "dispatchMode": "auto|manual",
+        "forceProcess": true|false,
+        "existingZakiraState": null | { "status": "...", "processedCommentCursors": [] },
+        "existingPowerReviewSession": null | { "sessionId": "...", "iterationId": "...", "sourceCommit": "...", "status": "..." }
+      }
+
+      If response is not needed, call orchestra_complete with a reason like 'PR 123 has no new unaddressed reviewer comments.'
+    mcps: [zakira, powerreview]
+    skillDirectories:
+      - "{{vars.skillsDirPowerReview}}"
+
+  - name: respond-to-comments
+    type: Orchestration
+    dependsOn: [prepare-comment-dispatch]
+    orchestration: pr-comment-responder
+    parameters:
+      prData: "{{prepare-comment-dispatch.output}}"
+    mode: sync
+    timeoutSeconds: 3600
+
+  - name: generate-summary
+    type: Prompt
+    dependsOn: [respond-to-comments, prepare-comment-dispatch]
+    systemPrompt: |
+      You are a reporting assistant. Produce a clear, concise markdown summary of this PR comment-response dispatch run.
+    userPrompt: |
+      Create a final markdown summary of this PR comment-response dispatch.
+
+      Dispatch input sent to pr-comment-responder:
+      {{prepare-comment-dispatch.output}}
+
+      pr-comment-responder output:
+      {{respond-to-comments.output}}
+
+      Produce a concise report with:
+      1. Header: '## PR Comment Dispatch Summary'
+      2. PR title, id, author, and link
+      3. Dispatch mode and process reason
+      4. Outcome from pr-comment-responder
+      5. Any notes or errors surfaced by the child response run

@@ -1,7 +1,7 @@
 ---
 name: creating-comment-response-actionview-entry
-description: Creates an ActionView entry of type 'pr-comment-response' summarizing how AI agents responded to incoming PR comments. Shows each reviewer comment paired with the AI's draft reply and/or proposed code fix, with per-response approve/delete/reject actions and entry-level bulk actions. Use after the AI agent has finished processing all incoming comments on a PR.
-compatibility: Requires the PowerReview MCP server connected via stdio. Requires the ActionView entry schema. Requires a completed comment-response run with drafts and/or proposals in the PowerReview session.
+description: Creates an ActionView entry of type 'pr-comment-response' summarizing how AI agents responded to incoming PR comments. Shows each reviewer comment paired with the AI's draft reply, draft operation, and/or proposed code fix, with per-response approve/delete/reject actions and safe entry-level actions. Use after the AI agent has finished processing incoming comments on a PR.
+compatibility: Requires the PowerReview MCP server connected via stdio. Requires the ActionView entry schema. Requires a completed comment-response run with draft replies, draft operations, and/or proposals in the PowerReview session.
 ---
 
 # Creating a Comment Response ActionView Entry
@@ -11,15 +11,15 @@ This skill tells you how to build an ActionView entry of type `pr-comment-respon
 ## When to use this skill
 
 Use this skill in the final step of a comment-response orchestration, **after**:
-1. Threads have been synced from the remote provider
-2. The AI agent has processed all incoming comments
-3. Draft replies and/or proposals have been created in the PowerReview session
+1. The dispatcher has provided targeted `commentEvents`
+2. The AI agent has processed those incoming comments
+3. Draft replies, draft operations, and/or proposals have been created in the PowerReview session
 
 ## Prerequisites
 
 - A PowerReview session is open for the PR
 - The PR URL (`prUrl`) is known
-- The AI agent has already created draft replies and/or proposals via PowerReview
+- The AI agent has already created draft replies, draft operations, and/or proposals via PowerReview
 
 ## Data collection
 
@@ -42,9 +42,9 @@ Call `GetReviewSession(prUrl)` to get:
 }
 ```
 
-### Step 2: Get comment threads and draft replies
+### Step 2: Get comment threads and draft actions
 
-Call `ListCommentThreads(prUrl)` to get all threads and drafts:
+Call `ListCommentThreads(prUrl)` to get all threads, draft replies, and draft operations:
 
 ```json
 {
@@ -75,11 +75,25 @@ Call `ListCommentThreads(prUrl)` to get all threads and drafts:
         "thread_id": 100
       }
     }
+  ],
+  "draft_operations": [
+    {
+      "id": "operation-uuid-789",
+      "operation": {
+        "operation_type": "ThreadStatusChange",
+        "thread_id": 100,
+        "status": "Draft",
+        "to_thread_status": "Fixed",
+        "author_name": "PR Author Assistant"
+      }
+    }
   ]
 }
 ```
 
 The key linkage: a draft reply has `thread_id` matching the thread it responds to. Match each draft to its parent thread to pair the original comment with the AI's reply.
+
+Draft operations also link by `operation.thread_id`. Include them when the response uses a user-approved thread-status change or comment reaction.
 
 ### Step 3: Get proposals
 
@@ -108,7 +122,7 @@ Call `ListProposals(prUrl)` to get all proposed code fixes:
 
 A proposal has `thread_id` linking it to the comment thread, and optionally `reply_draft_id` linking it to the draft reply.
 
-### Step 4: Get proposal diffs
+### Step 4: Get targeted context and proposal diffs
 
 For each proposal, call `GetProposalDiff(prUrl, proposalId)`:
 
@@ -122,6 +136,8 @@ For each proposal, call `GetProposalDiff(prUrl, proposalId)`:
 }
 ```
 
+For file/line-specific comments, optionally call `GetFileDiff(prUrl, filePath)` to include a small hunk around the commented line. Do not fetch or embed full PR diffs just to satisfy the ActionView template. PR-level comments and text-only discussions can omit Code Context.
+
 ## Linking the data together
 
 The data connects through `thread_id`:
@@ -130,6 +146,7 @@ The data connects through `thread_id`:
 Thread (id: 100)
   └── Original comment: "This needs a null check..."  (from reviewer)
   └── Draft reply (thread_id: 100): "Fixed: added null check..."  (from AI)
+  └── Draft operation (thread_id: 100): ThreadStatusChange -> Fixed  (from AI)
   └── Proposal (thread_id: 100): code changes on branch  (from AI)
          └── reply_draft_id: links back to the draft reply
 ```
@@ -138,10 +155,11 @@ For each thread that was addressed:
 1. Find the thread in `threads` by ID
 2. Get the last comment in the thread (the reviewer's comment the AI is responding to)
 3. Find the draft reply in `drafts` where `draft.thread_id == thread.id`
-4. Find the proposal in `proposals` where `proposal.thread_id == thread.id` (if any)
-5. If there's a proposal, get the diff via `GetProposalDiff`
+4. Find draft operations in `draft_operations` where `operation.thread_id == thread.id` (if any)
+5. Find the proposal in `proposals` where `proposal.thread_id == thread.id` (if any)
+6. If there's a proposal, get the diff via `GetProposalDiff`
 
-Threads that have no matching draft reply or proposal were not addressed by the AI -- skip them.
+Threads that have no matching draft reply, draft operation, or proposal were not addressed by the AI -- skip them.
 
 ## Building the entry
 
@@ -153,7 +171,7 @@ Threads that have no matching draft reply or proposal were not addressed by the 
   "type": "pr-comment-response",
   "source": "<orchestration name>",
   "title": "PR Comment Responses: <PR title>",
-  "subtitle": "<N> comments addressed | <M> replies | <K> code fixes",
+  "subtitle": "<N> comments addressed | <M> replies | <K> code fixes | <O> operations",
   "severity": "<see mapping below>",
   "icon": "message-square-reply",
   "tags": ["pr-response", "comment-response"]
@@ -162,6 +180,7 @@ Threads that have no matching draft reply or proposal were not addressed by the 
 
 Severity mapping:
 - Any proposals with code fixes -> `"medium"` (needs your review of code changes)
+- Draft thread-status or reaction operations -> `"medium"` (needs your approval before submit)
 - Only replies, no proposals -> `"low"` (just text replies to review)
 - No comments addressed or errors -> `"high"` (something may have gone wrong)
 
@@ -206,6 +225,7 @@ Include if there were errors, conflicts, or comments that couldn't be addressed:
     ["Replies", "<N>"],
     ["Code Fixes", "<M>"],
     ["Won't Fix / By Design", "<K>"],
+    ["Draft Operations", "<O>"],
     ["Total Comments Addressed", "<total>"]
   ]
 }
@@ -213,6 +233,9 @@ Include if there were errors, conflicts, or comments that couldn't be addressed:
 
 Determine the action type by checking:
 - If a thread has a proposal -> "Code Fix"
+- If a thread has a ThreadStatusChange operation to `wontfix` or `bydesign` -> "Won't Fix" or "By Design"
+- If a thread has a ThreadStatusChange operation to `fixed` -> "Fixed"
+- If a thread has a CommentReaction operation -> "Acknowledge"
 - If a thread has only a reply and the body contains "won't fix" or "by design" (case-insensitive) -> "Won't Fix"
 - Otherwise -> "Reply"
 
@@ -234,17 +257,22 @@ Each addressed comment becomes a nested section. The section title should identi
     "Action": "Code Fix",
     "Agent": "CodeFixer",
     "Reply Draft ID": "draft-uuid-123",
+    "Draft Operation ID": "operation-uuid-789",
+    "Draft Operation Type": "ThreadStatusChange -> Fixed",
     "Proposal ID": "proposal-uuid-456"
   }
 }
 ```
 
 - `Commenter` -- the name of the person who left the original comment (from `thread.comments[last].author.name`)
-- `Action` -- "Reply", "Code Fix", or "Won't Fix"
-- `Agent` -- from `draft.author_name`
+- `Action` -- "Reply", "Code Fix", "Won't Fix", "By Design", "Fixed", or "Acknowledge"
+- `Agent` -- from `draft.author_name`, draft operation `author_name`, or proposal `author_name`
 - `Reply Draft ID` -- the draft UUID (needed for per-response actions)
+- `Draft Operation ID` -- the draft operation UUID for thread status changes or reactions
+- `Draft Operation Type` -- human-readable operation type, such as "ThreadStatusChange -> Fixed" or "CommentReaction -> Like"
 - `Proposal ID` -- the proposal UUID (only for code fixes, needed for proposal actions)
 
+Omit `Draft Operation ID` and `Draft Operation Type` if there is no draft operation for this thread.
 Omit `Proposal ID` if there is no proposal for this thread.
 
 **b) markdown "Original Comment"** -- what the reviewer said:
@@ -269,9 +297,9 @@ Format the original comment as a blockquote with the commenter's name and thread
 }
 ```
 
-**d) code "Code Context"** (required -- the code around the commented area):
+**d) code "Code Context"** (optional -- targeted code around the commented area):
 
-Always include the code diff or snippet around the lines the reviewer commented on. This lets the user see the relevant code without leaving ActionView. Use `GetFileDiff` to get the unified diff and extract the hunk covering the commented line range.
+Include the code diff or snippet around the lines the reviewer commented on when it materially helps the user review the response. Use `GetFileDiff` to get the unified diff and extract the hunk covering the commented line range. Omit this block for PR-level comments, general discussion, or when fetching context would require broad/eager diff loading.
 
 ```json
 {
@@ -283,7 +311,7 @@ Always include the code diff or snippet around the lines the reviewer commented 
 }
 ```
 
-Extract the relevant hunk from the full file diff that covers the commented line range (+/- a few lines of context). If the diff is short, include the entire file diff. Use `language: "diff"` for unified diffs.
+Extract the relevant hunk from the full file diff that covers the commented line range (+/- a few lines of context). If the diff is short, include the entire file diff. Use `language: "diff"` for unified diffs. Keep this targeted; do not include unrelated file diffs.
 
 **e) code "Proposed Fix"** (optional -- only for code fix actions):
 
@@ -301,7 +329,7 @@ When the AI made a code change proposal, include the proposal diff showing exact
 
 **f) Per-response actions:**
 
-Include only the actions relevant to this response. If it's just a reply (no proposal), include only "Approve Reply" and "Delete Reply". If it has a proposal, include all four.
+Include only the actions relevant to this response. If it has a reply, include "Approve Reply" and "Delete Reply". If it has a draft operation, include "Approve Operation" and "Delete Operation". If it has a proposal, include "Approve Proposal" and "Reject Proposal".
 
 **Reply-only response:**
 
@@ -326,6 +354,36 @@ Include only the actions relevant to this response. If it's just a reply (no pro
         "type": "cli",
         "program": "powerreview",
         "args": ["comment", "delete", "--pr-url", "<prUrl>", "--draft-id", "<draft UUID>"]
+      },
+      "onSuccess": "keep"
+    }
+  ]
+}
+```
+
+**Status/reaction operation response:**
+
+```json
+{
+  "actions": [
+    {
+      "label": "Approve Operation",
+      "style": "success",
+      "command": {
+        "type": "cli",
+        "program": "powerreview",
+        "args": ["action", "approve", "--pr-url", "<prUrl>", "--action-id", "<operation UUID>"]
+      },
+      "onSuccess": "keep"
+    },
+    {
+      "label": "Delete Operation",
+      "style": "danger",
+      "confirmMessage": "Delete this draft operation?",
+      "command": {
+        "type": "cli",
+        "program": "powerreview",
+        "args": ["action", "delete", "--pr-url", "<prUrl>", "--action-id", "<operation UUID>"]
       },
       "onSuccess": "keep"
     }
@@ -506,7 +564,7 @@ This is a convenience view. The per-response sections already contain the diffs 
 {
   "type": "markdown",
   "label": "Summary",
-  "body": "Processed 3 incoming comments: 1 code fix proposed, 1 reply drafted, 1 marked as won't fix. All responses are drafts pending your approval."
+  "body": "Processed 3 incoming comments: 1 code fix proposed, 1 reply drafted, 1 draft status operation created. All responses are drafts pending your approval."
 }
 ```
 
@@ -559,28 +617,6 @@ This is a convenience view. The per-response sections already contain the diffs 
       "onSuccess": "archive"
     },
     {
-      "label": "Approve All Proposals",
-      "style": "success",
-      "confirmMessage": "Approve all proposed code fixes?",
-      "command": {
-        "type": "cli",
-        "program": "powerreview",
-        "args": ["proposal", "approve-all", "--pr-url", "<prUrl>"]
-      },
-      "onSuccess": "keep"
-    },
-    {
-      "label": "Apply All Proposals",
-      "style": "success",
-      "confirmMessage": "Apply all approved proposals and push to remote?",
-      "command": {
-        "type": "cli",
-        "program": "powerreview",
-        "args": ["proposal", "apply-all", "--pr-url", "<prUrl>", "--push"]
-      },
-      "onSuccess": "keep"
-    },
-    {
       "label": "Delete All",
       "style": "danger",
       "confirmMessage": "Delete ALL draft replies and reject ALL proposals? This cannot be undone.",
@@ -595,7 +631,7 @@ This is a convenience view. The per-response sections already contain the diffs 
 }
 ```
 
-**Note about "Approve All Proposals" and "Apply All Proposals":** These reference `proposal approve-all` and `proposal apply-all` CLI commands that may not exist yet. The orchestration or user may need to loop over proposals individually. Document the intended CLI commands -- the PowerReview CLI can be extended later to support bulk proposal operations. In the meantime, the per-response proposal actions (Approve Proposal / Reject Proposal) work individually.
+Only include bulk proposal actions such as "Approve All Proposals" or "Apply All Proposals" if the installed PowerReview CLI explicitly supports them. Otherwise rely on the per-response proposal actions (Approve Proposal / Reject Proposal), which work individually.
 
 ## Data mapping reference
 
@@ -613,6 +649,8 @@ This is a convenience view. The per-response sections already contain the diffs 
 | `draft.id` (UUID) | Per-response "Details" keyValue `Reply Draft ID`, Approve/Delete Reply action `--draft-id` |
 | `draft.author_name` | Per-response "Details" keyValue `Agent` |
 | `draft.body` | Per-response "AI Response" markdown body |
+| `draftOperation.id` (UUID) | Per-response "Details" keyValue `Draft Operation ID`, Approve/Delete Operation action `--action-id` |
+| `draftOperation.operation.operation_type` | Per-response "Details" keyValue `Draft Operation Type` |
 | `proposal.id` (UUID) | Per-response "Details" keyValue `Proposal ID`, Approve/Reject Proposal action `--proposal-id` |
 | `proposal.description` | Section title suffix |
 | `proposal.files_changed` | "Proposed Fix" code block `filename` |
@@ -625,6 +663,9 @@ For each addressed thread, determine the action type:
 | Condition | Action Type |
 |---|---|
 | Thread has a matching proposal | **Code Fix** |
+| Thread has a matching ThreadStatusChange operation to `Fixed` | **Fixed** |
+| Thread has a matching ThreadStatusChange operation to `WontFix` or `ByDesign` | **Won't Fix** / **By Design** |
+| Thread has a matching CommentReaction operation | **Acknowledge** |
 | Thread has a reply containing "won't fix", "wontfix", "by design", or "out of scope" (case-insensitive) | **Won't Fix** |
 | Thread has a reply but no proposal and not won't fix | **Reply** |
 
@@ -653,21 +694,20 @@ Entry Checklist:
 - [ ] PR metadata keyValue block is present with PR Title, Repository, Branch, Author, and PR URL
 - [ ] Response Summary table has correct counts
 - [ ] Every addressed comment has its own nested section
-- [ ] Every nested section has Details (keyValue), Original Comment (markdown), AI Response (markdown), and Code Context (code block with diff)
+- [ ] Every nested section has Details (keyValue), Original Comment (markdown), and either AI Response, Draft Operation details, or Proposed Fix; Code Context is included only when targeted context is useful
 - [ ] Code fix sections additionally include the Proposed Fix (code block with proposal diff)
-- [ ] Every nested section has the correct actions (reply-only: 2 buttons, code fix: 4 buttons)
-- [ ] All action commands use the correct prUrl, draft UUID, and proposal UUID
-- [ ] Entry-level actions include: Open PR, Approve All Replies, Submit Replies, Approve All Proposals, Apply All Proposals, Delete All
+- [ ] Every nested section has the correct actions (reply draft: Approve/Delete Reply, draft operation: Approve/Delete Operation, proposal: Approve/Reject Proposal)
+- [ ] All action commands use the correct prUrl, draft UUID, draft operation UUID, and proposal UUID
+- [ ] Entry-level actions include: Open PR, Approve All Replies, Submit Replies, and Delete All; bulk proposal actions are included only when supported by the installed CLI
 - [ ] View PR link is present with the correct URL
-- [ ] Threads with no AI response are excluded (not shown in the entry)
+- [ ] Threads with no AI response/action are excluded (not shown in the entry)
 ```
 
 ## Important notes
 
-- **Pair original comments with AI responses via `thread_id`.** The thread ID is the key that connects everything: the original comment, the draft reply, and the proposal.
-- **Not all threads are addressed.** Only include threads where the AI created a draft reply and/or a proposal. Skip threads with no AI response.
-- **Per-response actions are conditional.** Reply-only responses get 2 buttons (Approve Reply, Delete Reply). Code fix responses get 4 buttons (+ Approve Proposal, Reject Proposal). Don't include proposal actions for reply-only responses.
+- **Pair original comments with AI responses via `thread_id`.** The thread ID is the key that connects everything: the original comment, the draft reply, draft operation, and proposal.
+- **Not all threads are addressed.** Only include threads where the AI created a draft reply, draft operation, and/or a proposal. Skip threads with no AI response/action.
+- **Per-response actions are conditional.** Reply drafts get Approve/Delete Reply, draft operations get Approve/Delete Operation, and code fix proposals get Approve/Reject Proposal. Don't include actions for artifacts that do not exist on that response.
 - **Proposal diffs may be large.** If a proposal diff is very long, consider truncating it and adding a note that the full diff is available via `powerreview proposal diff --pr-url <url> --proposal-id <id>`.
 - **The `reply_draft_id` on proposals links replies to proposals.** When a proposal is approved, the linked reply is auto-approved too. This means the user can approve the proposal and the reply goes to Pending automatically.
 - **Save the entry using `orchestra_save_file`.** The orchestration's next step submits it to ActionView via `actionview add --file <path>`.
-
