@@ -17,7 +17,7 @@ inputs:
 
 variables:
   zakiraCategory: icm-investigator-state
-  skillsDir: "P:\\Github\\OrcStra-Uruk\\Skills\\icm-investigator"
+  skillsDir: "../../orchestrations/IcMs/skills/icm-investigator"
   nugetSource: "https://pkgs.dev.azure.com/msazure/One/_packaging/ZTS/nuget/v3/index.json"
 
 defaultRetryPolicy:

@@ -13,7 +13,8 @@ variables:
   repoLocalPath: "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS"
   zakiraCategory: pr-comment-response-state
   staleRespondingMinutes: "75"
-  skillsDirPowerReview: "./skills-powerreview"
+  pullRequestsDir: "../../orchestrations/PullRequests"
+  skillsDirPowerReview: "{{vars.pullRequestsDir}}/skills-powerreview"
 
 defaultRetryPolicy:
   maxRetries: 3

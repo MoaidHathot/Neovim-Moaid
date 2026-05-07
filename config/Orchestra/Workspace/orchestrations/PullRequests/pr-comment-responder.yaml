@@ -19,8 +19,9 @@ variables:
   authorName: Moaid Hathot
   repoLocalPath: "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS"
   zakiraCategory: pr-comment-response-state
-  skillsDirPowerReview: "./skills-powerreview"
-  skillsDirActionView: "./skills-actionview"
+  pullRequestsDir: "../../orchestrations/PullRequests"
+  skillsDirPowerReview: "{{vars.pullRequestsDir}}/skills-powerreview"
+  skillsDirActionView: "{{vars.pullRequestsDir}}/skills-actionview"
 
 defaultRetryPolicy:
   maxRetries: 2

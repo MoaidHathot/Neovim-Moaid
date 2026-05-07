@@ -51,6 +51,7 @@ config/configstore
 config/nushell
 config/k9s
 config/Orchestra/.orchestra.pids.json
+config/Orchestra/workspace/.runtime/
 # Ephermal orchestrations are generated on demand by the run-ephermal
 # orchestration and reaped by cleanup-ephermal. Never commit them.
 config/Orchestra/workspace/orchestrations/Ephermal/*

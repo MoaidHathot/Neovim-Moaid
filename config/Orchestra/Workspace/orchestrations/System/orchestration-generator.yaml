@@ -50,8 +50,8 @@ steps:
     parameters:
       - description
     skillDirectories:
-      - ./skills/orchestration-authoring
-      - ./skills/mcp-catalog
+      - ../../orchestrations/System/skills/orchestration-authoring
+      - ../../orchestrations/System/skills/mcp-catalog
     systemPrompt: |
       You are an expert Orchestra orchestration author. Your job is to generate
       valid, production-quality Orchestra orchestration YAML files based on user
@@ -213,8 +213,8 @@ steps:
     dependsOn:
       - generate
     skillDirectories:
-      - ./skills/orchestration-authoring
-      - ./skills/mcp-catalog
+      - ../../orchestrations/System/skills/orchestration-authoring
+      - ../../orchestrations/System/skills/mcp-catalog
     systemPrompt: |
       You are an Orchestra orchestration validator. Review the generated
       orchestration YAML for structural and semantic correctness. Check:
@@ -327,4 +327,3 @@ steps:
       ```yaml
       {{validate.output}}
       ```
-

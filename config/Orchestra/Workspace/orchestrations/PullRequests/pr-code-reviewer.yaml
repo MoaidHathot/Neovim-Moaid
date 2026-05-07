@@ -19,14 +19,15 @@ variables:
   reviewerName: Moaid Hathot
   repoLocalPath: "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS"
   zakiraCategory: pr-code-review-state
-  personasDir: "./Personas"
+  pullRequestsDir: "../../orchestrations/PullRequests"
+  personasDir: "{{vars.pullRequestsDir}}/Personas"
   liabadiDir: "{{vars.personasDir}}/liabadi"
   liabadiSkillsDir: "{{vars.liabadiDir}}/Skills"
   ohadsDir: "{{vars.personasDir}}/ohads"
   ohadsSkillsDir: "{{vars.ohadsDir}}/Skills"
-  skillsDirPowerReview: "./skills-powerreview"
-  skillsDirActionView: "./skills-actionview"
-  promptsDir: "P:\\Github\\OrcStra-Uruk\\Prompts\\PR-Reviews"
+  skillsDirPowerReview: "{{vars.pullRequestsDir}}/skills-powerreview"
+  skillsDirActionView: "{{vars.pullRequestsDir}}/skills-actionview"
+  promptsDir: "{{vars.pullRequestsDir}}/prompts"
 
 defaultRetryPolicy:
   maxRetries: 2
