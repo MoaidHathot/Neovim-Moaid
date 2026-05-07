@@ -28,6 +28,8 @@ If using the CLI instead of MCP, each tool has an equivalent CLI command. The ma
 | `ListCommentThreads(prUrl)` | `powerreview threads --pr-url <url>` |
 | `GetReviewSession(prUrl)` | `powerreview session --pr-url <url>` |
 | `ReplyToThread(prUrl, threadId, body)` | `powerreview reply --pr-url <url> --thread-id <n> --body <text>` |
+| `DraftThreadStatusChange(prUrl, threadId, status)` | `powerreview action create-thread-status --pr-url <url> --thread-id <n> --status <status>` |
+| `DraftCommentReaction(prUrl, threadId, commentId, reaction)` | `powerreview action create-reaction --pr-url <url> --thread-id <n> --comment-id <n> --reaction like` |
 | `PrepareFixWorktree(prUrl)` | `powerreview fix-worktree prepare --pr-url <url>` |
 | `CreateFixBranch(prUrl, threadId)` | `powerreview fix-worktree create-branch --pr-url <url> --thread-id <n>` |
 | `ReadFile(prUrl, filePath)` | `powerreview read-file --pr-url <url> --file <path>` |
@@ -43,7 +45,9 @@ User-only operations (not available as MCP tools):
 | Apply proposal | `powerreview proposal apply --pr-url <url> --proposal-id <id> [--push]` |
 | Reject proposal | `powerreview proposal reject --pr-url <url> --proposal-id <id>` |
 | View proposal diff | `powerreview proposal diff --pr-url <url> --proposal-id <id>` |
-| Submit replies | `powerreview submit --pr-url <url>` |
+| Approve draft operation | `powerreview action approve --pr-url <url> --action-id <id>` |
+| Delete draft operation | `powerreview action delete --pr-url <url> --action-id <id>` |
+| Submit operations | `powerreview submit --pr-url <url>` |
 
 ## Comment response workflow
 
@@ -97,7 +101,10 @@ Use when the comment identifies an actual code issue that should be fixed. The A
 Before choosing a code fix, consider `metadata.files` and the linked work item metadata. If the comment is broader than the PR scope or conflicts with the work item type/state, prefer asking a clarifying question or drafting a scoped explanation.
 
 #### Action C: Won't fix / By design
-Use when the comment raises a valid point but the current approach is intentional or the change is out of scope. Reply with an explanation.
+Use when the comment raises a valid point but the current approach is intentional or the change is out of scope. Reply with an explanation, then create a draft thread-status operation if the thread should be marked `wontfix` or `bydesign`.
+
+#### Action D: Acknowledge a reviewer reply
+Use when the appropriate response is a lightweight acknowledgement rather than another comment. Create a draft reaction operation with `DraftCommentReaction`.
 
 ### Step 4: Execute the action
 
@@ -117,7 +124,28 @@ When replying as a reviewer agent rather than the PR author assistant, set `agen
 <!-- powerreview-agent: <agent name> -->
 ```
 
-If a reply recommends resolving or dismissing a thread, keep it as a draft reply. Do not directly update thread status unless PowerReview supports draftable status changes and the orchestration explicitly asks for that behavior.
+#### For thread status decisions:
+
+Call `DraftThreadStatusChange` with:
+- `prUrl` -- the pull request URL
+- `threadId` -- the thread ID to update after approval
+- `status` -- one of `active`, `fixed`, `wontfix`, `closed`, `bydesign`, `pending`
+- `reason` -- concise rationale for the user
+- `agentName` -- your agent name (optional)
+
+The operation is created as a draft. The user must approve it before `submit` applies it to the remote provider.
+
+#### For comment reactions:
+
+Call `DraftCommentReaction` with:
+- `prUrl` -- the pull request URL
+- `threadId` -- the thread ID containing the comment
+- `commentId` -- the specific comment ID to react to
+- `reaction` -- currently `like`
+- `reason` -- concise rationale for the user
+- `agentName` -- your agent name (optional)
+
+The reaction is created as a draft operation. The user must approve it before `submit` applies it to the remote provider.
 
 #### For code fixes (Action B):
 
@@ -167,6 +195,7 @@ After processing all comments, provide a summary:
 - For each: what action was taken (reply, code fix, won't fix)
 - How many proposals were created (pending user approval)
 - How many draft replies were created (pending user approval)
+- How many draft operations were created (pending user approval)
 - Remaining active/pending thread count if available from `metadata.threads`
 - Required reviewer status if available from `metadata.reviewers`
 - Any PR state blockers such as draft/WIP or merge conflicts from `metadata.state`
@@ -179,9 +208,10 @@ These constraints are enforced by the server and cannot be bypassed:
 
 1. **All replies start as drafts.** The user must approve each draft before it can be submitted.
 2. **All proposals start as drafts.** The user must approve and explicitly apply each proposal.
-3. **Code changes are isolated.** The fix worktree is separate from the user's working directory. No changes affect the user's branch until explicitly applied.
-4. **AI can only modify AI-authored items.** AI cannot edit or delete user-authored drafts or proposals.
-5. **Approve, apply, and reject are user-only operations.** These are not available as MCP tools.
+3. **Remote actions start as drafts.** Thread status changes and reactions are local draft operations until the user approves them and runs submit.
+4. **Code changes are isolated.** The fix worktree is separate from the user's working directory. No changes affect the user's branch until explicitly applied.
+5. **AI can only modify AI-authored items.** AI cannot edit or delete user-authored drafts or proposals.
+6. **Approve, apply, and reject are user-only operations.** These are not available as MCP tools.
 
 ## Writing effective responses
 
