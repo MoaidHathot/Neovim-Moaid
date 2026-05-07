@@ -46,9 +46,9 @@ Get PR review session metadata.
     "merge_status": "Succeeded",
     "created_at": "2025-01-01T00:00:00Z",
     "closed_at": null,
-    "reviewers": [{ "name": "...", "vote": 0, "is_required": true }],
+    "reviewers": [{ "name": "...", "vote": 0, "vote_label": "no_vote", "is_required": true }],
     "labels": [],
-    "work_items": [{ "id": 456, "title": "...", "url": "..." }]
+    "work_items": [{ "id": 456, "title": "...", "url": "...", "type": "Bug", "state": "Active" }]
   },
   "iteration": {
     "id": 3,
@@ -63,10 +63,23 @@ Get PR review session metadata.
   },
   "files": [...],
   "drafts": { "uuid-1": { ... }, "uuid-2": { ... } },
+  "metadata": {
+    "reviewers": { "total": 3, "required": 1, "required_pending": 1, "rejected": 0 },
+    "files": { "total": 5, "added": 1, "edited": 3, "deleted": 0, "renamed": 1 },
+    "threads": { "total": 4, "active": 2, "pending": 0, "line_level": 3, "pr_level": 1 },
+    "drafts": { "total": 2, "draft": 2, "pending": 0, "ai_authored": 2 },
+    "work_items": { "total": 1, "by_type": { "Bug": 1 }, "by_state": { "Active": 1 } },
+    "review": { "reviewed_files": 1, "changed_since_review": 0, "unreviewed_files": 4, "total_files": 5 },
+    "iteration": { "id": 3, "source_commit": "abc123...", "target_commit": "def456..." },
+    "state": { "status": "active", "is_draft": false, "merge_status": "succeeded", "has_merge_conflicts": false, "vote_label": "no_vote" },
+    "timestamps": { "updated_at": "2025-01-01T00:00:00Z", "threads_synced_at": "2025-01-01T00:00:00Z" }
+  },
   "vote": null,
   "git": { "repo_path": "...", "worktree_path": "...", "strategy": "Worktree" }
 }
 ```
+
+The `metadata` block is derived from the session and is useful for AI agents deciding review priority, readiness, remaining unresolved feedback, and stale session risk.
 
 **Error:** `"No session found for this PR. Run 'powerreview open --pr-url <url>' first."`
 
@@ -97,12 +110,13 @@ Get the full pull request description, title, metadata, reviewers, labels, and w
   "created_at": "2026-03-27T10:00:00Z",
   "closed_at": null,
   "reviewers": [
-    { "name": "Alice Smith", "vote": 0, "is_required": true }
+    { "name": "Alice Smith", "vote": 0, "vote_label": "no_vote", "is_required": true }
   ],
   "labels": ["backend", "validation"],
   "work_items": [
-    { "id": 1234, "title": "Implement input validation", "url": "https://..." }
-  ]
+    { "id": 1234, "title": "Implement input validation", "url": "https://...", "type": "User Story", "state": "Active", "tags": ["backend"] }
+  ],
+  "metadata": { "reviewers": { "required_pending": 1 }, "threads": { "active": 2 } }
 }
 ```
 
@@ -159,11 +173,12 @@ Get the unified git diff for a specific changed file.
 }
 ```
 
-The `diff` field contains the full unified diff output. If no local git repo is available, `diff` is `null` and a `note` field explains why.
+The `diff` field contains the full unified diff output generated from the local PR worktree.
 
 **Errors:**
 - `"File 'path' not found in the changed files list."` -- file path doesn't match any changed file
 - `"No session found for this PR."` -- no active session
+- `"No local git repository available..."` -- session was opened without a local repo/worktree
 - `"Failed to generate diff: ..."` -- git error
 
 ---

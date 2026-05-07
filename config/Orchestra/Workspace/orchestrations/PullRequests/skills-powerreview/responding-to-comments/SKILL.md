@@ -62,13 +62,24 @@ Response Progress:
 
 1. Call `SyncThreads` to fetch the latest comment threads from the remote provider.
 2. Call `ListCommentThreads` to see all threads and their statuses.
-3. Call `GetReviewSession` to understand the PR context (branches, files, iteration).
+3. Call `GetReviewSession` to understand the PR context (branches, files, iteration, reviewers, work items, and `metadata`).
+
+Use session `metadata` when relevant:
+
+- `metadata.threads.active` and `metadata.threads.pending` show how much unresolved feedback remains.
+- `metadata.reviewers.required_pending`, `metadata.reviewers.rejected`, and `metadata.reviewers.waiting_for_author` help identify whether required reviewers are still blocking the PR.
+- `metadata.files` helps estimate whether a requested fix is isolated or likely to touch broad areas.
+- `metadata.work_items.by_type` and `metadata.work_items.by_state` can explain product context and whether a comment relates to a bug, task, or story.
+- `metadata.state.has_merge_conflicts`, `metadata.state.is_draft`, and `metadata.state.merge_status` should influence the final readiness summary.
+- `metadata.iteration` helps confirm which source/target commits the comments and fix proposals are based on.
+- `metadata.timestamps.threads_synced_at` helps detect stale thread data; if old or missing, sync before acting.
 
 ### Step 2: Identify new/unaddressed comments
 
 Look through the threads for comments that need a response. Focus on:
 
 - Threads with status `Active` or `Pending` (not yet resolved)
+- Threads from required reviewers, especially when `metadata.reviewers.required_pending` is non-zero
 - Comments from reviewers (not from the PR author)
 - Comments that ask questions, request changes, or point out issues
 - Comments that don't already have a reply addressing them
@@ -82,6 +93,8 @@ Use when the comment is a question, clarification request, or the fix is trivial
 
 #### Action B: Code fix (code change needed)
 Use when the comment identifies an actual code issue that should be fixed. The AI will make the change on a temporary branch.
+
+Before choosing a code fix, consider `metadata.files` and the linked work item metadata. If the comment is broader than the PR scope or conflicts with the work item type/state, prefer asking a clarifying question or drafting a scoped explanation.
 
 #### Action C: Won't fix / By design
 Use when the comment raises a valid point but the current approach is intentional or the change is out of scope. Reply with an explanation.
@@ -146,6 +159,9 @@ After processing all comments, provide a summary:
 - For each: what action was taken (reply, code fix, won't fix)
 - How many proposals were created (pending user approval)
 - How many draft replies were created (pending user approval)
+- Remaining active/pending thread count if available from `metadata.threads`
+- Required reviewer status if available from `metadata.reviewers`
+- Any PR state blockers such as draft/WIP or merge conflicts from `metadata.state`
 
 Call `ListProposals` and `GetDraftCounts` to verify all actions were recorded.
 

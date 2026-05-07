@@ -44,10 +44,21 @@ Call `GetReviewSession` with the PR URL. This returns:
 - Current vote status
 - Draft and file counts
 - Reviewer list and work items
+- Derived `metadata` summaries for reviewers, files, threads, drafts, work items, review progress, iteration state, PR state, and timestamps
 - Iteration metadata (current iteration ID and commit SHAs)
 - Review state (which files have been reviewed, which changed since last review)
 
 Read the PR description carefully. Understand the intent of the change before reviewing code.
+
+Use metadata when relevant:
+
+- Check `metadata.reviewers.required_pending`, `metadata.reviewers.rejected`, and `metadata.reviewers.waiting_for_author` to understand review pressure before deciding whether to recommend approval.
+- Check `metadata.files` to understand PR size and change mix; large edit-heavy PRs need broader context sampling than small config/test-only changes.
+- Check `metadata.threads.active` and `metadata.threads.pending` before adding new feedback, because unresolved discussions may already cover an issue.
+- Check `metadata.work_items.by_type` and `metadata.work_items.by_state` to infer the business intent and whether linked work items look incomplete or mismatched.
+- Check `metadata.state.has_merge_conflicts`, `metadata.state.is_draft`, and `metadata.state.merge_status` before summarizing readiness.
+- Check `metadata.iteration.source_commit`, `metadata.iteration.target_commit`, and reviewed baseline fields when doing incremental reviews.
+- Check `metadata.timestamps.threads_synced_at` and `metadata.timestamps.updated_at` if the session may be stale.
 
 Also call `GetWorkingDirectory` to get the filesystem path where the repository code is checked out. This tells you the working directory path, git strategy, and repo path -- useful for reading files later.
 
@@ -60,9 +71,11 @@ Call `ListChangedFiles` with the PR URL. Returns each file's:
 - `original_path` -- previous path for renames
 
 Plan the review order. Prioritize:
+
 1. Core logic files over config/test files
 2. Files with `add` or `edit` changes over `delete`
-3. Smaller focused files before large ones
+3. Files that relate to active/pending comment threads
+4. Smaller focused files before large ones
 
 Use `ListRepositoryFiles` to understand the project structure around changed files. For example, if a file in `src/Services/` was changed, list that directory to see what other services exist and understand the architecture.
 
@@ -138,6 +151,7 @@ After reviewing all files, check your draft counts with `GetDraftCounts` to conf
 - Key findings (bugs, security, performance)
 - Number of comments left
 - Whether the PR is ready to approve or needs changes
+- Relevant metadata signals, such as required reviewers pending, unresolved thread count, draft/WIP state, merge conflicts, and linked work item status
 
 ## Iteration tracking
 
