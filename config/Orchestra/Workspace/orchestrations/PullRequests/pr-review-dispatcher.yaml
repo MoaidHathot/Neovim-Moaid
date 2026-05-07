@@ -131,10 +131,53 @@ steps:
       - |
         $ErrorActionPreference = 'Stop'
         $request = $args[0] | ConvertFrom-Json
-        $openOutput = & dnx --yes --add-source 'https://api.nuget.org/v3/index.json' PowerReview -- open --pr-url $request.prUrl 2>&1
-        if ($LASTEXITCODE -ne 0) { throw ($openOutput -join [Environment]::NewLine) }
+
+        function Invoke-PowerReviewOpen {
+          param([Parameter(Mandatory)][string]$PrUrl)
+
+          $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+          $startInfo.FileName = 'dnx'
+          foreach ($argument in @('--yes', '--add-source', 'https://api.nuget.org/v3/index.json', 'PowerReview', '--', 'open', '--pr-url', $PrUrl)) {
+            [void]$startInfo.ArgumentList.Add($argument)
+          }
+          $startInfo.RedirectStandardOutput = $true
+          $startInfo.RedirectStandardError = $true
+          $startInfo.UseShellExecute = $false
+          $startInfo.CreateNoWindow = $true
+
+          $process = [System.Diagnostics.Process]::new()
+          $process.StartInfo = $startInfo
+          [void]$process.Start()
+          $stdout = $process.StandardOutput.ReadToEnd()
+          $stderr = $process.StandardError.ReadToEnd()
+          $process.WaitForExit()
+
+          if ($process.ExitCode -ne 0) {
+            throw "PowerReview open failed with exit code $($process.ExitCode) for '$PrUrl'. Stdout: $stdout Stderr: $stderr"
+          }
+
+          $jsonText = if ($null -eq $stdout) { '' } else { $stdout.Trim() }
+          if ([string]::IsNullOrWhiteSpace($jsonText)) {
+            throw "PowerReview open produced empty stdout for '$PrUrl'. Stderr: $stderr"
+          }
+
+          try {
+            $result = $jsonText | ConvertFrom-Json -ErrorAction Stop
+          } catch {
+            throw "PowerReview open stdout was not valid JSON for '$PrUrl'. Stdout: $jsonText Stderr: $stderr"
+          }
+
+          if (-not $result -or [string]::IsNullOrWhiteSpace([string]$result.prUrl)) {
+            throw "PowerReview open JSON did not contain a non-empty prUrl for '$PrUrl'. Stdout: $jsonText"
+          }
+
+          return $result
+        }
+
+        $openResult = Invoke-PowerReviewOpen -PrUrl $request.prUrl
         $request | Add-Member -NotePropertyName powerReviewOpenStatus -NotePropertyValue 'opened-or-refreshed' -Force
         $request | Add-Member -NotePropertyName powerReviewOpenedAt -NotePropertyValue ([DateTimeOffset]::UtcNow.ToString('o')) -Force
+        $request | Add-Member -NotePropertyName powerReviewOpenPrUrl -NotePropertyValue $openResult.prUrl -Force
         $request | ConvertTo-Json -Compress -Depth 20
       - "{{normalize-review-request.output}}"
     timeoutSeconds: 1200

@@ -109,12 +109,55 @@ steps:
         $prUrl = $pr.prUrl
         if (-not $prUrl) { $prUrl = $pr.url }
         if (-not $prUrl) { $prUrl = "https://dev.azure.com/{{vars.organization}}/{{vars.project}}/_git/{{vars.repository}}/pullrequest/$($pr.id)" }
-        $openOutput = & dnx --yes --add-source 'https://api.nuget.org/v3/index.json' PowerReview -- open --pr-url $prUrl 2>&1
-        if ($LASTEXITCODE -ne 0) { throw ($openOutput -join [Environment]::NewLine) }
+
+        function Invoke-PowerReviewOpen {
+          param([Parameter(Mandatory)][string]$PrUrl)
+
+          $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+          $startInfo.FileName = 'dnx'
+          foreach ($argument in @('--yes', '--add-source', 'https://api.nuget.org/v3/index.json', 'PowerReview', '--', 'open', '--pr-url', $PrUrl)) {
+            [void]$startInfo.ArgumentList.Add($argument)
+          }
+          $startInfo.RedirectStandardOutput = $true
+          $startInfo.RedirectStandardError = $true
+          $startInfo.UseShellExecute = $false
+          $startInfo.CreateNoWindow = $true
+
+          $process = [System.Diagnostics.Process]::new()
+          $process.StartInfo = $startInfo
+          [void]$process.Start()
+          $stdout = $process.StandardOutput.ReadToEnd()
+          $stderr = $process.StandardError.ReadToEnd()
+          $process.WaitForExit()
+
+          if ($process.ExitCode -ne 0) {
+            throw "PowerReview open failed with exit code $($process.ExitCode) for '$PrUrl'. Stdout: $stdout Stderr: $stderr"
+          }
+
+          $jsonText = if ($null -eq $stdout) { '' } else { $stdout.Trim() }
+          if ([string]::IsNullOrWhiteSpace($jsonText)) {
+            throw "PowerReview open produced empty stdout for '$PrUrl'. Stderr: $stderr"
+          }
+
+          try {
+            $result = $jsonText | ConvertFrom-Json -ErrorAction Stop
+          } catch {
+            throw "PowerReview open stdout was not valid JSON for '$PrUrl'. Stdout: $jsonText Stderr: $stderr"
+          }
+
+          if (-not $result -or [string]::IsNullOrWhiteSpace([string]$result.prUrl)) {
+            throw "PowerReview open JSON did not contain a non-empty prUrl for '$PrUrl'. Stdout: $jsonText"
+          }
+
+          return $result
+        }
+
+        $openResult = Invoke-PowerReviewOpen -PrUrl $prUrl
         [pscustomobject]@{
           prId = $pr.id
           prTitle = $pr.title
           prUrl = $prUrl
+          powerReviewOpenPrUrl = $openResult.prUrl
           author = if ($pr.createdBy) { $pr.createdBy } else { $pr.author }
           iterationId = $pr.iterationId
           sourceRefName = $pr.sourceRefName

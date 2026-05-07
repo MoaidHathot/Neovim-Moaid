@@ -3,6 +3,8 @@ Review this Pull Request using the `pr-review-as-ohads` skill.
 ## Review Session
 {{open-review-session.output}}
 
+Session URL guard: Treat this Review Session block as the only allowed source for the PR URL. Before using any PowerReview tool, verify that the session data is valid JSON and contains a non-empty `powerReviewOpenPrUrl` or `prUrl`. If it does not, do not search prior portal output, discovery output, ActionView entries, logs, or any other stale text for a PR URL; stop this reviewer and output a JSON summary with `commentsLeft: 0`, `status: "needs-work"`, and a summary explaining that review could not proceed because the current session did not include a PR URL.
+
 Use the loaded PowerReview skills and PowerReview MCP tools as needed to review the PR. Load PR metadata, changed files, diffs, existing threads/replies, work items, and repository files from PowerReview on demand; do not assume all context is preloaded.
 
 This orchestration handles new PR review, new iteration re-review, and follow-up replies to comments/threads created by reviewer agents. If reviewReason is `agent-thread-reply`, prioritize reviewEvents for agentName `ohads` and decide whether to create draft follow-up feedback, recommend resolving/dismissing via a draft reply, or leave no draft. If there are no matching ohads follow-up events, do not perform a full re-review; output a zero-comment summary for this reviewer.

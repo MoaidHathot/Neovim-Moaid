@@ -16,6 +16,8 @@ powerreview open --pr-url <url>
 
 All tools require `prUrl` -- the full pull request URL (Azure DevOps or GitHub format).
 
+When this skill is used by an orchestration, use only the current review session data passed by that orchestration to determine `prUrl`. If the session data is missing, not valid JSON, or has no non-empty `powerReviewOpenPrUrl`/`prUrl`, stop and report that the review cannot proceed. Do not search prior portal output, discovery output, ActionView entries, logs, or any other stale text to recover a PR URL.
+
 ## Tool invocation
 
 This skill assumes the AI agent is connected to the **PowerReview MCP server** (`powerreview mcp` via stdio). Tools are called by their MCP tool name (e.g., `GetReviewSession`, `CreateComment`).
