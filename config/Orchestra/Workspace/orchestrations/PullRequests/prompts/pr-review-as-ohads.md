@@ -57,8 +57,10 @@ Review the following pull request using the `pr-review-as-ohads` skill.
 
 {{prepare-pr-data.output}}
 
-## Diff to review
+## Review session
 
-{{fetch-pr-diff.output}}
+{{open-review-session.output}}
+
+Use PowerReview MCP tools as needed to read PR metadata, changed files, diffs, threads, replies, work items, and related files. If reviewReason is `agent-thread-reply`, prioritize follow-up events for agentName `ohads`.
 
 Produce only the JSON response described in the system prompt. Focus on high-signal issues that match this persona's expertise, and set `outOfScope` to `true` if the PR has nothing meaningful in scope for the ohads persona to add.

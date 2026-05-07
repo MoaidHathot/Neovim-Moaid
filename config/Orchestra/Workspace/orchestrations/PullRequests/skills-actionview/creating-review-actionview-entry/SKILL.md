@@ -1,6 +1,6 @@
 ---
 name: creating-review-actionview-entry
-description: Creates an ActionView entry of type 'pr-review-summary' from PowerReview draft comments and consolidated review data. Produces a structured JSON entry with PR metadata, per-comment details (reviewer name, file, severity, code diff), per-comment approve/delete actions, and entry-level bulk actions (approve all, submit, vote, delete all). Use after all PR reviewers have finished creating their draft comments and the consolidated review is available.
+description: Creates an ActionView entry of type 'pr-review-summary' from PowerReview draft comments/replies and consolidated review data. Produces a structured JSON entry with PR metadata, per-draft details (reviewer name, file/thread, severity, code diff when available), per-draft approve/delete actions, and entry-level bulk actions (approve all, submit, vote, delete all). Use after all PR reviewers have finished creating their draft comments or follow-up replies and the consolidated review is available.
 compatibility: Requires the PowerReview MCP server connected via stdio. Requires the ActionView entry schema (fetched at runtime or embedded). Requires a completed review with drafts in the PowerReview session.
 ---
 
@@ -11,7 +11,7 @@ This skill tells you how to build an ActionView entry of type `pr-review-summary
 ## When to use this skill
 
 Use this skill in the `create-action-view-entry` step of a PR review orchestration, **after**:
-1. All reviewer agents have finished creating draft comments via PowerReview
+1. All reviewer agents have finished creating draft comments and/or draft replies via PowerReview
 2. The consolidated review summary is available
 
 ## Prerequisites
@@ -23,7 +23,7 @@ Use this skill in the `create-action-view-entry` step of a PR review orchestrati
 
 ## Data collection
 
-Before building the entry, you must collect data from PowerReview. The consolidated review gives you summary-level data, but **you also need the individual drafts** for per-comment sections and action buttons.
+Before building the entry, you must collect data from PowerReview. The consolidated review gives you summary-level data, but **you also need the individual drafts** for per-comment/per-reply sections and action buttons.
 
 ### Step 1: Get PR metadata
 
@@ -45,9 +45,9 @@ Call `GetReviewSession(prUrl)` to get:
 }
 ```
 
-### Step 2: Get all draft comments
+### Step 2: Get all draft comments and replies
 
-Call `ListCommentThreads(prUrl)` to get all threads and drafts. The response includes a `drafts` array:
+Call `ListCommentThreads(prUrl)` to get all threads and drafts. The response includes a `drafts` array. A draft can be a file comment or a reply linked to an existing thread by `draft.thread_id`:
 
 ```json
 {
@@ -71,16 +71,19 @@ Call `ListCommentThreads(prUrl)` to get all threads and drafts. The response inc
 
 Key fields for each draft:
 - `id` -- the draft UUID, needed for per-comment action commands
-- `draft.file_path` -- the file this comment is on
-- `draft.line_start` / `draft.line_end` -- line range
-- `draft.body` -- the comment text
+- `draft.file_path` -- the file this comment/reply is on, when available
+- `draft.thread_id` -- the parent thread for a draft reply, when available
+- `draft.line_start` / `draft.line_end` -- line range, when available
+- `draft.body` -- the draft text
 - `draft.author_name` -- which reviewer agent wrote this (e.g. ".NET Expert", "Security Expert")
+
+For draft replies, find the parent thread by `thread_id` and use that thread's file path, line range, status, and recent comments for context.
 
 ### Step 3: Get code diffs for commented files
 
-For each unique file that has comments, call `GetFileDiff(prUrl, filePath)` to get the unified diff. You'll use this to show code context next to each comment.
+For each unique file that has draft comments or thread-linked draft replies, call `GetFileDiff(prUrl, filePath)` to get the unified diff when helpful. You'll use this to show code context next to each draft.
 
-You don't need the full file diff for every file -- only for files that have draft comments on them.
+You don't need the full file diff for every file -- only for files that have draft comments or draft replies tied to file-level threads.
 
 ## Building the entry
 
@@ -152,9 +155,9 @@ One row per reviewer agent, from the consolidated review's `reviewerSummaries`:
 }
 ```
 
-#### 4. Review Comments section (required -- one nested section per draft comment)
+#### 4. Review Comments section (required -- one nested section per draft comment or draft reply)
 
-This is the most important section. Each draft comment becomes a nested section with:
+This is the most important section. Each draft comment or draft reply becomes a nested section with:
 
 **a) keyValue "Details"** -- comment metadata:
 
@@ -164,17 +167,19 @@ This is the most important section. Each draft comment becomes a nested section 
   "label": "Details",
   "pairs": {
     "Reviewer": "<draft.author_name, e.g. '.NET Expert'>",
-    "File": "<draft.file_path>",
-    "Lines": "<draft.line_start>-<draft.line_end>",
+    "File": "<draft.file_path or parent thread file_path>",
+    "Lines": "<draft.line_start-line_end or parent thread line_start-line_end>",
+    "Thread ID": "<draft.thread_id if this is a reply>",
+    "Draft Type": "comment|reply",
     "Severity": "<extracted from body prefix: nit/suggestion/bug/critical>",
     "Draft ID": "<draft UUID>"
   }
 }
 ```
 
-To extract severity: check if the comment body starts with `nit:`, `suggestion:`, `bug:`, or `critical:`. If no prefix, use `"info"`.
+To extract severity: check if the draft body starts with `nit:`, `suggestion:`, `bug:`, or `critical:`. If no prefix, use `"info"`.
 
-**b) markdown "Comment"** -- the comment text:
+**b) markdown "Comment"** -- the draft text:
 
 ```json
 {
@@ -196,7 +201,7 @@ To extract severity: check if the comment body starts with `nit:`, `suggestion:`
 }
 ```
 
-Extract the relevant hunk from the full file diff that covers the commented line range. If the diff is short enough, you can include the entire file diff. Use `language: "diff"` for unified diff format, or use the file's language (e.g., `"csharp"`) if showing the raw code instead of a diff.
+Extract the relevant hunk from the full file diff that covers the commented/replied thread line range. If the diff is short enough, you can include the entire file diff. Use `language: "diff"` for unified diff format, or use the file's language (e.g., `"csharp"`) if showing the raw code instead of a diff.
 
 **d) Per-comment actions:**
 
@@ -228,7 +233,7 @@ Extract the relevant hunk from the full file diff that covers the commented line
 }
 ```
 
-**Put it all together** -- a complete nested section for one comment:
+**Put it all together** -- a complete nested section for one draft:
 
 ```json
 {
@@ -285,7 +290,7 @@ Extract the relevant hunk from the full file diff that covers the commented line
 }
 ```
 
-Repeat this for **every draft comment** in the session.
+Repeat this for **every draft comment or reply** in the session.
 
 #### 5-11. Expert sections (optional)
 
@@ -414,8 +419,9 @@ These are the buttons at the top/bottom of the entry:
 | `consolidated.requirementsAlignment` | "Requirements Alignment" section |
 | `draft.id` (UUID) | Per-comment `--draft-id` in Approve/Delete actions |
 | `draft.author_name` | Per-comment "Details" keyValue `Reviewer` |
-| `draft.file_path` | Per-comment "Details" keyValue `File`, nested section `title` |
-| `draft.line_start` / `line_end` | Per-comment "Details" keyValue `Lines` |
+| `draft.file_path` or parent thread `file_path` | Per-comment "Details" keyValue `File`, nested section `title` |
+| `draft.line_start` / `line_end` or parent thread line range | Per-comment "Details" keyValue `Lines` |
+| `draft.thread_id` | Per-comment "Details" keyValue `Thread ID` for replies |
 | `draft.body` prefix | Per-comment "Details" keyValue `Severity` |
 | `draft.body` | Per-comment "Comment" markdown body |
 | `fileDiff.diff` (hunk) | Per-comment "Code" block body |
@@ -432,7 +438,7 @@ Entry Checklist:
 - [ ] severity is mapped from overall status
 - [ ] PR metadata keyValue block is present
 - [ ] Review Summary table has one row per reviewer
-- [ ] Every draft comment has its own nested section
+- [ ] Every draft comment or draft reply has its own nested section
 - [ ] Every nested section has Details (keyValue), Comment (markdown), and optionally Code
 - [ ] Every nested section has Approve and Delete actions with the correct draft UUID
 - [ ] All action commands use the correct prUrl
@@ -442,8 +448,8 @@ Entry Checklist:
 
 ## Important notes
 
-- **Draft IDs are critical.** Without them, the per-comment Approve/Delete buttons won't work. Make sure every draft comment's UUID is included in both the "Details" keyValue and the action command args.
-- **The `author_name` field** on drafts identifies which reviewer agent created the comment. If reviewer agents don't pass `agentName` when calling `CreateComment`, this field will be null. Make sure the orchestration's reviewer prompts include `agentName`.
+- **Draft IDs are critical.** Without them, the per-comment Approve/Delete buttons won't work. Make sure every draft comment or reply UUID is included in both the "Details" keyValue and the action command args.
+- **The `author_name` field** on drafts identifies which reviewer agent created the comment or reply. If reviewer agents don't pass `agentName` when creating drafts, this field will be null. Make sure the orchestration's reviewer prompts include `agentName`.
 - **Code diffs are optional but valuable.** If fetching per-file diffs is too expensive, the entry still works without them -- the user can read the comment text and navigate to the file manually.
 - **Save the entry using `orchestra_save_file`.** The orchestration's next step will submit it to ActionView via `actionview add --file <path>`.
 

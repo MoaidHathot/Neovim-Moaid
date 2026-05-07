@@ -10,7 +10,6 @@ variables:
   project: One
   repository: ZTS
   authorName: Moaid Hathot
-  repoLocalPath: "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS"
   zakiraCategory: pr-comment-response-state
   staleRespondingMinutes: "75"
   pullRequestsDir: "../../orchestrations/PullRequests"
@@ -90,7 +89,7 @@ steps:
       ## Decision Logic
 
       For each PR:
-      1. Open or get the PowerReview review session (use GetReviewSession; if no session exists, open one with the PR URL and repo path)
+       1. Open or get the PowerReview review session. PowerReview open is safe for both new sessions and refreshing existing sessions.
       2. Call SyncThreads to fetch the latest threads from the remote
       3. Call ListCommentThreads to get all threads
       4. Check Zakira.Exchange for last known state (get_memory with PR ID as key)
@@ -113,7 +112,7 @@ steps:
       {{gate-no-prs.output}}
 
       For each PR:
-      1. Use PowerReview GetReviewSession to check for an existing session. If no session exists, open one with the PR URL and repo path '{{vars.repoLocalPath}}'.
+       1. Open or refresh the PowerReview review session for the PR URL.
       2. Call SyncThreads to get the latest threads
       3. Call ListCommentThreads to see all threads
       4. Check Zakira.Exchange (get_memory with PR ID as key)

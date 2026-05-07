@@ -53,8 +53,10 @@ Review the following pull request using the loaded `pr-review-as-liabadi` skill.
 
 {{prepare-pr-data.output}}
 
-## Diff to review
+## Review session
 
-{{fetch-pr-diff.output}}
+{{open-review-session.output}}
 
-Focus only on comments that this persona would realistically leave. Prefer a smaller number of high-signal comments over broad coverage. Use `outOfScope: true` if the diff does not present meaningful issues within this persona's lens.
+Use PowerReview MCP tools as needed to read PR metadata, changed files, diffs, threads, replies, work items, and related files. If reviewReason is `agent-thread-reply`, prioritize follow-up events for agentName `liabadi`.
+
+Focus only on comments that this persona would realistically leave. Prefer a smaller number of high-signal comments over broad coverage. Use `outOfScope: true` if the PR does not present meaningful issues within this persona's lens.

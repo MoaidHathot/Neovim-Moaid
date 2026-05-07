@@ -1,7 +1,7 @@
 name: pr-auto-reviewer
 description: |
-  Discovers Pull Requests assigned to me in Azure DevOps that need review. Filters out self-authored PRs, checks review state via Zakira.Exchange and PowerReview session existence to determine which PRs need review. Invokes the pr-code-reviewer orchestration for each PR that needs review, and tracks invocation outcomes (marking failed reviews so they are retried on the next run).
-version: 1.0.0
+  Discovers Pull Requests assigned to me in Azure DevOps that need review. Filters out self-authored PRs, checks review state via Zakira.Exchange and PowerReview session/thread state to determine which PRs need review, including new PRs, new iterations, failed/stale runs, and replies to comments created by reviewer agents. Invokes the pr-code-reviewer orchestration for each PR that needs attention, and tracks failed invocations so they are retried on the next run.
+version: 1.1.0
 tags: ["ZTS", "MSFT", "PR", "Code-Review", "auto"]
 defaultModel: gpt-5.4
 
@@ -10,7 +10,6 @@ variables:
   project: One
   repository: ZTS
   reviewerName: Moaid Hathot
-  repoLocalPath: "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS"
   zakiraCategory: pr-code-review-state
   staleReviewMinutes: "60"
   pullRequestsDir: "../../orchestrations/PullRequests"
@@ -42,26 +41,12 @@ mcps:
     endpoint: "{{server.url}}/mcp/data"
 
 steps:
-  - name: debug-tools
-    type: Prompt
-    systemPrompt: |
-      You are an assistant for debugging purposes. Your purpose is to see all Tools that are exposed to you and print them down
-    userPrompt: |
-      return a list of all of the tools that you have access to, along with a brief description of what they do. Format the response as a JSON array, where each element is an object with 'name' and 'description' properties.
-    mcps: [orchestra]
-    timeoutSeconds: 600
-    retry:
-      maxRetries: 3
-      backoffSeconds: 10
-      backoffMultiplier: 2.0
-      retryOnTimeout: true
-
   - name: fetch-assigned-prs
     type: Prompt
     systemPrompt: |
       You are an Azure DevOps assistant. Query for active pull requests using the Azure DevOps MCP tools. Return structured data only -- no commentary.
     userPrompt: |
-      Using the Azure DevOps tools, list all active (open) pull requests in project '{{vars.project}}' repository '{{vars.repository}}' that have '{{vars.reviewerName}}' as a reviewer. For each PR, return: id, title, createdBy (author display name), creationDate, sourceRefName, targetRefName, reviewers (array of display names), and the latest iteration id (if available).
+      Using the Azure DevOps tools, list all active (open) pull requests in project '{{vars.project}}' repository '{{vars.repository}}' that have '{{vars.reviewerName}}' as a reviewer. For each PR, return: id, title, createdBy (author display name), creationDate, sourceRefName, targetRefName, reviewers (array of display names), url (full Azure DevOps PR URL), and the latest iteration id (if available).
 
       Return ONLY a JSON array. If no PRs found, return [].
     outputHandlerPrompt: |
@@ -89,7 +74,15 @@ steps:
     type: Prompt
     dependsOn: [filter-prs]
     systemPrompt: |
-      You are a review state manager. You use both Zakira.Exchange and PowerReview to determine whether PRs need review.
+      You are a review state manager. You use both Zakira.Exchange and PowerReview to determine whether PRs need review or follow-up.
+
+      Reviewer agents that create PowerReview comments/replies:
+      - .NET Expert
+      - Principal Engineer
+      - Security Expert
+      - DTFx Expert
+      - liabadi
+      - ohads
 
       ## State Machine
 
@@ -99,9 +92,17 @@ steps:
       - 'reviewed' = review completed successfully at a specific iteration
       - 'failed' = review orchestration failed
 
+      Reviewed state may also contain thread tracking fields such as reviewedAt, sourceCommit, agentThreadSnapshot, and agentThreadLastCheckedAt. Treat them as hints, not as the only source of truth. PowerReview session/thread state is authoritative for comments and replies.
+
       ## Decision Logic
 
-      For each PR, check Zakira.Exchange first (get_memory with PR ID as key), then check PowerReview (GetReviewSession with the PR's Azure DevOps URL).
+      For each PR, check Zakira.Exchange first (get_memory with PR ID as key), then use PowerReview with the PR URL. Prefer the `url` field from the PR data. If missing, construct https://dev.azure.com/{{vars.organization}}/{{vars.project}}/_git/{{vars.repository}}/pullrequest/<id>.
+
+      If a PowerReview session exists, refresh/read it using PowerReview so thread and iteration state are current. Inspect session metadata, changed iteration/source commit signals, local AI-authored drafts/submitted comments, and remote comment threads.
+
+      A thread needs follow-up review when it was created by one of the reviewer agents and has a newer human reply/comment that was not already handled. Detect reviewer-agent ownership using any available PowerReview metadata such as draft.author_name/comment.author_name/agentName, and also by the hidden marker `<!-- powerreview-agent: <agent name> -->` in the comment/reply body.
+
+      When a reviewer-agent thread has new human activity, include a reviewEvent with enough detail for pr-code-reviewer to handle it: type, threadId, agentName, filePath, lineStart, latestReplyAuthor, latestReplyCreatedAt, and a short reason. Do not require a new PR iteration for this case.
 
       A PR needs (re-)review if:
       1. No Zakira state exists AND no PowerReview session exists (first time seeing this PR)
@@ -109,9 +110,10 @@ steps:
       3. Zakira state is 'reviewed' but the stored iterationId differs from the current iteration ID (new commits pushed since last review)
       4. Zakira state is 'failed' (previous review attempt failed, retry it)
       5. Zakira state is 'in-review' but the startedAt timestamp is older than {{vars.staleReviewMinutes}} minutes ago (stale -- the review orchestration likely crashed, retry it)
+      6. A reviewer-agent-created comment thread has a new human reply/comment that was not already handled, even if the PR iteration did not change
 
       A PR should be SKIPPED if:
-      1. Zakira state is 'reviewed' AND the iterationId matches the current iteration (already reviewed, nothing changed)
+      1. Zakira state is 'reviewed' AND the iterationId matches the current iteration AND there are no new reviewer-agent thread replies to handle
       2. Zakira state is 'in-review' AND the startedAt timestamp is within the last {{vars.staleReviewMinutes}} minutes (review is still actively running)
 
       You also have access to the orchestra_complete tool. If ALL PRs should be skipped, call orchestra_complete with status 'success' and reason explaining why no reviews are needed.
@@ -122,7 +124,7 @@ steps:
 
       For each PR:
       1. Use Zakira.Exchange get_memory with the PR ID as key to retrieve stored review state
-      2. Use PowerReview GetReviewSession to check if a review session already exists for the PR (construct the Azure DevOps PR URL from the PR data)
+      2. Use PowerReview with the PR URL to check whether a review session exists, refresh/read current session/thread state if it does, and identify new reviewer-agent thread replies
       3. Apply the decision logic from your instructions
 
       Output a JSON object:
@@ -130,13 +132,26 @@ steps:
         "prsToReview": [
           {
             ...PR data...,
-            "reviewReason": "first-time|new-iteration|stale-in-review|failed-retry",
+            "prUrl": "full PR URL used for PowerReview",
+            "reviewReason": "first-time|new-iteration|agent-thread-reply|stale-in-review|failed-retry",
+            "reviewEvents": [
+              {
+                "type": "agent-thread-reply",
+                "threadId": 123,
+                "agentName": ".NET Expert|Principal Engineer|Security Expert|DTFx Expert|liabadi|ohads",
+                "filePath": "path or empty for PR-level thread",
+                "lineStart": 42,
+                "latestReplyAuthor": "display name",
+                "latestReplyCreatedAt": "timestamp",
+                "reason": "short explanation"
+              }
+            ],
             "existingZakiraState": null | { "status": "...", "iterationId": "...", "startedAt": "..." },
-            "existingPowerReviewSession": null | { "sessionId": "...", "status": "..." }
+            "existingPowerReviewSession": null | { "sessionId": "...", "iterationId": "...", "sourceCommit": "...", "status": "..." }
           }
         ],
         "prsSkipped": [
-          { "id": ..., "title": "...", "reason": "already reviewed at iteration X" | "review in progress since <timestamp>" }
+          { "id": ..., "title": "...", "reason": "already reviewed at iteration X and no agent-thread replies" | "review in progress since <timestamp>" }
         ]
       }
 
@@ -169,7 +184,7 @@ steps:
 
       For each PR in the 'prsToReview' array:
       1. Use invoke_orchestration to invoke 'pr-code-reviewer' with mode 'sync' and timeoutSeconds 70000
-      2. Pass the PR data as the 'prData' parameter -- serialize the PR object as a JSON string (exclude the reviewReason, existingZakiraState, and existingPowerReviewSession fields -- only pass the original PR data fields)
+      2. Pass the enriched PR object as the 'prData' parameter -- serialize the full object, including prUrl/url, reviewReason, reviewEvents, existingZakiraState, and existingPowerReviewSession
       3. After invocation completes, check whether it succeeded or failed
       4. For any failed invocations, update Zakira.Exchange to mark the PR as 'failed'
 
@@ -201,7 +216,7 @@ steps:
     systemPrompt: |
       You are an ActionView entry generator for PR auto-review runs. You create structured JSON entries conforming to the ActionView schema. The entry type must be 'pr-auto-review-run' and source must be '{{orchestration.name}}'.
 
-      Your entries should give the user a clear overview of what the auto-reviewer discovered and dispatched: how many PRs were found, how many were skipped vs reviewed, and the outcomes. This lets users stay informed about automated review activity.
+      Your entries should give the user a clear overview of what the auto-reviewer discovered and dispatched: how many PRs were found, how many were skipped vs reviewed, which were triggered by new iterations or reviewer-agent thread replies, and the outcomes. This lets users stay informed about automated review activity.
 
       IMPORTANT: Save the generated JSON entry using the orchestra_save_file tool.
     userPrompt: |
@@ -219,8 +234,8 @@ steps:
       Create an entry with:
       1. type: 'pr-auto-review-run'
       2. source: '{{orchestration.name}}'
-      3. title: 'PR Auto-Review Run' with count of PRs reviewed
-      4. subtitle: Summary like 'X reviewed, Y skipped, Z failed'
+       3. title: 'PR Auto-Review Run' with count of PRs reviewed
+       4. subtitle: Summary like 'X reviewed, Y skipped, Z failed'
       5. severity: 'high' if any reviews failed, 'medium' if reviews were dispatched, 'low' if all skipped (nothing to do)
       6. tags: ['pr-review', 'auto-review', 'ZTS']
       7. content blocks:
@@ -228,9 +243,10 @@ steps:
          - A summary table: PR ID | Title | Author | Action | Outcome
            - Action: 'reviewed', 'skipped (already reviewed)', 'skipped (in progress)', etc.
            - Outcome: 'succeeded', 'failed', 'N/A' for skipped
-         - A section 'Skipped PRs' listing why each was skipped (if any)
-         - A section 'Review Results' with per-PR outcome details (if any were reviewed)
-         - A section 'Failed Reviews' listing errors and noting they will be retried (if any failed)
+          - A section 'Skipped PRs' listing why each was skipped (if any)
+          - A section 'Review Results' with per-PR outcome details and reviewReason (if any were reviewed)
+          - A section 'Agent Thread Replies' listing PRs dispatched because a human replied to a reviewer-agent-created thread (if any)
+          - A section 'Failed Reviews' listing errors and noting they will be retried (if any failed)
       8. actions:
          - 'View PRs' (style: primary)
          - 'Dismiss' (style: default)
@@ -273,7 +289,7 @@ steps:
       2. How many PRs were found assigned for review
       3. How many were skipped (already reviewed or actively in-review) and why
       4. How many were sent for review and their outcomes (succeeded vs failed)
-      5. For each reviewed PR: PR title, author, review reason (first-time, new-iteration, retry after failure, stale), and the outcome
+      5. For each reviewed PR: PR title, author, review reason (first-time, new-iteration, agent-thread-reply, retry after failure, stale), and the outcome
       6. Any PRs marked as failed that will be retried on the next run
       7. Confirmation that ActionView entry was submitted
       8. Any errors or issues encountered during the run

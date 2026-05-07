@@ -8,10 +8,10 @@ compatibility: Requires the PowerReview MCP server connected via stdio. Requires
 
 ## Prerequisites
 
-A review session must already be open for the PR. If `GetReviewSession` returns an error, ask the user to open the session first:
+A review session must already be open for the PR. If `GetReviewSession` returns an error, ask the user to open the session first. The `open` command is safe for both new sessions and refreshing an existing session:
 
 ```
-powerreview open --pr-url <url> --repo-path <path>
+powerreview open --pr-url <url>
 ```
 
 All tools require `prUrl` -- the full pull request URL (Azure DevOps or GitHub format).
@@ -114,7 +114,9 @@ Then call `ListCommentThreads` to see existing remote comments and local drafts.
 
 Avoid duplicating feedback that already exists in threads. Read existing threads to understand ongoing discussions.
 
-### Step 5: Create draft comments
+### Step 5: Create draft comments or replies
+
+For follow-up reviews where a human replied to a thread created by a reviewer agent, decide whether to draft a reply on the existing thread, create a new file comment, or leave no draft. Do not directly resolve or dismiss threads unless PowerReview supports draftable status changes; instead, create a draft reply explaining the recommended resolution/dismissal so the user can approve it.
 
 For each finding, call `CreateComment` with:
 
@@ -133,7 +135,15 @@ To reply to an existing thread instead, call `ReplyToThread` with `prUrl`, `thre
 
 #### Agent identification
 
-When multiple AI agents review the same PR, use the `agentName` parameter to identify which agent created each comment. This helps users distinguish between different agents' feedback. The name is stored on the draft as `author_name`.
+When multiple AI agents review the same PR, use the `agentName` parameter to identify which agent created each comment or reply. This helps users distinguish between different agents' feedback. The name is stored on the draft as `author_name`.
+
+Also include a hidden marker in the draft body so future orchestration runs can reliably identify reviewer-agent-owned threads even if provider metadata is incomplete:
+
+```markdown
+<!-- powerreview-agent: <agent name> -->
+```
+
+Use stable agent names such as `.NET Expert`, `Principal Engineer`, `Security Expert`, `DTFx Expert`, `liabadi`, or `ohads`.
 
 #### Writing effective comments
 

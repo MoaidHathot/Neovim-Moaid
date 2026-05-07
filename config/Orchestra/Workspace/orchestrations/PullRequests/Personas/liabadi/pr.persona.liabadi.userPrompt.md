@@ -1,27 +1,24 @@
 Review this Pull Request using the loaded `pr-review-as-liabadi` skill.
 
-## PR metadata
-{{prepare-pr-data.output}}
-
-## PR Changes
-{{fetch-pr-diff.output}}
-
-## Work Item Context
-{{fetch-work-items.output}}
-
 ## Review Session
 {{open-review-session.output}}
+
+Use the loaded PowerReview skills and PowerReview MCP tools as needed to review the PR. Load PR metadata, changed files, diffs, existing threads/replies, work items, and repository files from PowerReview on demand; do not assume all context is preloaded.
+
+This orchestration handles new PR review, new iteration re-review, and follow-up replies to comments/threads created by reviewer agents. If reviewReason is `agent-thread-reply`, prioritize reviewEvents for agentName `liabadi` and decide whether to create draft follow-up feedback, recommend resolving/dismissing via a draft reply, or leave no draft. If there are no matching liabadi follow-up events, do not perform a full re-review; output a zero-comment summary for this reviewer.
+
+Do not directly resolve or dismiss threads unless PowerReview supports draftable status changes. For now, use a draft reply to explain any recommended resolution or dismissal so the user can approve it in ActionView.
 
 Focus only on comments that this persona would realistically leave. Prefer a smaller number of high-signal comments over broad coverage.
 
 It is not mandatory to leave comments. Leave draft comments only if you find substantive, in-scope issues that this persona would realistically raise.
 
 If you find meaningful issues within this persona's scope:
-1. Use the PowerReview MCP CreateComment tool to leave draft comments on the specific file and line range.
+1. Use PowerReview MCP tools to create draft comments or draft replies as appropriate.
 2. Use the PR URL from the review session data.
-3. Keep one issue per comment.
+3. Keep one issue per comment or reply.
 
-IMPORTANT: When calling CreateComment or ReplyToThread, always pass agentName: "liabadi" so your comments are attributed correctly.
+IMPORTANT: For any PowerReview draft/comment/reply/proposal you create, set agentName exactly "liabadi" and include this hidden marker in the body: `<!-- powerreview-agent: liabadi -->`.
 
 If you find nothing meaningful within this persona's scope, leave no comments and return a summary that clearly states there is nothing substantive for this persona to add.
 
@@ -29,6 +26,7 @@ After completing the review, output a JSON summary:
 {
   "reviewer": "liabadi",
   "commentsLeft": <count, may be 0>,
+  "followUpsHandled": <count of reviewer-agent thread events handled>,
   "criticalIssues": <count>,
   "outOfScope": true/false,
   "summary": "1-3 sentences",

@@ -8,10 +8,10 @@ compatibility: Requires the PowerReview MCP server connected via stdio. Requires
 
 ## Prerequisites
 
-A review session must already be open for the PR. If `GetReviewSession` returns an error, ask the user to open the session first:
+A review session must already be open for the PR. If `GetReviewSession` returns an error, ask the user to open the session first. The `open` command is safe for both new sessions and refreshing an existing session:
 
 ```
-powerreview open --pr-url <url> --repo-path <path>
+powerreview open --pr-url <url>
 ```
 
 All tools require `prUrl` -- the full pull request URL (Azure DevOps or GitHub format).
@@ -110,6 +110,14 @@ Call `ReplyToThread` with:
 - `agentName` -- your agent name (optional)
 
 The reply is created as a draft. The user must approve it before it is submitted.
+
+When replying as a reviewer agent rather than the PR author assistant, set `agentName` to the stable reviewer name and include a hidden body marker so future automation can track ownership:
+
+```markdown
+<!-- powerreview-agent: <agent name> -->
+```
+
+If a reply recommends resolving or dismissing a thread, keep it as a draft reply. Do not directly update thread status unless PowerReview supports draftable status changes and the orchestration explicitly asks for that behavior.
 
 #### For code fixes (Action B):
 

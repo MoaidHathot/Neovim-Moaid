@@ -17,7 +17,6 @@ variables:
   project: One
   repository: ZTS
   authorName: Moaid Hathot
-  repoLocalPath: "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS"
   zakiraCategory: pr-comment-response-state
   pullRequestsDir: "../../orchestrations/PullRequests"
   skillsDirPowerReview: "{{vars.pullRequestsDir}}/skills-powerreview"
@@ -72,11 +71,9 @@ steps:
     systemPrompt: |
       You are a PowerReview session manager. Open or retrieve the review session for the given PR so that agents can read comments, create replies, and make code fixes. Use the PowerReview MCP tools.
 
-      You need:
-      1. The PR URL (from the PR data)
-      2. The local repository path
+      You need the PR URL from the PR data.
 
-      Call the appropriate PowerReview tool to open/get the review session. If a session already exists, load it.
+      Use PowerReview to open or get the review session. PowerReview open is safe for both new sessions and refreshing existing sessions.
 
       After opening the session, call GetWorkingDirectory to get the worktree path. This path tells downstream agents where the source code for the PR branch is checked out.
     userPrompt: |
@@ -85,10 +82,8 @@ steps:
       PR Data:
       {{prepare-pr-data.output}}
 
-      Local repo path: {{vars.repoLocalPath}}
-
       Steps:
-      1. Use GetReviewSession to check for an existing session for the PR URL. If no session exists, use the open/create session tool with the PR URL and repo path.
+      1. Open or refresh the PowerReview session for the PR URL.
       2. Call GetWorkingDirectory to get the worktree filesystem path.
 
       Output the combined session and working directory details as JSON:

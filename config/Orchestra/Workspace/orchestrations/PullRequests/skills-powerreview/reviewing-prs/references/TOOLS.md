@@ -83,6 +83,8 @@ The `metadata` block is derived from the session and is useful for AI agents dec
 
 **Error:** `"No session found for this PR. Run 'powerreview open --pr-url <url>' first."`
 
+`powerreview open --pr-url <url>` is safe to call for both new sessions and refreshing an existing session.
+
 ---
 
 ## GetPullRequestDescription
