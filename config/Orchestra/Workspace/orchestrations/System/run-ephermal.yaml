@@ -14,9 +14,7 @@ tags: ["meta", "ephermal", "system", "manual"]
 defaultModel: gpt-5.4
 
 variables:
-  # Absolute path so it works regardless of which directory the engine is
-  # launched from. Forward slashes are tolerated on Windows.
-  ephermalDir: "P:/Github/Neovim-Moaid/config/Orchestra/workspace/orchestrations/Ephermal"
+  ephermalDir: "../Ephermal"
   # Deterministic, unique name for the ephermal orchestration. Used both as
   # the YAML `name:` field inside the generated file AND as the lookup key
   # for the subsequent Orchestration step.

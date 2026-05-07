@@ -20,7 +20,7 @@ tags: ["ephermal", "system"]
 defaultModel: gpt-5.4
 
 variables:
-  ephermalDir: "P:/Github/Neovim-Moaid/config/Orchestra/workspace/orchestrations/Ephermal"
+  ephermalDir: "../Ephermal"
 
 inputs:
   retentionDays:
@@ -191,3 +191,8 @@ steps:
       the retention window. `skippedNoFlag` and `skippedParse` were left
       untouched because they failed the metadata guards. `errors` lists any
       unexpected failures during the sweep.
+
+trigger:
+  type: scheduler
+  enabled: true
+  intervalSeconds: 172800

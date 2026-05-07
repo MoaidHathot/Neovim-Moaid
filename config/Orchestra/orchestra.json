@@ -1,12 +1,12 @@
 {
-	"dataPath": "./workspace/.runtime",
+	"dataPath": null,
 	"urls": "http://127.0.0.1:5100",
 	"hostBaseUrl": "http://localhost:5100",
 	"defaultModel": "gpt-5.4",
 	"agentPool": {
 		"minInstances": 1,
-		"maxInstances": 25,
-		"maxSessionsPerInstance": 3,
+		"maxInstances": 60,
+		"maxSessionsPerInstance": 2,
 		"idleTimeoutSeconds": 120
 	},
 	"scan": {
