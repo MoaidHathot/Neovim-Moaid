@@ -192,6 +192,15 @@ steps:
           $forceReview = $forceReviewRaw -match '^(?i:true|1|yes)$'
         }
 
+        function Normalize-PrUrl {
+          param([string]$Url)
+
+          if ([string]::IsNullOrWhiteSpace($Url)) { return $Url }
+
+          # PowerReview and Windows shell callers only need the stable PR URL; strip view-specific query fragments.
+          return (($Url.Trim() -split '[?#]', 2)[0]).TrimEnd('/')
+        }
+
         $pr = $null
         if (-not [string]::IsNullOrWhiteSpace($prDataInput)) {
           $pr = ConvertFrom-CanonicalJson -Text $prDataInput
@@ -200,6 +209,7 @@ steps:
         $prUrl = $prUrlInput
         if ([string]::IsNullOrWhiteSpace($prUrl) -and $pr) { $prUrl = $pr.prUrl }
         if ([string]::IsNullOrWhiteSpace($prUrl) -and $pr) { $prUrl = $pr.url }
+        if (-not [string]::IsNullOrWhiteSpace($prUrl)) { $prUrl = Normalize-PrUrl -Url $prUrl }
 
         $prId = if ($pr) { $pr.id } else { $null }
         if (-not $prId -and $prUrl -match '/pullrequest/(\d+)') { $prId = [int]$Matches[1] }
@@ -241,6 +251,32 @@ steps:
         $ErrorActionPreference = 'Stop'
         $request = ConvertFrom-Json -InputObject $args[0] -NoEnumerate -ErrorAction Stop
 
+        function Resolve-PowerReviewOpenPrUrl {
+          param(
+            [Parameter(Mandatory)]$Result,
+            [Parameter(Mandatory)][string]$FallbackPrUrl
+          )
+
+          $candidates = @(
+            $Result.prUrl,
+            $Result.url,
+            $Result.pullRequest.url,
+            $Result.pull_request.url,
+            $Result.session.prUrl,
+            $Result.session.url,
+            $Result.session.pullRequest.url,
+            $Result.session.pull_request.url,
+            $FallbackPrUrl
+          )
+
+          foreach ($candidate in $candidates) {
+            $value = [string]$candidate
+            if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+          }
+
+          return ''
+        }
+
         function Invoke-PowerReviewOpen {
           param([Parameter(Mandatory)][string]$PrUrl)
 
@@ -274,10 +310,12 @@ steps:
             throw "PowerReview open stdout was not valid JSON for '$PrUrl'. Stdout: $jsonText Stderr: $stderr"
           }
 
-          if (-not $result -or [string]::IsNullOrWhiteSpace([string]$result.prUrl)) {
-            throw "PowerReview open JSON did not contain a non-empty prUrl for '$PrUrl'. Stdout: $jsonText"
+          $openPrUrl = Resolve-PowerReviewOpenPrUrl -Result $result -FallbackPrUrl $PrUrl
+          if ([string]::IsNullOrWhiteSpace($openPrUrl)) {
+            throw "PowerReview open JSON did not contain a usable PR URL for '$PrUrl'. Stdout: $jsonText"
           }
 
+          $result | Add-Member -NotePropertyName prUrl -NotePropertyValue $openPrUrl -Force
           return $result
         }
 
