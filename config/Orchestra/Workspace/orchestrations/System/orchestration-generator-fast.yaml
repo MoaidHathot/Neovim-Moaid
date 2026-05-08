@@ -259,6 +259,13 @@ steps:
         exit 1
       }
 
+      if (-not [System.IO.Path]::IsPathFullyQualified($outputPath)) {
+        Write-Error "outputPath must be an absolute path. Use {{orchestration.sourceDirectory}} when deriving a path from an orchestration file. Received: $outputPath"
+        exit 1
+      }
+
+      $outputPath = [System.IO.Path]::GetFullPath($outputPath)
+
       $dir = [System.IO.Path]::GetDirectoryName($outputPath)
       if ($dir -and -not (Test-Path -LiteralPath $dir -PathType Container)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null

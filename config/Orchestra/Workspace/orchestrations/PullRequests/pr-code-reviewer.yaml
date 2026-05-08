@@ -66,10 +66,137 @@ mcps:
 
 steps:
   - name: prepare-pr-data
-    type: Transform
-    template: "{{param.prData}}"
-    parameters: [prData]
-    contentType: text/plain
+    type: Script
+    shell: pwsh
+    script: |
+        $ErrorActionPreference = 'Stop'
+
+        function Get-JsonCandidate {
+          param([Parameter(Mandatory)][string]$Text)
+
+          $trimmed = $Text.Trim()
+          if ($trimmed.StartsWith('```')) {
+            $lines = @($trimmed -split "`r?`n")
+            if ($lines.Count -gt 1) {
+              $trimmed = ($lines[1..($lines.Count - 1)] -join "`n").Trim()
+              if ($trimmed.EndsWith('```')) {
+                $trimmed = $trimmed.Substring(0, $trimmed.Length - 3).Trim()
+              }
+            }
+          }
+
+          $start = -1
+          for ($i = 0; $i -lt $trimmed.Length; $i++) {
+            if ($trimmed[$i] -eq '{' -or $trimmed[$i] -eq '[') { $start = $i; break }
+          }
+          if ($start -lt 0) { throw 'No JSON object or array was found in PR data.' }
+
+          $stack = [System.Collections.Generic.List[char]]::new()
+          $inString = $false
+          for ($i = $start; $i -lt $trimmed.Length; $i++) {
+            $ch = $trimmed[$i]
+            if ($inString) {
+              if ($ch -eq '\') {
+                if ($i + 1 -lt $trimmed.Length) { $i++ }
+                continue
+              }
+              if ($ch -eq '"') { $inString = $false }
+              continue
+            }
+
+            if ($ch -eq '"') { $inString = $true; continue }
+            if ($ch -eq '{') { $stack.Add([char]'}'); continue }
+            if ($ch -eq '[') { $stack.Add([char]']'); continue }
+            if ($ch -eq '}' -or $ch -eq ']') {
+              if ($stack.Count -eq 0) { continue }
+              $expected = $stack[$stack.Count - 1]
+              if ($ch -ne $expected) { throw "Mismatched JSON delimiter. Expected '$expected' but found '$ch'." }
+              $stack.RemoveAt($stack.Count - 1)
+              if ($stack.Count -eq 0) {
+                return $trimmed.Substring($start, $i - $start + 1).Trim()
+              }
+            }
+          }
+
+          throw 'JSON object or array was not complete.'
+        }
+
+        function Repair-InvalidJsonStringEscapes {
+          param([Parameter(Mandatory)][string]$Text)
+
+          $builder = [System.Text.StringBuilder]::new()
+          $inString = $false
+          for ($i = 0; $i -lt $Text.Length; $i++) {
+            $ch = $Text[$i]
+            if ($inString) {
+              if ($ch -eq '\') {
+                if ($i + 1 -ge $Text.Length) {
+                  [void]$builder.Append('\\')
+                  continue
+                }
+
+                $next = $Text[$i + 1]
+                if ($next -match '["\\/bfnrt]') {
+                  [void]$builder.Append($ch)
+                  [void]$builder.Append($next)
+                  $i++
+                  continue
+                }
+
+                if ($next -eq 'u') {
+                  $hasHex = $i + 5 -lt $Text.Length
+                  if ($hasHex) {
+                    $hex = $Text.Substring($i + 2, 4)
+                    if ($hex -match '^[0-9A-Fa-f]{4}$') {
+                      [void]$builder.Append($ch)
+                      [void]$builder.Append('u')
+                      [void]$builder.Append($hex)
+                      $i += 5
+                      continue
+                    }
+                  }
+                }
+
+                [void]$builder.Append('\\')
+                continue
+              }
+
+              if ($ch -eq '"') { $inString = $false }
+              [void]$builder.Append($ch)
+              continue
+            }
+
+            if ($ch -eq '"') { $inString = $true }
+            [void]$builder.Append($ch)
+          }
+
+          return $builder.ToString()
+        }
+
+        function ConvertTo-CanonicalJson {
+          param([Parameter(Mandatory)][string]$Text)
+
+          if ([string]::IsNullOrWhiteSpace($Text)) { throw 'PR data JSON is empty.' }
+
+          $candidate = Get-JsonCandidate -Text $Text
+          try {
+            $value = ConvertFrom-Json -InputObject $candidate -NoEnumerate -ErrorAction Stop
+          } catch {
+            $repaired = Repair-InvalidJsonStringEscapes -Text $candidate
+            try {
+              $value = ConvertFrom-Json -InputObject $repaired -NoEnumerate -ErrorAction Stop
+            } catch {
+              throw "PR data was not valid JSON after extracting and repairing common backslash escapes. $($_.Exception.Message)"
+            }
+          }
+
+          ConvertTo-Json -InputObject $value -Compress -Depth 20
+        }
+
+        ConvertTo-CanonicalJson -Text $args[0]
+    arguments:
+      - "{{param.prData}}"
+    timeoutSeconds: 120
 
   - name: mark-in-review
     type: Prompt
@@ -97,15 +224,12 @@ steps:
     mcps: [zakira]
 
   - name: open-review-session
-    type: Command
-    dependsOn: [mark-in-review]
-    command: pwsh
-    arguments:
-      - "-NoProfile"
-      - "-Command"
-      - |
+    type: Script
+    dependsOn: [mark-in-review, prepare-pr-data]
+    shell: pwsh
+    script: |
         $ErrorActionPreference = 'Stop'
-        $pr = $args[0] | ConvertFrom-Json
+        $pr = ConvertFrom-Json -InputObject $args[0] -NoEnumerate -ErrorAction Stop
         $prUrl = $pr.prUrl
         if (-not $prUrl) { $prUrl = $pr.url }
         if (-not $prUrl) { $prUrl = "https://dev.azure.com/{{vars.organization}}/{{vars.project}}/_git/{{vars.repository}}/pullrequest/$($pr.id)" }
@@ -113,25 +237,23 @@ steps:
         function Invoke-PowerReviewOpen {
           param([Parameter(Mandatory)][string]$PrUrl)
 
-          $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-          $startInfo.FileName = 'dnx'
-          foreach ($argument in @('--yes', '--add-source', 'https://api.nuget.org/v3/index.json', 'PowerReview', '--', 'open', '--pr-url', $PrUrl)) {
-            [void]$startInfo.ArgumentList.Add($argument)
+          $stdoutPath = [System.IO.Path]::GetTempFileName()
+          $stderrPath = [System.IO.Path]::GetTempFileName()
+          $previousNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          try {
+            & dnx --yes --add-source https://api.nuget.org/v3/index.json PowerReview -- open --pr-url $PrUrl 1> $stdoutPath 2> $stderrPath
+            $exitCode = $LASTEXITCODE
+            $stdout = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
+            $stderr = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+          } finally {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeCommandPreference
+            Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
           }
-          $startInfo.RedirectStandardOutput = $true
-          $startInfo.RedirectStandardError = $true
-          $startInfo.UseShellExecute = $false
-          $startInfo.CreateNoWindow = $true
 
-          $process = [System.Diagnostics.Process]::new()
-          $process.StartInfo = $startInfo
-          [void]$process.Start()
-          $stdout = $process.StandardOutput.ReadToEnd()
-          $stderr = $process.StandardError.ReadToEnd()
-          $process.WaitForExit()
-
-          if ($process.ExitCode -ne 0) {
-            throw "PowerReview open failed with exit code $($process.ExitCode) for '$PrUrl'. Stdout: $stdout Stderr: $stderr"
+          if ($exitCode -ne 0) {
+            throw "PowerReview open failed with exit code $exitCode for '$PrUrl'. Stdout: $stdout Stderr: $stderr"
           }
 
           $jsonText = if ($null -eq $stdout) { '' } else { $stdout.Trim() }
@@ -140,7 +262,7 @@ steps:
           }
 
           try {
-            $result = $jsonText | ConvertFrom-Json -ErrorAction Stop
+            $result = ConvertFrom-Json -InputObject $jsonText -NoEnumerate -ErrorAction Stop
           } catch {
             throw "PowerReview open stdout was not valid JSON for '$PrUrl'. Stdout: $jsonText Stderr: $stderr"
           }
@@ -169,6 +291,7 @@ steps:
           reviewerAgents = '{{vars.reviewerAgentNames}}'
           status = 'opened-or-refreshed'
         } | ConvertTo-Json -Compress -Depth 20
+    arguments:
       - "{{prepare-pr-data.output}}"
     timeoutSeconds: 1200
 

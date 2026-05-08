@@ -16,6 +16,7 @@ This is the complete property-level reference for every field, step type, trigge
   - [Transform Step](#transform-step)
   - [Command Step](#command-step)
   - [Script Step](#script-step)
+  - [Orchestration Step](#orchestration-step)
 - [Loop Configuration](#loop-configuration)
 - [Subagents](#subagents)
 - [Retry Policy](#retry-policy)
@@ -61,6 +62,7 @@ steps:
 | `trigger` | `TriggerConfig` | No | Manual | How the orchestration is triggered. Defaults to manual (on-demand). |
 | `mcps` | `Mcp[]` | No | `[]` | Inline MCP (Model Context Protocol) server definitions available to steps. |
 | `defaultModel` | `string` | No | `null` | Default model for all Prompt steps. Steps can override. |
+| `agentPool` | `AgentPoolConfig` | No | Provider defaults | Provider worker-pool capacity request for prompt execution. Providers map instances to their own resources, such as Copilot CLI clients. |
 | `defaultSystemPromptMode` | `string` | No | `null` | Default system prompt mode for all Prompt steps. Values: `"append"`, `"replace"`, or `"customize"`. |
 | `defaultRetryPolicy` | `RetryPolicy` | No | `null` | Default retry policy applied to all steps unless overridden at the step level. |
 | `defaultStepTimeoutSeconds` | `int` | No | `null` | Default per-step timeout in seconds. Individual steps can override this. |
@@ -264,9 +266,9 @@ These properties are shared by **all** step types.
 | Property | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `name` | `string` | **Yes** | -- | Unique name within the orchestration. Used to reference this step in `dependsOn` and template expressions. |
-| `type` | `string` | **Yes** | -- | Step type. One of: `"Prompt"`, `"Http"`, `"Transform"`, `"Command"`, `"Script"` (case-insensitive). |
+| `type` | `string` | **Yes** | -- | Step type. One of: `"Prompt"`, `"Http"`, `"Transform"`, `"Command"`, `"Script"`, `"Orchestration"` (case-insensitive). |
 | `dependsOn` | `string[]` | No | `[]` | Names of steps that must complete before this step runs. Defines the DAG edges. |
-| `parameters` | `string[]` | No | `[]` | Parameter names this step expects. Values are provided at runtime and accessed via `{{param.name}}`. |
+| `parameters` | `string[]` or `object` | No | `[]` | For most step types, parameter names this step expects. For Orchestration steps, child parameter values keyed by child input name. |
 | `enabled` | `bool` | No | `true` | When `false`, the step is skipped during execution. |
 | `timeoutSeconds` | `int` | No | `null` | Per-step timeout in seconds. Falls back to `defaultStepTimeoutSeconds` if not set. Set to `0` to explicitly disable timeout. |
 | `retry` | `RetryPolicy` | No | `null` | Per-step retry policy. Overrides `defaultRetryPolicy`. |
@@ -431,7 +433,9 @@ Performs pure string interpolation with no LLM call and no external requests.
 
 **Type value:** `"Command"`
 
-Executes a shell command as a child process and captures stdout.
+Executes a direct executable as a child process and captures stdout. Use this for commands such as `dotnet`, `git`, `dnx`, or `npx`.
+
+Do not use `Command` for shell snippets or wrappers such as `pwsh -Command`, `powershell -Command`, `bash -c`, or `sh -c`. Use a `Script` step instead.
 
 | Property | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -448,7 +452,7 @@ Executes a shell command as a child process and captures stdout.
 
 **Type value:** `"Script"`
 
-Executes an inline or file-based script via a shell interpreter. The script's stdout is captured as output.
+Executes an inline or file-based script via a shell interpreter. The script's stdout is captured as output. Use this for shell snippets, pipelines, multi-line scripts, quoting-sensitive values, JSON manipulation, and anything that would otherwise be passed to `pwsh -Command` or `bash -c`.
 
 | Property | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -462,6 +466,26 @@ Executes an inline or file-based script via a shell interpreter. The script's st
 | `stdin` | `string` | No | `null` | Content to pipe to the process's standard input. |
 
 > **\*Mutual exclusion:** Exactly one of `script` or `scriptFile` is required.
+
+Pass values into scripts with `arguments` or `stdin` instead of interpolating large or heavily quoted values into the script body. In PowerShell, `arguments` are available as `$args[0]`, `$args[1]`, and so on.
+
+---
+
+### Orchestration Step
+
+**Type value:** `"Orchestration"`
+
+Invokes another registered orchestration. Use this when a parent flow should delegate to a reusable child orchestration.
+
+| Property | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `orchestration` | `string` | **Yes** | -- | Registered child orchestration name or ID. Supports template expressions. |
+| `parameters` | `object` | No | `{}` | Child orchestration parameters. Values support template expressions and are passed as strings at runtime. |
+| `mode` | `string` | No | `sync` | `sync` waits for child completion; `async` dispatches and continues. |
+| `inputHandlerPrompt` | `string` | No | `null` | Optional LLM prompt to transform child parameters before launch. Must return a JSON object mapping parameter names to string values. |
+| `inputHandlerModel` | `string` | No | `null` | Model to use for the input handler. Defaults to the orchestration default model. |
+
+If an Orchestration step input handler returns invalid JSON or an empty object, runtime falls back to the original parameters. Use Script steps for deterministic validation or canonicalization when malformed input must fail or be repaired before child launch.
 
 ---
 
@@ -611,17 +635,21 @@ Template expressions use `{{expression}}` syntax and are supported in prompts, U
 | `{{orchestration.runId}}` | The current execution's unique run ID. |
 | `{{orchestration.startedAt}}` | Timestamp when the current run started. |
 | `{{orchestration.tempDir}}` | Temp directory for this run. |
+| `{{orchestration.sourcePath}}` | Absolute path to the orchestration source file, when parsed from disk. For managed copies, this points to the original source file. |
+| `{{orchestration.sourceDirectory}}` | Absolute directory containing the orchestration source file. Use this to build orchestration-relative runtime file paths. |
 | `{{step.name}}` | The current step's name. |
 | `{{step.type}}` | The current step's type. |
 | `{{server.url}}` | Orchestra server URL. |
 | `{{workingDirectory}}` | The working directory context. |
+
+Runtime file-writing steps should receive absolute paths. Build paths relative to the orchestration file with `{{orchestration.sourceDirectory}}/relative/path` rather than relying on the process working directory.
 
 ---
 
 ## Enums Reference
 
 ### Step Types
-`Prompt`, `Http`, `Transform`, `Command`, `Script` (case-insensitive)
+`Prompt`, `Http`, `Transform`, `Command`, `Script`, `Orchestration` (case-insensitive)
 
 ### System Prompt Mode
 `Append` (adds to SDK built-in prompts), `Replace` (removes SDK built-in prompts), `Customize` (selectively override individual sections)

@@ -20,7 +20,7 @@ tags: ["ephermal", "system"]
 defaultModel: gpt-5.4
 
 variables:
-  ephermalDir: "../Ephermal"
+  ephermalDir: "{{orchestration.sourceDirectory}}/../Ephermal"
 
 inputs:
   retentionDays:

@@ -18,12 +18,13 @@ mcps:
 
 steps:
   - name: load-watchlist
-    type: Command
-    command: pwsh
+    type: Script
+    shell: pwsh
+    script: |
+      $ErrorActionPreference = 'Stop'
+      Get-Content -LiteralPath $args[0] -Raw
     arguments:
-      - "-NoProfile"
-      - "-Command"
-      - "Get-Content -Raw '{{vars.watchlistPath}}'"
+      - "{{vars.watchlistPath}}"
     timeoutSeconds: 30
 
   - name: check-availability

@@ -1,6 +1,6 @@
 ---
 name: orchestration-authoring
-description: Creates and validates Orchestra orchestration files (JSON/YAML) that define DAGs of steps (Prompt, Command, Script, Http, Transform) with triggers, hooks, MCPs, subagents, loops, typed inputs, and template expressions. Use when authoring new orchestrations, generating orchestration files from descriptions, reviewing existing orchestrations for correctness, or debugging orchestration issues.
+description: Creates and validates Orchestra orchestration files (JSON/YAML) that define DAGs of steps (Prompt, Command, Script, Http, Transform, Orchestration) with triggers, hooks, MCPs, subagents, loops, typed inputs, and template expressions. Use when authoring new orchestrations, generating orchestration files from descriptions, reviewing existing orchestrations for correctness, or debugging orchestration issues.
 ---
 
 # Orchestra Orchestration Authoring Reference
@@ -49,6 +49,7 @@ YAML modelines work in VS Code (Red Hat YAML extension), JetBrains IDEs, and any
 | `trigger` | TriggerConfig | No | Manual | How the orchestration is triggered |
 | `mcps` | Mcp[] | No | [] | Inline MCP server definitions |
 | `defaultModel` | string | No | null | Default model for all Prompt steps. Steps can override. |
+| `agentPool` | object | No | provider defaults | Provider worker-pool capacity request for prompt execution |
 | `defaultSystemPromptMode` | string | No | null | `"append"`, `"replace"`, or `"customize"` for all Prompt steps |
 | `defaultRetryPolicy` | RetryPolicy | No | null | Default retry for all steps |
 | `defaultStepTimeoutSeconds` | int | No | null | Default per-step timeout |
@@ -163,7 +164,7 @@ Steps form a DAG. Steps with no `dependsOn` run first (in parallel). Downstream 
 | `name` | string | Yes | -- |
 | `type` | string | Yes | -- |
 | `dependsOn` | string[] | No | [] |
-| `parameters` | string[] | No | [] |
+| `parameters` | string[] or object | No | [] |
 | `enabled` | bool | No | true |
 | `timeoutSeconds` | int | No | null |
 | `retry` | RetryPolicy | No | null |
@@ -278,7 +279,9 @@ Pure string interpolation (no LLM, no I/O).
 
 ### Command Step (type: "Command")
 
-Executes a shell command, captures stdout.
+Executes a direct executable as a child process, captures stdout. Use this for commands such as `dotnet`, `git`, `dnx`, or `npx`.
+
+Do not use `Command` for shell snippets or wrappers such as `pwsh -Command`, `powershell -Command`, `bash -c`, or `sh -c`. Use a `Script` step instead so quoting, pipes, multiline logic, and JSON values are handled by the script file invocation.
 
 | Property | Type | Required | Default |
 |---|---|---|---|
@@ -291,7 +294,7 @@ Executes a shell command, captures stdout.
 
 ### Script Step (type: "Script")
 
-Executes an inline or file-based script via a shell interpreter (e.g., `pwsh`, `bash`, `python`, `node`). Captures stdout. Designed for multi-line scripts -- use YAML `|` blocks for best readability.
+Executes an inline or file-based script via a shell interpreter (e.g., `pwsh`, `bash`, `python`, `node`). Captures stdout. Use this for shell snippets, pipelines, multi-line scripts, quoting-sensitive values, JSON manipulation, and anything that would otherwise be passed to `pwsh -Command` or `bash -c`. Use YAML `|` blocks for best readability.
 
 | Property | Type | Required | Default |
 |---|---|---|---|
@@ -305,6 +308,28 @@ Executes an inline or file-based script via a shell interpreter (e.g., `pwsh`, `
 | `stdin` | string | No | null |
 
 *Mutual exclusion: use `script` OR `scriptFile`, not both. `scriptFile` paths resolve relative to the orchestration file's directory.
+
+Pass values into scripts with `arguments` or `stdin` instead of interpolating large or heavily quoted values into the script body. In PowerShell, `arguments` are available as `$args[0]`, `$args[1]`, and so on.
+
+For file paths that should be relative to the orchestration file, anchor them explicitly with `{{orchestration.sourceDirectory}}`. Do not pass bare relative paths to runtime file-writing code, because process working directories can differ between hosts.
+
+### Orchestration Step (type: "Orchestration")
+
+Invokes another registered orchestration. Use this when a flow should delegate to a reusable child orchestration instead of duplicating its steps.
+
+| Property | Type | Required | Default |
+|---|---|---|---|
+| `orchestration` | string | Yes | -- |
+| `parameters` | object | No | {} |
+| `mode` | string | No | `sync` |
+| `inputHandlerPrompt` | string | No | null |
+| `inputHandlerModel` | string | No | from `defaultModel` |
+
+`mode` is `sync` or `async`. In `sync` mode, the parent waits for the child to finish and uses the child's final output as this step's output. In `async` mode, the parent continues after dispatch.
+
+`parameters` maps child input names to values. Values support template expressions and are passed as strings at runtime.
+
+`inputHandlerPrompt` can reshape child parameters before launch. It must return a JSON object mapping parameter names to string values. If handler parsing fails, runtime falls back to the original parameters, so use Script validation for hard guarantees.
 
 ## Loop Configuration (Checker Pattern)
 
@@ -518,7 +543,7 @@ Pre-process dependency outputs or post-process LLM output.
 ```
 
 ### 6. Multi-Step Pipeline (all 5 step types)
-Command -> Script -> Prompt -> Transform -> Http
+Command -> Script -> Prompt -> Transform -> Http -> Orchestration
 ```yaml
 defaultModel: claude-opus-4.6
 steps:
@@ -662,12 +687,14 @@ Orchestrations can be registered in Orchestra via:
 10. **`dependsOn` references step names**, not types or indices.
 11. **`mcps` on steps is an array of strings** (MCP names), not MCP definition objects.
 12. **Script steps require `shell`**. It has no default -- always specify it (e.g., `"pwsh"`, `"bash"`).
-13. **`systemPromptSections` requires `systemPromptMode: "customize"`**. Section overrides are ignored with `append` or `replace`.
-14. **Image attachments require a vision-capable model** (e.g., `claude-opus-4.6`, `gpt-4o`). Non-vision models will not understand the images.
-15. **`infiniteSessions` thresholds are ratios (0.0-1.0)**, not token counts. `0.80` means 80% of context used.
-16. **`hooks` is a top-level array**, not a step-level property.
-17. **Hook actions require exactly one of `script` or `scriptFile`.** Do not specify both.
-18. **Hook `failurePolicy` only supports `warn` or `ignore`** in v1.
+13. **Do NOT use `Command` with `pwsh -Command`, `powershell -Command`, or `bash -c` for script logic.** Use `type: Script`, `shell: pwsh`, and `script: |` instead.
+14. **Do NOT rely on the host process working directory for runtime file paths.** Use `{{orchestration.sourceDirectory}}` to build absolute paths relative to the orchestration file.
+15. **`systemPromptSections` requires `systemPromptMode: "customize"`**. Section overrides are ignored with `append` or `replace`.
+16. **Image attachments require a vision-capable model** (e.g., `claude-opus-4.6`, `gpt-4o`). Non-vision models will not understand the images.
+17. **`infiniteSessions` thresholds are ratios (0.0-1.0)**, not token counts. `0.80` means 80% of context used.
+18. **`hooks` is a top-level array**, not a step-level property.
+19. **Hook actions require exactly one of `script` or `scriptFile`.** Do not specify both.
+20. **Hook `failurePolicy` only supports `warn` or `ignore`** in v1.
 
 ## Naming Conventions
 

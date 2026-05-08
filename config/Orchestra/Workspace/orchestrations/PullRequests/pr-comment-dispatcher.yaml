@@ -70,12 +70,9 @@ mcps:
 
 steps:
   - name: normalize-comment-request
-    type: Command
-    command: pwsh
-    arguments:
-      - "-NoProfile"
-      - "-Command"
-      - |
+    type: Script
+    shell: pwsh
+    script: |
         $ErrorActionPreference = 'Stop'
 
         $prUrlInput = $args[0]
@@ -84,6 +81,120 @@ steps:
         $forceProcessRaw = $args[3]
         $threadIdsRaw = $args[4]
 
+        function Get-JsonCandidate {
+          param([Parameter(Mandatory)][string]$Text)
+
+          $trimmed = $Text.Trim()
+          if ($trimmed.StartsWith('```')) {
+            $lines = @($trimmed -split "`r?`n")
+            if ($lines.Count -gt 1) {
+              $trimmed = ($lines[1..($lines.Count - 1)] -join "`n").Trim()
+              if ($trimmed.EndsWith('```')) {
+                $trimmed = $trimmed.Substring(0, $trimmed.Length - 3).Trim()
+              }
+            }
+          }
+
+          $start = -1
+          for ($i = 0; $i -lt $trimmed.Length; $i++) {
+            if ($trimmed[$i] -eq '{' -or $trimmed[$i] -eq '[') { $start = $i; break }
+          }
+          if ($start -lt 0) { throw 'No JSON object or array was found in PR data.' }
+
+          $stack = [System.Collections.Generic.List[char]]::new()
+          $inString = $false
+          for ($i = $start; $i -lt $trimmed.Length; $i++) {
+            $ch = $trimmed[$i]
+            if ($inString) {
+              if ($ch -eq '\') {
+                if ($i + 1 -lt $trimmed.Length) { $i++ }
+                continue
+              }
+              if ($ch -eq '"') { $inString = $false }
+              continue
+            }
+
+            if ($ch -eq '"') { $inString = $true; continue }
+            if ($ch -eq '{') { $stack.Add([char]'}'); continue }
+            if ($ch -eq '[') { $stack.Add([char]']'); continue }
+            if ($ch -eq '}' -or $ch -eq ']') {
+              if ($stack.Count -eq 0) { continue }
+              $expected = $stack[$stack.Count - 1]
+              if ($ch -ne $expected) { throw "Mismatched JSON delimiter. Expected '$expected' but found '$ch'." }
+              $stack.RemoveAt($stack.Count - 1)
+              if ($stack.Count -eq 0) {
+                return $trimmed.Substring($start, $i - $start + 1).Trim()
+              }
+            }
+          }
+
+          throw 'JSON object or array was not complete.'
+        }
+
+        function Repair-InvalidJsonStringEscapes {
+          param([Parameter(Mandatory)][string]$Text)
+
+          $builder = [System.Text.StringBuilder]::new()
+          $inString = $false
+          for ($i = 0; $i -lt $Text.Length; $i++) {
+            $ch = $Text[$i]
+            if ($inString) {
+              if ($ch -eq '\') {
+                if ($i + 1 -ge $Text.Length) {
+                  [void]$builder.Append('\\')
+                  continue
+                }
+
+                $next = $Text[$i + 1]
+                if ($next -match '["\\/bfnrt]') {
+                  [void]$builder.Append($ch)
+                  [void]$builder.Append($next)
+                  $i++
+                  continue
+                }
+
+                if ($next -eq 'u') {
+                  $hasHex = $i + 5 -lt $Text.Length
+                  if ($hasHex) {
+                    $hex = $Text.Substring($i + 2, 4)
+                    if ($hex -match '^[0-9A-Fa-f]{4}$') {
+                      [void]$builder.Append($ch)
+                      [void]$builder.Append('u')
+                      [void]$builder.Append($hex)
+                      $i += 5
+                      continue
+                    }
+                  }
+                }
+
+                [void]$builder.Append('\\')
+                continue
+              }
+
+              if ($ch -eq '"') { $inString = $false }
+              [void]$builder.Append($ch)
+              continue
+            }
+
+            if ($ch -eq '"') { $inString = $true }
+            [void]$builder.Append($ch)
+          }
+
+          return $builder.ToString()
+        }
+
+        function ConvertFrom-CanonicalJson {
+          param([Parameter(Mandatory)][string]$Text)
+
+          $candidate = Get-JsonCandidate -Text $Text
+          try {
+            return ConvertFrom-Json -InputObject $candidate -NoEnumerate -ErrorAction Stop
+          } catch {
+            $repaired = Repair-InvalidJsonStringEscapes -Text $candidate
+            return ConvertFrom-Json -InputObject $repaired -NoEnumerate -ErrorAction Stop
+          }
+        }
+
         $forceProcess = $false
         if (-not [string]::IsNullOrWhiteSpace($forceProcessRaw)) {
           $forceProcess = $forceProcessRaw -match '^(?i:true|1|yes)$'
@@ -91,13 +202,13 @@ steps:
 
         $pr = $null
         if (-not [string]::IsNullOrWhiteSpace($prDataInput)) {
-          $pr = $prDataInput | ConvertFrom-Json
+          $pr = ConvertFrom-CanonicalJson -Text $prDataInput
         }
 
         $threadIds = @()
         if (-not [string]::IsNullOrWhiteSpace($threadIdsRaw)) {
           if ($threadIdsRaw.TrimStart().StartsWith('[')) {
-            $threadIds = @($threadIdsRaw | ConvertFrom-Json)
+            $threadIds = @(ConvertFrom-CanonicalJson -Text $threadIdsRaw)
           } else {
             $threadIds = @($threadIdsRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
           }
@@ -134,6 +245,7 @@ steps:
           dispatchMode = $mode
           forceProcess = $forceProcess
         } | ConvertTo-Json -Compress -Depth 20
+    arguments:
       - "{{param.prUrl}}"
       - "{{param.prData}}"
       - "{{param.mode}}"
@@ -142,38 +254,33 @@ steps:
     timeoutSeconds: 120
 
   - name: open-review-session
-    type: Command
+    type: Script
     dependsOn: [normalize-comment-request]
-    command: pwsh
-    arguments:
-      - "-NoProfile"
-      - "-Command"
-      - |
+    shell: pwsh
+    script: |
         $ErrorActionPreference = 'Stop'
-        $request = $args[0] | ConvertFrom-Json
+        $request = ConvertFrom-Json -InputObject $args[0] -NoEnumerate -ErrorAction Stop
 
         function Invoke-PowerReviewOpen {
           param([Parameter(Mandatory)][string]$PrUrl)
 
-          $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-          $startInfo.FileName = 'dnx'
-          foreach ($argument in @('--yes', '--add-source', 'https://api.nuget.org/v3/index.json', 'PowerReview', '--', 'open', '--pr-url', $PrUrl)) {
-            [void]$startInfo.ArgumentList.Add($argument)
+          $stdoutPath = [System.IO.Path]::GetTempFileName()
+          $stderrPath = [System.IO.Path]::GetTempFileName()
+          $previousNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          try {
+            & dnx --yes --add-source https://api.nuget.org/v3/index.json PowerReview -- open --pr-url $PrUrl 1> $stdoutPath 2> $stderrPath
+            $exitCode = $LASTEXITCODE
+            $stdout = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
+            $stderr = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+          } finally {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeCommandPreference
+            Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
           }
-          $startInfo.RedirectStandardOutput = $true
-          $startInfo.RedirectStandardError = $true
-          $startInfo.UseShellExecute = $false
-          $startInfo.CreateNoWindow = $true
 
-          $process = [System.Diagnostics.Process]::new()
-          $process.StartInfo = $startInfo
-          [void]$process.Start()
-          $stdout = $process.StandardOutput.ReadToEnd()
-          $stderr = $process.StandardError.ReadToEnd()
-          $process.WaitForExit()
-
-          if ($process.ExitCode -ne 0) {
-            throw "PowerReview open failed with exit code $($process.ExitCode) for '$PrUrl'. Stdout: $stdout Stderr: $stderr"
+          if ($exitCode -ne 0) {
+            throw "PowerReview open failed with exit code $exitCode for '$PrUrl'. Stdout: $stdout Stderr: $stderr"
           }
 
           $jsonText = if ($null -eq $stdout) { '' } else { $stdout.Trim() }
@@ -182,7 +289,7 @@ steps:
           }
 
           try {
-            $result = $jsonText | ConvertFrom-Json -ErrorAction Stop
+            $result = ConvertFrom-Json -InputObject $jsonText -NoEnumerate -ErrorAction Stop
           } catch {
             throw "PowerReview open stdout was not valid JSON for '$PrUrl'. Stdout: $jsonText Stderr: $stderr"
           }
@@ -199,6 +306,7 @@ steps:
         $request | Add-Member -NotePropertyName powerReviewOpenedAt -NotePropertyValue ([DateTimeOffset]::UtcNow.ToString('o')) -Force
         $request | Add-Member -NotePropertyName powerReviewOpenPrUrl -NotePropertyValue $openResult.prUrl -Force
         $request | ConvertTo-Json -Compress -Depth 20
+    arguments:
       - "{{normalize-comment-request.output}}"
     timeoutSeconds: 1200
 
@@ -274,29 +382,163 @@ steps:
       }
 
       If response is not needed, call orchestra_complete with a reason like 'PR 123 has no new unaddressed reviewer comments.'
+    outputHandlerPrompt: |
+      Extract the dispatch payload as one valid JSON object only.
+      If the content includes markdown fences, explanatory text, or logs, remove them.
+      Preserve all fields and nested arrays/objects.
+      Escape every literal backslash inside JSON string values.
+      Output only the JSON object, with no commentary.
     mcps: [zakira, powerreview]
     skillDirectories:
       - "{{vars.skillsDirPowerReview}}"
 
+  - name: normalize-comment-dispatch
+    type: Script
+    dependsOn: [prepare-comment-dispatch]
+    shell: pwsh
+    script: |
+        $ErrorActionPreference = 'Stop'
+
+        function Get-JsonCandidate {
+          param([Parameter(Mandatory)][string]$Text)
+
+          $trimmed = $Text.Trim()
+          if ($trimmed.StartsWith('```')) {
+            $lines = @($trimmed -split "`r?`n")
+            if ($lines.Count -gt 1) {
+              $trimmed = ($lines[1..($lines.Count - 1)] -join "`n").Trim()
+              if ($trimmed.EndsWith('```')) {
+                $trimmed = $trimmed.Substring(0, $trimmed.Length - 3).Trim()
+              }
+            }
+          }
+
+          $start = -1
+          for ($i = 0; $i -lt $trimmed.Length; $i++) {
+            if ($trimmed[$i] -eq '{' -or $trimmed[$i] -eq '[') { $start = $i; break }
+          }
+          if ($start -lt 0) { throw 'No JSON object or array was found in dispatch output.' }
+
+          $stack = [System.Collections.Generic.List[char]]::new()
+          $inString = $false
+          for ($i = $start; $i -lt $trimmed.Length; $i++) {
+            $ch = $trimmed[$i]
+            if ($inString) {
+              if ($ch -eq '\') {
+                if ($i + 1 -lt $trimmed.Length) { $i++ }
+                continue
+              }
+              if ($ch -eq '"') { $inString = $false }
+              continue
+            }
+
+            if ($ch -eq '"') { $inString = $true; continue }
+            if ($ch -eq '{') { $stack.Add([char]'}'); continue }
+            if ($ch -eq '[') { $stack.Add([char]']'); continue }
+            if ($ch -eq '}' -or $ch -eq ']') {
+              if ($stack.Count -eq 0) { continue }
+              $expected = $stack[$stack.Count - 1]
+              if ($ch -ne $expected) { throw "Mismatched JSON delimiter. Expected '$expected' but found '$ch'." }
+              $stack.RemoveAt($stack.Count - 1)
+              if ($stack.Count -eq 0) {
+                return $trimmed.Substring($start, $i - $start + 1).Trim()
+              }
+            }
+          }
+
+          throw 'JSON object or array was not complete.'
+        }
+
+        function Repair-InvalidJsonStringEscapes {
+          param([Parameter(Mandatory)][string]$Text)
+
+          $builder = [System.Text.StringBuilder]::new()
+          $inString = $false
+          for ($i = 0; $i -lt $Text.Length; $i++) {
+            $ch = $Text[$i]
+            if ($inString) {
+              if ($ch -eq '\') {
+                if ($i + 1 -ge $Text.Length) {
+                  [void]$builder.Append('\\')
+                  continue
+                }
+
+                $next = $Text[$i + 1]
+                if ($next -match '["\\/bfnrt]') {
+                  [void]$builder.Append($ch)
+                  [void]$builder.Append($next)
+                  $i++
+                  continue
+                }
+
+                if ($next -eq 'u') {
+                  $hasHex = $i + 5 -lt $Text.Length
+                  if ($hasHex) {
+                    $hex = $Text.Substring($i + 2, 4)
+                    if ($hex -match '^[0-9A-Fa-f]{4}$') {
+                      [void]$builder.Append($ch)
+                      [void]$builder.Append('u')
+                      [void]$builder.Append($hex)
+                      $i += 5
+                      continue
+                    }
+                  }
+                }
+
+                [void]$builder.Append('\\')
+                continue
+              }
+
+              if ($ch -eq '"') { $inString = $false }
+              [void]$builder.Append($ch)
+              continue
+            }
+
+            if ($ch -eq '"') { $inString = $true }
+            [void]$builder.Append($ch)
+          }
+
+          return $builder.ToString()
+        }
+
+        $candidate = Get-JsonCandidate -Text $args[0]
+        try {
+          $value = ConvertFrom-Json -InputObject $candidate -NoEnumerate -ErrorAction Stop
+        } catch {
+          $repaired = Repair-InvalidJsonStringEscapes -Text $candidate
+          $value = ConvertFrom-Json -InputObject $repaired -NoEnumerate -ErrorAction Stop
+        }
+
+        ConvertTo-Json -InputObject $value -Compress -Depth 20
+    arguments:
+      - "{{prepare-comment-dispatch.output}}"
+    timeoutSeconds: 120
+
   - name: respond-to-comments
     type: Orchestration
-    dependsOn: [prepare-comment-dispatch]
+    dependsOn: [normalize-comment-dispatch]
     orchestration: pr-comment-responder
     parameters:
-      prData: "{{prepare-comment-dispatch.output}}"
+      prData: "{{normalize-comment-dispatch.output}}"
+    inputHandlerPrompt: |
+      Return ONLY a valid JSON object mapping parameter names to string values.
+      Preserve the parameter name `prData`.
+      The `prData` value must be a single canonical JSON object serialized as a string.
+      If the value contains extra prose or markdown, extract the JSON object.
+      Escape every literal backslash inside JSON string values so the `prData` string can be parsed by ConvertFrom-Json.
     mode: sync
     timeoutSeconds: 3600
 
   - name: generate-summary
     type: Prompt
-    dependsOn: [respond-to-comments, prepare-comment-dispatch]
+    dependsOn: [respond-to-comments, normalize-comment-dispatch]
     systemPrompt: |
       You are a reporting assistant. Produce a clear, concise markdown summary of this PR comment-response dispatch run.
     userPrompt: |
       Create a final markdown summary of this PR comment-response dispatch.
 
       Dispatch input sent to pr-comment-responder:
-      {{prepare-comment-dispatch.output}}
+      {{normalize-comment-dispatch.output}}
 
       pr-comment-responder output:
       {{respond-to-comments.output}}

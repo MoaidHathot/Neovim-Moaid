@@ -44,12 +44,18 @@ steps:
       - schema
 
   - name: fetch-template
-    type: Command
-    command: pwsh
+    type: Script
+    shell: pwsh
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $template = $args[0]
+      if (-not [string]::IsNullOrWhiteSpace($template)) {
+        & dnx ActionView.Cli --yes -- template show $template
+      } else {
+        Write-Output 'NO_TEMPLATE'
+      }
     arguments:
-      - "-NoProfile"
-      - "-Command"
-      - "if ('{{param.template}}' -and '{{param.template}}' -ne '') { dnx ActionView.Cli --yes -- template show '{{param.template}}' } else { Write-Output 'NO_TEMPLATE' }"
+      - "{{param.template}}"
 
   - name: prepare-entry
     type: Prompt

@@ -20,6 +20,11 @@ defaultRetryPolicy:
 defaultStepTimeoutSeconds: 900
 timeoutSeconds: 7200
 
+mcps:
+  - name: orchestra
+    type: remote
+    endpoint: "{{server.url}}/mcp/data"
+
 steps:
   - name: fetch-assigned-prs
     type: Prompt
@@ -30,7 +35,7 @@ steps:
 
       Return ONLY a JSON array. If no PRs found, return [].
     outputHandlerPrompt: |
-      Ensure the output is a valid JSON array. Strip any markdown fences. If empty, return [].
+      Ensure the output is a valid JSON array. Strip any markdown fences. If empty, return []. Escape every literal backslash inside JSON string values.
     mcps: [azdo]
     timeoutSeconds: 600
     retry:
@@ -64,7 +69,7 @@ steps:
 
       For each PR object in the array:
       1. Use invoke_orchestration to invoke 'pr-review-dispatcher' with mode 'sync' and timeoutSeconds 17000.
-      2. Pass parameters: prData = the serialized PR object, mode = 'auto', forceReview = 'false'.
+      2. Pass parameters: prData = the serialized PR object as valid JSON, mode = 'auto', forceReview = 'false'. The prData string must be parseable JSON; escape every literal backslash in string values (for example, reviewer names like `[TEAM FOUNDATION]\ZTS`).
       3. Record whether the dispatcher reviewed, skipped, failed, or completed with no action.
 
       After all dispatches complete, output a JSON summary:

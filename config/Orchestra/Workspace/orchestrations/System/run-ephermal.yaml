@@ -14,7 +14,7 @@ tags: ["meta", "ephermal", "system", "manual"]
 defaultModel: gpt-5.4
 
 variables:
-  ephermalDir: "../Ephermal"
+  ephermalDir: "{{orchestration.sourceDirectory}}/../Ephermal"
   # Deterministic, unique name for the ephermal orchestration. Used both as
   # the YAML `name:` field inside the generated file AND as the lookup key
   # for the subsequent Orchestration step.

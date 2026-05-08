@@ -11,6 +11,7 @@ Real-world examples demonstrating common orchestration patterns. All examples us
 - [Typed Inputs with Validation](#typed-inputs-with-validation)
 - [Lifecycle Hooks for Failure Triage](#lifecycle-hooks-for-failure-triage)
 - [Script Step with Inline PowerShell](#script-step-with-inline-powershell)
+- [Orchestration-Relative Runtime File Path](#orchestration-relative-runtime-file-path)
 - [Multi-Step DAG with All Step Types](#multi-step-dag-with-all-step-types)
 - [Loop/Checker Pattern](#loopchecker-pattern)
 - [Multi-Agent with Subagents](#multi-agent-with-subagents)
@@ -290,7 +291,7 @@ This example demonstrates: top-level `hooks`, `step.failure` subscriptions, `whe
 
 ## Script Step with Inline PowerShell
 
-Demonstrates the Script step type with inline scripts and YAML block scalars:
+Demonstrates the Script step type with inline scripts and YAML block scalars. Use this pattern instead of wrapping inline PowerShell in a `Command` step with `pwsh -Command`:
 
 ```yaml
 name: script-step-example
@@ -342,6 +343,37 @@ steps:
 
       ## Analysis
       {{analyze-info.output}}
+```
+
+---
+
+## Orchestration-Relative Runtime File Path
+
+Use `{{orchestration.sourceDirectory}}` when a runtime step writes files beside the orchestration file. This avoids accidentally resolving relative paths from the host process working directory.
+
+```yaml
+name: write-report-example
+description: Writes a report next to this orchestration.
+version: "1.0.0"
+
+variables:
+  reportPath: "{{orchestration.sourceDirectory}}/reports/{{orchestration.runId}}.md"
+
+steps:
+  - name: write-report
+    type: Script
+    shell: pwsh
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $path = $args[0]
+      $dir = [System.IO.Path]::GetDirectoryName($path)
+      if ($dir -and -not (Test-Path -LiteralPath $dir -PathType Container)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+      }
+      Set-Content -LiteralPath $path -Value '# Report' -Encoding utf8NoBOM
+      Write-Output $path
+    arguments:
+      - "{{vars.reportPath}}"
 ```
 
 ---
