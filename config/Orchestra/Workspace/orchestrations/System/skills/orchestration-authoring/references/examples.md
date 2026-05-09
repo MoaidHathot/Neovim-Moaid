@@ -16,6 +16,9 @@ Real-world examples demonstrating common orchestration patterns. All examples us
 - [Loop/Checker Pattern](#loopchecker-pattern)
 - [Multi-Agent with Subagents](#multi-agent-with-subagents)
 - [Webhook with Synchronous Response](#webhook-with-synchronous-response)
+- [Human-in-the-Loop: Declarative Approval Gate](#human-in-the-loop-declarative-approval-gate)
+- [Human-in-the-Loop: LLM-Decided Pause via Engine Tool](#human-in-the-loop-llm-decided-pause-via-engine-tool)
+- [Human-in-the-Loop: Notify on Pause via Hook](#human-in-the-loop-notify-on-pause-via-hook)
 - [Meta-Orchestration (Generates Orchestrations)](#meta-orchestration-generates-orchestrations)
 - [Advanced: Customize Mode, Image Attachments, Infinite Sessions](#advanced-customize-mode-image-attachments-infinite-sessions)
 
@@ -564,6 +567,132 @@ Processes webhook payloads with LLM-powered input normalization and returns resu
   }
 }
 ```
+
+---
+
+## Human-in-the-Loop: Declarative Approval Gate
+
+A deploy pipeline that builds, then pauses for a human reviewer, then announces the decision. The reviewer's response (`reply` or `choice`) becomes the Approval step's output and feeds the downstream `announce` step.
+
+```yaml
+# yaml-language-server: $schema=../schemas/orchestration.schema.json
+name: hitl-approval-deploy
+description: Deploy with a human approval gate.
+version: 1.0.0
+inputs:
+  service:
+    type: string
+    description: Service to deploy.
+    required: true
+  env:
+    type: string
+    description: Target environment.
+    enum: [staging, production]
+    required: true
+steps:
+  - name: build
+    type: Command
+    command: dotnet
+    arguments: [build, -c, Release]
+
+  - name: review-deploy
+    type: Approval
+    dependsOn: [build]
+    prompt: |
+      Approve deploy of {{param.service}} to {{param.env}}?
+
+      Build output:
+      {{build.output}}
+    choices: [approve, reject]
+    # No timeoutSeconds — wait indefinitely. By default the orchestration timeout
+    # clock is paused while awaiting (pauseTimeoutDuringWait: true), so a long
+    # human review does not consume the orchestration's timeout budget.
+
+  - name: announce
+    type: Transform
+    dependsOn: [review-deploy]
+    template: |
+      Decision: {{review-deploy.output}}
+      Service: {{param.service}}
+      Env:     {{param.env}}
+```
+
+Respond with the CLI:
+
+```bash
+orchestra pending
+orchestra respond hitl-approval-deploy <runId> review-deploy --choice approve --by alice
+```
+
+Or with a raw HTTP call:
+
+```http
+POST /api/orchestrations/hitl-approval-deploy/runs/<runId>/respond?step=review-deploy
+Content-Type: application/json
+
+{ "choice": "approve", "respondedBy": "alice" }
+```
+
+---
+
+## Human-in-the-Loop: LLM-Decided Pause via Engine Tool
+
+For "ask only when needed" pauses, opt the Prompt step into the `request_user_input` engine tool. The agent calls `orchestra_request_user_input` mid-conversation only when it genuinely needs a clarification; the user's reply is returned as the tool result so the agent can continue with the answer in hand.
+
+```yaml
+# yaml-language-server: $schema=../schemas/orchestration.schema.json
+name: hitl-engine-tool-clarify
+description: Article writer that clarifies with the user only when ambiguous.
+version: 1.0.0
+inputs:
+  topic:
+    type: string
+    required: true
+steps:
+  - name: writer
+    type: Prompt
+    systemPrompt: |
+      You write technical articles. Use orchestra_request_user_input when (and only
+      when) the topic is genuinely ambiguous and a clarifying decision from the
+      user would meaningfully improve the article. For unambiguous topics, just
+      write the article. Keep clarifying questions short and focused on a single
+      decision; do not chain multiple questions.
+    userPrompt: "Write a 200-word article about {{param.topic}}."
+    model: claude-opus-4.6
+    enableTools: [request_user_input]
+```
+
+Differences from the declarative `Approval` step:
+
+- The agent decides whether to pause; existing pipelines without `enableTools` are unaffected.
+- During the wait the step status remains `Running` (the agent session is held in memory). It does **not** transition to `AwaitingInput`.
+- The engine-tool wait does **not** survive a host restart. If the host bounces during the wait, the run is marked `Failed` with cause `HostShutdownDuringWait`; the previous step's checkpoint stays intact for retry. For long-lived gates that must endure restarts, use the declarative `Approval` step.
+
+---
+
+## Human-in-the-Loop: Notify on Pause via Hook
+
+Both `Approval` steps and `orchestra_request_user_input` tool calls fire the `step.awaitingInput` hook event. Wire it to a single script hook to send a Slack/Teams/email notification when any run pauses for input.
+
+```yaml
+hooks:
+  - name: slack-on-pause
+    on: step.awaitingInput
+    payload:
+      detail: compact
+      includeRefs: true
+    action:
+      type: script
+      shell: pwsh
+      script: |
+        $payload = $input | Out-String | ConvertFrom-Json
+        $body = @{
+          text = "[$($payload.orchestration.name)] needs input on '$($payload.step.name)'"
+        } | ConvertTo-Json -Compress
+        Invoke-RestMethod -Uri $env:SLACK_WEBHOOK -Method Post -Body $body -ContentType 'application/json'
+```
+
+The hook payload's `step.name` and `orchestration.runId` are sufficient to construct the response URL: `{{server.url}}/api/orchestrations/{name}/runs/{runId}/respond?step={stepName}`. With `includeRefs: true`, the payload also includes `refs.api.run` for fetching more run data.
 
 ---
 

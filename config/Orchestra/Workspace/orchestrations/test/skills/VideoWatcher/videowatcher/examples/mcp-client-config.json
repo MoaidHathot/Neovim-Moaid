@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "videowatcher": {
+      "command": "videowatcher",
+      "args": ["mcp", "serve"],
+      "env": {
+        "VIDEOWATCHER_YTDLP_PATH": "C:/tools/yt-dlp/yt-dlp.exe",
+        "VIDEOWATCHER_FFMPEG_PATH": "C:/tools/ffmpeg/bin/ffmpeg.exe",
+        "VIDEOWATCHER_FFPROBE_PATH": "C:/tools/ffmpeg/bin/ffprobe.exe",
+        "VIDEOWATCHER_ONNX_MODEL_PATH": "C:/models/all-MiniLM-L6-v2/model.onnx",
+        "VIDEOWATCHER_ONNX_VOCAB_PATH": "C:/models/all-MiniLM-L6-v2/vocab.txt"
+      }
+    }
+  }
+}

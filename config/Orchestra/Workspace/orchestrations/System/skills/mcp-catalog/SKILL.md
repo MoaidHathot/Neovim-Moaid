@@ -49,6 +49,7 @@ If a name is not in this catalog, it is not registered — do not fabricate.
 | Microsoft Learn / docs.microsoft.com / Azure / .NET docs | `microsoft-learn` |
 | Browser automation, screenshots, scraping non-API web sources | `playwright` |
 | Introspecting Orchestra runs / launching child orchestrations from MCP | `orchestra` |
+| Listing or responding to human-in-the-loop pauses (Approval steps, `request_user_input`) | `orchestra` |
 | Local filesystem read/write (sandboxed to a working directory) | `filesystem` |
 
 ---
@@ -416,11 +417,24 @@ mcps:
 
 **Use for:** querying status of past orchestration runs; saving small
 files via the engine's helpers; working with Orchestra's own state
-from inside an orchestration.
+from inside an orchestration; **listing pending human-in-the-loop
+waits and submitting responses to them** (so an LLM agent can drive
+its own approval flows or feed answers back into a paused run).
 
 **Do not use for:** anything other than Orchestra introspection. The
 endpoint `{{server.url}}/mcp/data` is *not* a Microsoft Graph endpoint,
 *not* a generic data API, and *not* a passthrough to anything else.
+
+**Tools exposed (data plane):**
+
+| Tool | Purpose |
+|---|---|
+| `list_orchestrations` | Discover registered orchestrations and their inputs |
+| `invoke_orchestration` | Start a run (sync or async) |
+| `get_orchestration_status` | Poll a run's status / fetch results |
+| `cancel_orchestration` | Cancel a running execution |
+| `list_pending_inputs` | List runs awaiting human input (Approval steps and `orchestra_request_user_input` tool calls). Optionally filter by orchestration name. |
+| `respond_to_input` | Submit a `choice` and/or `reply` to unblock a waiting run. Validates against any declared `choices` and rejects responses for runs with no active wait (e.g., after host restart for engine-tool waits). |
 
 **Top-level definition:**
 
@@ -429,6 +443,20 @@ mcps:
   - name: orchestra
     type: remote
     endpoint: "{{server.url}}/mcp/data"
+```
+
+**Step-level reference for HITL flows:**
+
+```yaml
+steps:
+  - name: triage-pending-runs
+    type: Prompt
+    systemPrompt: |
+      You are the on-call orchestrator. Use list_pending_inputs to find runs
+      awaiting human input, decide whether each one can be auto-resolved,
+      and use respond_to_input to unblock the ones you can answer.
+    userPrompt: "Triage all pending orchestration approvals."
+    mcps: [orchestra]
 ```
 
 ---

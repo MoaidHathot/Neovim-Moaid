@@ -1,6 +1,6 @@
 ---
 name: orchestration-authoring
-description: Creates and validates Orchestra orchestration files (JSON/YAML) that define DAGs of steps (Prompt, Command, Script, Http, Transform, Orchestration) with triggers, hooks, MCPs, subagents, loops, typed inputs, and template expressions. Use when authoring new orchestrations, generating orchestration files from descriptions, reviewing existing orchestrations for correctness, or debugging orchestration issues.
+description: Creates and validates Orchestra orchestration files (JSON/YAML) that define DAGs of steps (Prompt, Command, Script, Http, Transform, Approval, Orchestration) with triggers, hooks, MCPs, subagents, loops, typed inputs, human-in-the-loop pauses, and template expressions. Use when authoring new orchestrations, generating orchestration files from descriptions, reviewing existing orchestrations for correctness, or debugging orchestration issues.
 ---
 
 # Orchestra Orchestration Authoring Reference
@@ -57,6 +57,8 @@ YAML modelines work in VS Code (Red Hat YAML extension), JetBrains IDEs, and any
 | `variables` | object | No | {} | Key-value pairs accessed via `{{vars.name}}` |
 | `tags` | string[] | No | [] | Categorization tags |
 | `hooks` | Hook[] | No | [] | Lifecycle hooks that run after step or orchestration outcomes |
+| `pauseTimeoutDuringWait` | bool | No | true | When true, the orchestration timeout clock pauses while a step is awaiting human input (Approval step or `orchestra_request_user_input`). Set to false for hard SLAs that include human response latency. |
+| `defaultEnableTools` | string[] | No | [] | Opt-in engine tool names enabled by default for every Prompt step that does not specify its own `enableTools`. Currently supports `"request_user_input"`. |
 | `metadata` | object | No | {} | Free-form metadata (any JSON shape: string, number, bool, array, nested object). Not inspected by the runtime; for authors and managers only. Use for datetime, owners, ticket links, environment, SLA, etc. |
 
 ## Typed Inputs (InputDefinition)
@@ -79,7 +81,7 @@ Hooks run after step or orchestration lifecycle events. They are top-level orche
 | Property | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `name` | string | No | null | Optional hook name for diagnostics and reporting |
-| `on` | string | Yes | -- | Event: `step.success`, `step.failure`, `step.after`, `orchestration.success`, `orchestration.failure`, or `orchestration.after` |
+| `on` | string | Yes | -- | Event: `step.success`, `step.failure`, `step.after`, `step.awaitingInput`, `orchestration.success`, `orchestration.failure`, or `orchestration.after` |
 | `when` | HookWhen | No | null | Optional filter to decide whether the hook should run |
 | `payload` | HookPayload | No | `{ detail: compact, includeRefs: false }` | Controls how much run/step data is included in the JSON payload |
 | `action` | HookAction | Yes | -- | What to execute when the hook fires |
@@ -193,6 +195,7 @@ Calls an LLM.
 | `loop` | LoopConfig | No | null |
 | `subagents` | Subagent[] | No | [] |
 | `skillDirectories` | string[] | No | [] |
+| `enableTools` | string[] | No | null | Opt-in engine tool names this Prompt step grants the agent access to. Currently supports `"request_user_input"` (the LLM-decided human-in-the-loop tool). Falls back to the orchestration's `defaultEnableTools` when null. |
 
 *Mutual exclusion: use `systemPrompt` OR `systemPromptFile`, not both. Same for `userPrompt`/`userPromptFile`, `inputHandlerPrompt`/`inputHandlerPromptFile`, `outputHandlerPrompt`/`outputHandlerPromptFile`.
 
@@ -331,6 +334,68 @@ Invokes another registered orchestration. Use this when a flow should delegate t
 
 `inputHandlerPrompt` can reshape child parameters before launch. It must return a JSON object mapping parameter names to string values. If handler parsing fails, runtime falls back to the original parameters, so use Script validation for hard guarantees.
 
+### Approval Step (type: "Approval")
+
+Pauses the orchestration and waits for human input. The step persists a pending input record, transitions to `AwaitingInput` status, fires the `step.awaitingInput` hook event, and blocks until a user responds via the host's HumanInput API (or via the CLI / Portal). The user's response (`reply` or `choice`, with `reply` winning) becomes the step's output content and can be referenced by downstream steps via `{{stepName.output}}`.
+
+Approval steps survive host restarts: the persisted record is preserved, and on resume the step re-attaches to the still-outstanding wait.
+
+| Property | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `prompt` | string | Yes | -- | Human-readable prompt presented to the user. Supports template expressions resolved at execution time. |
+| `choices` | string[] | No | [] | Allowed responses. When non-empty, the response endpoint validates that the supplied `choice` is one of these (case-insensitive). When empty, free-form replies are accepted. |
+| `timeoutSeconds` | int | No | null | Per-step timeout. When elapsed without a response, behavior is governed by `onTimeout`. When null, the wait runs indefinitely (subject to the orchestration timeout, which by default pauses during waits per `pauseTimeoutDuringWait`). |
+| `onTimeout` | string | No | `fail` | Behavior when `timeoutSeconds` fires. One of: `fail` (mark step Failed), `defaultResponse` (use `defaultResponse` as the answer), `cancel` (cancel the entire orchestration). |
+| `defaultResponse` | string | No | null | Required when `onTimeout: defaultResponse`. The fallback content used as the step's output. |
+
+Example:
+```yaml
+- name: review-deploy
+  type: Approval
+  dependsOn: [build]
+  prompt: "Approve deploy of {{param.service}} to {{param.env}}? Build: {{build.output}}"
+  choices: [approve, reject]
+```
+
+Respond via API or CLI:
+```bash
+orchestra pending
+orchestra respond <orchestration-name> <runId> review-deploy --choice approve --by alice
+```
+
+Or via raw HTTP:
+```http
+POST /api/orchestrations/<orchestration-name>/runs/<runId>/respond?step=review-deploy
+{ "choice": "approve", "respondedBy": "alice" }
+```
+
+### Engine-Tool HITL Variant: `orchestra_request_user_input`
+
+For LLM-decided "ask the human only when needed" pauses inside `Prompt` steps, opt the Prompt step into the `request_user_input` engine tool. The agent can then call `orchestra_request_user_input(prompt, choices?)` mid-conversation; the call blocks until the user responds, and the reply is returned as the tool result so the agent continues with the answer in hand.
+
+```yaml
+- name: writer
+  type: Prompt
+  systemPrompt: |
+    You write articles. Use orchestra_request_user_input ONLY when the topic is
+    genuinely ambiguous and a clarifying decision would meaningfully improve the
+    output. Otherwise, just write the article.
+  userPrompt: "Write an article about {{param.topic}}."
+  model: claude-opus-4.6
+  enableTools: [request_user_input]
+```
+
+Differences from the declarative `Approval` step:
+
+| Aspect | Approval step | `orchestra_request_user_input` |
+|---|---|---|
+| Decided by | Author (always pauses) | LLM (only if needed) |
+| Step status during wait | `AwaitingInput` (agent session torn down) | `Running` (agent session held in memory) |
+| Survives host restart | Yes (persistent record + checkpoint resume) | No — run is marked `Failed (HostShutdownDuringWait)`; retry from previous step's checkpoint |
+| Use case | Explicit deploy/compliance/destructive-op gates | Mid-task clarifications the LLM uses to keep working |
+
+Both paths emit the `step.awaitingInput` hook event with the same payload structure, both persist a `PendingInputRecord`, and both route through `POST /api/orchestrations/{name}/runs/{runId}/respond?step={stepName}`.
+
 ## Loop Configuration (Checker Pattern)
 
 A Prompt step with `loop` acts as a checker for iterative refinement.
@@ -460,6 +525,15 @@ Syntax: `{{expression}}` -- supported in prompts, URLs, headers, bodies, templat
 | `orchestra_read_file` | Read a previously saved file |
 | `orchestra_set_status` | Override step status: `success`, `failed`, or `no_action` (skips downstream) |
 | `orchestra_complete` | Halt entire orchestration immediately |
+
+### Opt-in Engine Tools (per-step or default)
+
+These tools must be explicitly enabled via `enableTools` on a Prompt step (or `defaultEnableTools` at the orchestration level). Existing pipelines see no behavior change.
+
+| Tool (opt-in name) | Tool ID exposed to LLM | Description |
+|---|---|---|
+| `request_user_input` | `orchestra_request_user_input` | Pause inside a Prompt step and ask the human a question. Blocks until the user responds via the HumanInput API; the reply (or constrained choice) is returned as the tool result so the agent can naturally continue with the answer. Does NOT survive host restarts (the agent session is volatile). For long-lived approval gates, use the declarative `Approval` step instead. |
+
 
 ## Common Patterns
 
@@ -664,6 +738,82 @@ Control context compaction thresholds per step.
     bufferExhaustionThreshold: 0.97
 ```
 
+### 14. Human-in-the-Loop Approval Gate (Declarative)
+A deploy that pauses for a human reviewer; the response feeds the next step.
+```yaml
+defaultModel: claude-opus-4.6
+inputs:
+  service: { type: string, required: true }
+  env: { type: string, enum: [staging, production], required: true }
+steps:
+  - name: build
+    type: Command
+    command: dotnet
+    arguments: [build]
+
+  - name: review-deploy
+    type: Approval
+    dependsOn: [build]
+    prompt: |
+      Approve deploy of {{param.service}} to {{param.env}}?
+
+      {{build.output}}
+    choices: [approve, reject]
+    # No timeoutSeconds — wait indefinitely. Orchestration timeout is paused
+    # while awaiting input by default (pauseTimeoutDuringWait: true).
+
+  - name: announce
+    type: Transform
+    dependsOn: [review-deploy]
+    template: "Decision: {{review-deploy.output}}"
+```
+
+### 15. LLM-Decided HITL (Engine Tool)
+The agent only pauses if it needs clarification. Existing pipelines without `enableTools` are unaffected.
+```yaml
+- name: writer
+  type: Prompt
+  systemPrompt: |
+    You write articles. Use orchestra_request_user_input ONLY when the topic
+    is genuinely ambiguous and a clarifying decision from the user would
+    meaningfully improve the output. Otherwise just write the article.
+  userPrompt: "Write a 200-word article about {{param.topic}}."
+  model: claude-opus-4.6
+  enableTools: [request_user_input]
+```
+
+### 16. Notify on HITL Pause via Hook
+Wire `step.awaitingInput` into a script hook that posts to Slack/Teams/email.
+```yaml
+hooks:
+  - name: slack-on-pause
+    on: step.awaitingInput
+    payload:
+      detail: compact
+      includeRefs: true
+    action:
+      type: script
+      shell: pwsh
+      script: |
+        $payload = $input | Out-String | ConvertFrom-Json
+        $body = @{
+          text = "[$($payload.orchestration.name)] needs input on '$($payload.step.name)'"
+        } | ConvertTo-Json
+        Invoke-RestMethod -Uri $env:SLACK_WEBHOOK -Method Post -Body $body -ContentType 'application/json'
+```
+
+### 17. Approval with Timeout Fallback
+Auto-acknowledge a low-priority alert if no one responds within 5 minutes.
+```yaml
+- name: triage
+  type: Approval
+  prompt: "Acknowledge incident {{param.incidentId}}? (auto-acknowledge in 5m)"
+  choices: [acknowledge, escalate]
+  timeoutSeconds: 300
+  onTimeout: defaultResponse
+  defaultResponse: acknowledge
+```
+
 ## Registering Orchestrations
 
 Orchestrations can be registered in Orchestra via:
@@ -695,6 +845,11 @@ Orchestrations can be registered in Orchestra via:
 18. **`hooks` is a top-level array**, not a step-level property.
 19. **Hook actions require exactly one of `script` or `scriptFile`.** Do not specify both.
 20. **Hook `failurePolicy` only supports `warn` or `ignore`** in v1.
+21. **Approval steps require `prompt`.** Without it, parsing fails.
+22. **`onTimeout: defaultResponse` requires a `defaultResponse` value.** Parsing fails otherwise.
+23. **`enableTools` only accepts opt-in tool names** (currently just `"request_user_input"`). Always-on tools (`orchestra_set_status`, `orchestra_complete`, file save/read) are not listed here.
+24. **`orchestra_request_user_input` does NOT survive host restarts.** Agent sessions are volatile. Use the declarative `Approval` step for long-lived gates that must endure restarts.
+25. **Approval and engine-tool waits both fire `step.awaitingInput`** — use a single hook to handle notifications for both paths.
 
 ## Naming Conventions
 

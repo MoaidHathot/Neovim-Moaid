@@ -17,6 +17,7 @@ This is the complete property-level reference for every field, step type, trigge
   - [Command Step](#command-step)
   - [Script Step](#script-step)
   - [Orchestration Step](#orchestration-step)
+  - [Approval Step](#approval-step)
 - [Loop Configuration](#loop-configuration)
 - [Subagents](#subagents)
 - [Retry Policy](#retry-policy)
@@ -70,6 +71,8 @@ steps:
 | `variables` | `object` | No | `{}` | Key-value pairs of user-defined variables. Values can contain template expressions. Accessed via `{{vars.name}}`. |
 | `tags` | `string[]` | No | `[]` | Tags for categorizing and filtering orchestrations. |
 | `hooks` | `Hook[]` | No | `[]` | Lifecycle hooks that run after step or orchestration outcomes. Hooks receive structured JSON payloads on stdin and can execute follow-up scripts. |
+| `pauseTimeoutDuringWait` | `bool` | No | `true` | When true, the orchestration timeout clock pauses while a step (Approval or `orchestra_request_user_input`) is waiting for human input. Set to `false` for hard SLAs that include human response latency. Implemented via the `ClockPauseTracker`: on `BeginWait` the orchestration timeout CTS is suspended, on `EndWait` it is re-armed with `(originalTimeout + totalWaitElapsed - alreadyElapsed)` so the wait is excluded from the budget. |
+| `defaultEnableTools` | `string[]` | No | `[]` | Opt-in engine tool names enabled by default for every Prompt step that does not specify its own `enableTools`. Currently supports `"request_user_input"`. Always-on tools (`orchestra_set_status`, `orchestra_complete`, file save/read) are unaffected. |
 | `metadata` | `object` | No | `{}` | Free-form metadata. Values may be any JSON type (string, number, boolean, array, nested object). Purely informational -- the runtime never inspects this dictionary. Use for authorship, datetime, ticket links, environment, SLA, or any other semi-structured data. |
 
 ---
@@ -171,7 +174,7 @@ Hooks are top-level orchestration configuration that run after step or orchestra
 | Property | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `name` | `string` | No | `null` | Optional hook name for diagnostics and reporting. |
-| `on` | `string` | **Yes** | -- | Hook event to subscribe to. One of: `"orchestration.success"`, `"orchestration.failure"`, `"orchestration.after"`, `"step.success"`, `"step.failure"`, `"step.after"`. |
+| `on` | `string` | **Yes** | -- | Hook event to subscribe to. One of: `"orchestration.success"`, `"orchestration.failure"`, `"orchestration.after"`, `"step.success"`, `"step.failure"`, `"step.after"`, `"step.awaitingInput"`. |
 | `when` | `HookWhen` | No | `null` | Optional filter deciding whether the hook should run. |
 | `payload` | `HookPayload` | No | schema defaults | Controls how much run and step data is included in the hook payload. |
 | `action` | `HookAction` | **Yes** | -- | Action to execute when the hook fires. |
@@ -266,7 +269,7 @@ These properties are shared by **all** step types.
 | Property | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `name` | `string` | **Yes** | -- | Unique name within the orchestration. Used to reference this step in `dependsOn` and template expressions. |
-| `type` | `string` | **Yes** | -- | Step type. One of: `"Prompt"`, `"Http"`, `"Transform"`, `"Command"`, `"Script"`, `"Orchestration"` (case-insensitive). |
+| `type` | `string` | **Yes** | -- | Step type. One of: `"Prompt"`, `"Http"`, `"Transform"`, `"Command"`, `"Script"`, `"Orchestration"`, `"Approval"` (case-insensitive). |
 | `dependsOn` | `string[]` | No | `[]` | Names of steps that must complete before this step runs. Defines the DAG edges. |
 | `parameters` | `string[]` or `object` | No | `[]` | For most step types, parameter names this step expects. For Orchestration steps, child parameter values keyed by child input name. |
 | `enabled` | `bool` | No | `true` | When `false`, the step is skipped during execution. |
@@ -301,6 +304,7 @@ Sends a prompt to an LLM and captures the response as output. Supports input/out
 | `loop` | `LoopConfig` | No | `null` | Loop/checker configuration for iterative refinement. |
 | `subagents` | `Subagent[]` | No | `[]` | Subagent definitions for multi-agent delegation. |
 | `skillDirectories` | `string[]` | No | `[]` | Directories containing `SKILL.md` files that provide additional context/instructions. |
+| `enableTools` | `string[]` | No | `null` | Opt-in engine tool names this Prompt step grants the agent access to. Currently supports `"request_user_input"` (the LLM-decided human-in-the-loop tool). Falls back to the orchestration's `defaultEnableTools` when null. Always-on tools (`orchestra_set_status`, `orchestra_complete`, file save/read) are unaffected. |
 
 > **\*Mutual exclusion rules:**
 > - Exactly one of `systemPrompt` or `systemPromptFile` is required.
@@ -489,6 +493,82 @@ If an Orchestration step input handler returns invalid JSON or an empty object, 
 
 ---
 
+### Approval Step
+
+**Type value:** `"Approval"`
+
+Pauses the orchestration and waits for human input. The step persists a `PendingInputRecord` to disk under `{DataPath}/pending/{orchestrationName}/{runId}/{stepName}.json`, transitions to `ExecutionStatus.AwaitingInput`, fires the `step.awaitingInput` hook event, and blocks until a user responds via the host's HumanInput API.
+
+The user's response (`reply` or `choice`, with `reply` winning when both are supplied) becomes the step's content via `{{stepName.output}}`. Approval steps survive host restarts: the persisted record is preserved across process bounces, and on resume the step re-attaches to the still-outstanding wait.
+
+| Property | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `prompt` | `string` | **Yes** | -- | Human-readable prompt presented to the user. Supports template expressions resolved at execution time (e.g., `{{param.x}}`, `{{vars.x}}`, `{{stepName.output}}`). |
+| `choices` | `string[]` | No | `[]` | Allowed responses. When non-empty, the response endpoint validates that the supplied `choice` is one of these (case-insensitive). When empty, free-form replies are accepted. |
+| `timeoutSeconds` | `int` | No | `null` | Per-step timeout. When elapsed without a response, behavior is governed by `onTimeout`. When null, the wait runs indefinitely (subject to the orchestration timeout, which by default pauses during waits per `pauseTimeoutDuringWait`). |
+| `onTimeout` | `string` | No | `"fail"` | Behavior when `timeoutSeconds` fires. One of: `"fail"` (mark step Failed with `ErrorCategory.Timeout`), `"defaultResponse"` (use `defaultResponse` as the answer and continue), `"cancel"` (cancel the entire orchestration). |
+| `defaultResponse` | `string` | No | `null` | Required when `onTimeout: "defaultResponse"`. The fallback content used as the step's output. |
+
+#### Responding to an Approval Step
+
+Three equivalent ways to submit a response:
+
+**1. CLI:**
+```bash
+orchestra pending                                              # list runs awaiting input
+orchestra respond <orchestration-name> <runId> <stepName> --choice approve [--reply "..."] [--by alice]
+```
+
+**2. REST:**
+```http
+POST /api/orchestrations/{orchestrationName}/runs/{runId}/respond?step={stepName}
+Content-Type: application/json
+
+{
+  "choice": "approve",            // optional; must match one of the declared choices when present
+  "reply": "ship it",             // optional free-form text; wins over choice for {{stepName.output}}
+  "respondedBy": "alice"          // optional, persisted to the run record
+}
+```
+
+**3. List endpoints:**
+```http
+GET  /api/runs/pending[?orchestration=<name>]
+GET  /api/orchestrations/{orchestrationName}/runs/{runId}/pending/{stepName}
+```
+
+#### Engine-Tool HITL Variant: `orchestra_request_user_input`
+
+For LLM-decided "ask the human only when needed" pauses inside `Prompt` steps, opt the Prompt step into the `request_user_input` engine tool. The tool blocks inside the agent's tool-call loop until the user responds; the reply is returned as the tool result so the agent continues its conversation with the answer in hand.
+
+```yaml
+- name: writer
+  type: Prompt
+  systemPrompt: |
+    You write articles. Use orchestra_request_user_input ONLY when the topic is
+    genuinely ambiguous and a clarifying decision would meaningfully improve
+    the output. Otherwise just write the article.
+  userPrompt: "Write an article about {{param.topic}}."
+  model: claude-opus-4.6
+  enableTools: [request_user_input]
+```
+
+Behavioral differences vs. the declarative `Approval` step:
+
+| Aspect | `Approval` step | `orchestra_request_user_input` |
+|---|---|---|
+| Decided by | Author (always pauses) | LLM (only if needed) |
+| Step status during wait | `AwaitingInput`; agent session torn down | `Running`; agent session held in memory |
+| Survives host restart | Yes (persistent record + checkpoint resume) | No — run is marked `Failed` with `CancellationCauseKind.HostShutdownDuringWait`; previous step's checkpoint stays intact for retry |
+| Use case | Explicit deploy/compliance/destructive-op gates | Mid-task clarifications the LLM uses to keep working |
+| Persisted record `kind` | `Approval` | `EngineTool` |
+
+Both paths share: the same `PendingInputRecord` shape, the same `step.awaitingInput` hook event, the same `POST /respond` endpoint, the same SSE events (`awaiting-input`, `input-received`, `input-timeout`), and clock-pause behavior governed by `pauseTimeoutDuringWait`.
+
+On host restart, the startup recovery logic cleans up orphaned engine-tool records (their agent sessions cannot be re-attached) but preserves Approval records (their executor will re-attach on resume).
+
+---
+
 ## Loop Configuration
 
 A loop (or "checker") pattern allows a Prompt step to iteratively refine the output of a target step.
@@ -649,7 +729,7 @@ Runtime file-writing steps should receive absolute paths. Build paths relative t
 ## Enums Reference
 
 ### Step Types
-`Prompt`, `Http`, `Transform`, `Command`, `Script`, `Orchestration` (case-insensitive)
+`Prompt`, `Http`, `Transform`, `Command`, `Script`, `Orchestration`, `Approval` (case-insensitive)
 
 ### System Prompt Mode
 `Append` (adds to SDK built-in prompts), `Replace` (removes SDK built-in prompts), `Customize` (selectively override individual sections)
@@ -664,7 +744,19 @@ Runtime file-writing steps should receive absolute paths. Build paths relative t
 `Local` (stdio), `Remote` (HTTP)
 
 ### Execution Status (runtime)
-`Pending`, `Running`, `Succeeded`, `Failed`, `Skipped`, `Cancelled`, `NoAction`
+`Pending`, `Running`, `Succeeded`, `Failed`, `Skipped`, `Cancelled`, `NoAction`, `AwaitingInput`
+
+### CancellationCauseKind (runtime, when run ends in Cancelled/Failed)
+`Unknown`, `External`, `OrchestrationTimeout`, `SyncInvokeTimeout`, `OrchestrationComplete`, `HostShutdown`, `AwaitingInputTimeout`, `HostShutdownDuringWait`
+
+### Hook Events
+`step.success`, `step.failure`, `step.after`, `step.awaitingInput`, `orchestration.success`, `orchestration.failure`, `orchestration.after`
+
+### Pending Input Kinds
+`Approval` (declarative `Approval` step), `EngineTool` (LLM-driven `orchestra_request_user_input`)
+
+### Approval Timeout Behavior
+`fail` (default when set), `defaultResponse`, `cancel`
 
 ---
 
