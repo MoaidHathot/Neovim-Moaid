@@ -1,0 +1,46 @@
+{
+  "dependencies": {
+    "autoDownload": true,
+    "portableDirectory": "P:\\Playground\\VideoWatcher\\Temp"
+  },
+  "search": {
+    "onnx": {
+      "autoDownload": true,
+      "modelDirectory": "P:\\Playground\\VideoWatcher\\Temp\\models\\all-MiniLM-L6-v2"
+    }
+  },
+  "llm": {
+    "provider": "github-copilot",
+    "openAi": {
+      "apiKeyEnvironmentVariables": [
+        "OPENAI_API_KEY"
+      ],
+      "baseUrlEnvironmentVariables": [
+        "OPENAI_BASE_URL"
+      ],
+      "modelEnvironmentVariables": [
+        "OPENAI_MODEL"
+      ],
+      "transcriptionModelEnvironmentVariables": [
+        "OPENAI_TRANSCRIPTION_MODEL"
+      ]
+    },
+    "azureOpenAi": {
+      "endpointEnvironmentVariables": [
+        "AZURE_OPENAI_ENDPOINT"
+      ],
+      "apiKeyEnvironmentVariables": [
+        "AZURE_OPENAI_API_KEY"
+      ],
+      "deploymentEnvironmentVariables": [
+        "AZURE_OPENAI_DEPLOYMENT"
+      ],
+      "modelEnvironmentVariables": [
+        "AZURE_OPENAI_MODEL"
+      ],
+      "apiVersionEnvironmentVariables": [
+        "AZURE_OPENAI_API_VERSION"
+      ]
+    }
+  }
+}
