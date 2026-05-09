@@ -43,6 +43,13 @@
       "name": "Custom Prompt",
       "includeInPicker": true,
       "pickerOrder": 9
+    },
+    {
+      "keys": "",
+      "action": "quit",
+      "name": "Quit Turbophrase",
+      "includeInPicker": true,
+      "pickerOrder": 10
     }
   ],
   "presets": {
