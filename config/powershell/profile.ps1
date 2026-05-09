@@ -94,6 +94,90 @@ function Update-Path
 	$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") 
 }
 
+function Select-HistoryCommand
+{
+	# Picks a command from PSReadLine's saved history via fzf.
+	#
+	# Implementation notes:
+	# - Uses temp files + `cmd /c` redirection because piping directly into
+	#   `fzf` from a PSReadLine key handler was unreliable in our setup.
+	# - Skips `--height` on purpose: fzf rejects it when stdin/stdout are
+	#   redirected ("--height option is currently not supported on this
+	#   platform"), causing a silent exit and a blank picker.
+	param (
+		[string]$Query
+	)
+
+	if (-not (Get-Command fzf -ErrorAction SilentlyContinue)) {
+		return $null
+	}
+
+	$historyPath = (Get-PSReadLineOption).HistorySavePath
+	if (-not (Test-Path -LiteralPath $historyPath)) {
+		return $null
+	}
+
+	$lines = [System.IO.File]::ReadAllLines($historyPath)
+	$history = [System.Collections.Generic.List[string]]::new()
+	$seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+	for ($i = $lines.Length - 1; $i -ge 0; $i--) {
+		$line = $lines[$i]
+		if (-not [string]::IsNullOrWhiteSpace($line) -and $seen.Add($line)) {
+			$history.Add($line)
+		}
+	}
+
+	if ($history.Count -eq 0) {
+		return $null
+	}
+
+	$tempIn = [System.IO.Path]::GetTempFileName()
+	$tempOut = [System.IO.Path]::GetTempFileName()
+	try {
+		$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+		[System.IO.File]::WriteAllLines($tempIn, $history, $utf8NoBom)
+
+		$queryPart = ''
+		if (-not [string]::IsNullOrEmpty($Query)) {
+			$escaped = $Query -replace '"', '\"'
+			$queryPart = " --query=`"$escaped`""
+		}
+
+		$cmdLine = "fzf --layout=reverse --border --no-sort$queryPart < `"$tempIn`" > `"$tempOut`""
+		& cmd /c $cmdLine | Out-Null
+
+		if (Test-Path -LiteralPath $tempOut) {
+			$selection = [System.IO.File]::ReadAllText($tempOut).TrimEnd("`r", "`n")
+			if ($selection) {
+				return $selection
+			}
+		}
+
+		return $null
+	}
+	finally {
+		Remove-Item -LiteralPath $tempIn, $tempOut -ErrorAction SilentlyContinue
+	}
+}
+
+function Set-HistoryCommandLine
+{
+	# PSReadLine key-handler entry point: opens the history picker and
+	# replaces the current input line with the selected command.
+	$currentLine = $null
+	$cursor = $null
+	[Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$currentLine, [ref]$cursor)
+
+	$command = Select-HistoryCommand -Query $currentLine
+
+	[Microsoft.PowerShell.PSConsoleReadLine]::InvokePrompt()
+
+	if ($command) {
+		[Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+		[Microsoft.PowerShell.PSConsoleReadLine]::Insert($command)
+	}
+}
+
 if ($host.Name -eq 'ConsoleHost')
 {
 	Set-PSReadLineOption -EditMode Windows
@@ -102,6 +186,7 @@ if ($host.Name -eq 'ConsoleHost')
 
 	Set-PSReadLineOption -Colors @{ "Selection" = "`e[7m" }
 	Set-PSReadlineKeyHandler -Key Tab -Function MenuComplete
+	Set-PSReadLineKeyHandler -Key Ctrl+r -ScriptBlock { Set-HistoryCommandLine }
 
 	$carapaceCache = "$env:TEMP\carapace_init.ps1"
 	if (-not (Test-Path $carapaceCache) -or (Get-Item $carapaceCache).LastWriteTime -lt (Get-Item (Get-Command carapace).Source).LastWriteTime) {

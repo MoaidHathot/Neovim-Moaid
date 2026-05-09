@@ -38,6 +38,13 @@
 				"direction": "forward"
 			},
 			"id": "User.moveTab.forward"
+		},
+		{
+			"command": {
+				"action": "sendInput",
+				"input": "\u0012"
+			},
+			"id": "User.sendInput.ctrl-r"
 		}
 	],
 	"alwaysShowTabs": true,
@@ -71,6 +78,10 @@
 		{
 			"id": "User.moveTab.forward",
 			"keys": "alt+shift+right"
+		},
+		{
+			"id": "User.sendInput.ctrl-r",
+			"keys": "ctrl+r"
 		}
 	],
 	"minimizeToNotificationArea": false,
