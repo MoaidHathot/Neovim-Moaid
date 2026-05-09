@@ -2,7 +2,7 @@ name: pr-manual-reviewer
 description: |
   On-demand companion to pr-auto-reviewer. Reviews a single Azure DevOps Pull Request specified by URL by delegating to pr-review-dispatcher with manual mode and forceReview enabled.
 version: 2.0.0
-tags: ["ZTS", "MSFT", "PR", "Code-Review", "on-demand"]
+tags: ["ZTS", "MSFT", "PR", "Code-Review", "on-demand", "favorite"]
 defaultModel: gpt-5.4
 
 inputs:

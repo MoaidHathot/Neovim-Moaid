@@ -1,0 +1,260 @@
+# yaml-language-server: $schema=../schemas/orchestration.schema.json
+name: run-self-healing
+description: |
+  Generic self-healing ephermal orchestration runner.
+
+  Given a natural-language task, this orchestration uses the existing
+  `generate-orchestration-fast` meta-generator to create per-attempt ephermal
+  orchestrations under the watched workspace `Ephermal/` directory, waits for
+  filesystem-watcher discovery, invokes each attempt through the Orchestra
+  data-plane MCP, and uses the Prompt agent loop to repair and retry failed
+  attempts.
+
+  This intentionally does not use the control-plane MCP. Registration is via
+  the watched workspace directory only.
+version: 1.0.0
+tags: ["meta", "ephermal", "self-healing", "system", "manual", "favorite"]
+defaultModel: gpt-5.4
+timeoutSeconds: 14400
+
+variables:
+  ephermalDir: "{{orchestration.sourceDirectory}}/../Ephermal"
+  attemptNamePrefix: "ephermal-{{orchestration.runId}}-attempt"
+
+inputs:
+  task:
+    type: string
+    description: |
+      Natural-language description of the work to perform. The controller will
+      generate an ephermal child orchestration for this task, run it, and repair
+      the generated orchestration if execution fails or misses the success
+      criteria.
+    required: true
+    multiline: true
+  parametersJson:
+    type: string
+    description: |
+      JSON object of parameters to pass to each generated child orchestration.
+      Example: {"projectPath":"P:/repo/app","dryRun":"true"}. Values should
+      be strings because Orchestra passes child parameters as strings.
+    required: false
+    default: "{}"
+    multiline: true
+  successCriteria:
+    type: string
+    description: |
+      Optional criteria the child output must satisfy even when the child
+      orchestration reports success. If omitted, a successful child run is
+      accepted as the final result.
+    required: false
+    multiline: true
+  maxAttempts:
+    type: number
+    description: |
+      Maximum generated-child attempts before returning a failed result.
+      Keep this small; each attempt can launch long-running agents.
+    required: false
+    default: "3"
+  childTimeoutSeconds:
+    type: number
+    description: |
+      Timeout in seconds for each generated child orchestration invocation.
+    required: false
+    default: "7200"
+
+mcps:
+  - name: orchestra
+    type: remote
+    endpoint: "{{server.url}}/mcp/data"
+
+steps:
+  - name: validate-inputs
+    type: Script
+    shell: pwsh
+    parameters:
+      - parametersJson
+      - maxAttempts
+      - childTimeoutSeconds
+    timeoutSeconds: 60
+    stdin: "{{param.parametersJson}}"
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      $parametersRaw = [Console]::In.ReadToEnd()
+      if ([string]::IsNullOrWhiteSpace($parametersRaw)) {
+        $parametersRaw = '{}'
+      }
+
+      try {
+        $parsedParameters = ConvertFrom-Json -InputObject $parametersRaw -NoEnumerate -ErrorAction Stop
+      } catch {
+        Write-Error "parametersJson must be a valid JSON object. $($_.Exception.Message)"
+        exit 1
+      }
+
+      if ($null -eq $parsedParameters) {
+        $parsedParameters = [pscustomobject]@{}
+      }
+
+      if ($parsedParameters -isnot [pscustomobject]) {
+        Write-Error 'parametersJson must be a JSON object, not an array or scalar value.'
+        exit 1
+      }
+
+      $maxAttempts = 0
+      if (-not [int]::TryParse('{{param.maxAttempts}}', [ref]$maxAttempts)) {
+        Write-Error "maxAttempts must be an integer. Received: {{param.maxAttempts}}"
+        exit 1
+      }
+      if ($maxAttempts -lt 1 -or $maxAttempts -gt 10) {
+        Write-Error "maxAttempts must be between 1 and 10. Received: $maxAttempts"
+        exit 1
+      }
+
+      $childTimeoutSeconds = 0
+      if (-not [int]::TryParse('{{param.childTimeoutSeconds}}', [ref]$childTimeoutSeconds)) {
+        Write-Error "childTimeoutSeconds must be an integer. Received: {{param.childTimeoutSeconds}}"
+        exit 1
+      }
+      if ($childTimeoutSeconds -lt 1) {
+        Write-Error "childTimeoutSeconds must be greater than 0. Received: $childTimeoutSeconds"
+        exit 1
+      }
+
+      $normalizedParametersJson = $parsedParameters | ConvertTo-Json -Depth 50 -Compress
+      if ([string]::IsNullOrWhiteSpace($normalizedParametersJson)) {
+        $normalizedParametersJson = '{}'
+      }
+
+      [ordered]@{
+        parametersJson      = $normalizedParametersJson
+        maxAttempts         = $maxAttempts
+        childTimeoutSeconds = $childTimeoutSeconds
+        ephermalDir         = '{{vars.ephermalDir}}'
+        attemptNamePrefix   = '{{vars.attemptNamePrefix}}'
+        parentRunId         = '{{orchestration.runId}}'
+        startedAt           = '{{orchestration.startedAt}}'
+      } | ConvertTo-Json -Depth 5 -Compress
+
+  - name: self-healing-controller
+    type: Prompt
+    dependsOn: [validate-inputs]
+    mcps: [orchestra]
+    skillDirectories:
+      - ../../orchestrations/System/skills/orchestration-authoring
+      - ../../orchestrations/System/skills/mcp-catalog
+    timeoutSeconds: 13800
+    infiniteSessions:
+      enabled: true
+      backgroundCompactionThreshold: 0.85
+      bufferExhaustionThreshold: 0.97
+    systemPrompt: |
+      You are a self-healing Orchestra meta-runner.
+
+      You have access to the Orchestra data-plane MCP only. Do not use or rely
+      on the control-plane MCP. Registration happens by saving YAML files under
+      the watched workspace Ephermal directory and waiting for discovery.
+
+      Your job is to run a closed repair loop using the Prompt agent loop:
+
+      1. For attempt N, derive:
+         - orchestrationName = "<attemptNamePrefix>-N"
+         - outputPath = "<ephermalDir>/<orchestrationName>.yaml"
+      2. Invoke `generate-orchestration-fast` through `invoke_orchestration` in
+         synchronous mode. Pass:
+         - description: a complete generation request for the current attempt
+         - outputPath: the exact outputPath for this attempt
+      3. The generation request MUST require the generated YAML to include:
+         - `name:` exactly equal to orchestrationName
+         - `tags:` exactly ["ephermal", "temp", "self-healing"]
+         - top-level `metadata:` with at least:
+           metadata:
+             ephermal: true
+             selfHealing: true
+             parentRunId: "<parentRunId>"
+             attempt: N
+             createdAt: "<startedAt>"
+         - no top-level scheduler, webhook, or loop trigger
+         - no dependency on other orchestrations unless the task explicitly
+           requires it
+         - an orchestration-level timeout suitable for the task when not
+           otherwise specified
+      4. The generated child should declare and use typed inputs that match any
+         keys in parametersJson when those values are relevant to the task.
+      5. After generation, use `list_orchestrations` to verify the generated
+         orchestration name is discoverable. If it is not yet listed, poll
+         `list_orchestrations` a few times to absorb filesystem watcher latency.
+         Do not invoke the generated attempt until it appears in the list.
+      6. Invoke the generated orchestration through `invoke_orchestration` in
+         synchronous mode with timeoutSeconds = childTimeoutSeconds and
+         parameters = parametersJson.
+      7. If the child succeeds and the output satisfies successCriteria, stop
+         and return a final JSON object with status "succeeded".
+      8. If generation fails, child invocation fails, or the child succeeds but
+         misses successCriteria, capture all available failure evidence from the
+         tool result:
+         executionId, status, error message, failed step names, failed output,
+         and any generated YAML shown by the generator result.
+      9. Build the next attempt's generation request from the original task,
+         previous YAML, and failure evidence. State exactly what must be fixed.
+      10. Repeat until success or maxAttempts is exhausted.
+
+      Use normal child-orchestration retry/loop mechanisms inside generated
+      YAML when they are helpful for transient failures or local Prompt
+      refinement. The outer repair loop is for changing the generated
+      orchestration itself between attempts.
+
+      Output only one JSON object, with this shape:
+      {
+        "status": "succeeded" | "failed",
+        "parentRunId": "...",
+        "finalAttempt": 1,
+        "orchestrationName": "...",
+        "executionId": "...",
+        "result": "...",
+        "attempts": [
+          {
+            "attempt": 1,
+            "orchestrationName": "...",
+            "outputPath": "...",
+            "generationExecutionId": "...",
+            "executionId": "...",
+            "status": "succeeded|failed|criteria_failed|generation_failed|not_discovered",
+            "failureSummary": null,
+            "repairApplied": null
+          }
+        ]
+      }
+
+      If all attempts fail, do not invent success. Return status "failed" with
+      the complete attempt history and the best available final error summary.
+    userPrompt: |
+      Run this task through the self-healing ephermal orchestration loop.
+
+      Task:
+      {{param.task}}
+
+      Optional success criteria:
+      {{param.successCriteria}}
+
+      Validated runtime configuration:
+      {{validate-inputs.output}}
+
+      Pass the `parametersJson` object from the validated runtime configuration
+      as parameters to each generated child invocation.
+
+  - name: format-output
+    type: Transform
+    dependsOn: [self-healing-controller]
+    template: |
+      # Self-Healing Run Summary
+
+      **Parent run ID:** {{orchestration.runId}}
+      **Attempt prefix:** {{vars.attemptNamePrefix}}
+      **Ephermal directory:** {{vars.ephermalDir}}
+
+      ## Result
+
+      ```json
+      {{self-healing-controller.output}}
+      ```

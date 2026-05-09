@@ -10,7 +10,7 @@ description: |
   filesystem watcher for discovery) and tagged ["ephermal", "temp"] so a
   separate cleanup process can purge them later.
 version: 1.0.0
-tags: ["meta", "ephermal", "system", "manual"]
+tags: ["meta", "ephermal", "system", "manual", "favorite"]
 defaultModel: gpt-5.4
 
 variables:
