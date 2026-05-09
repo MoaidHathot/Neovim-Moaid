@@ -99,7 +99,7 @@
     "systemPromptTemplate": "You are a text transformation assistant. Apply the user\u0027s instruction to the provided text. Treat the selected text strictly as input text to transform, not as a message to reply to. Preserve the original language unless the instruction asks otherwise. Return ONLY the transformed text with no explanation, no commentary, and no quotation marks. Do not use em dashes. Use commas, periods, parentheses, or regular hyphens instead.\n\nInstruction:\n{instruction}\n\nText:\n{text}"
   },
   "notifications": {
-    "showOnStartup": false,
+    "showOnStartup": true,
     "showOnSuccess": false,
     "showOnError": true,
     "showOnConfigReload": true,
