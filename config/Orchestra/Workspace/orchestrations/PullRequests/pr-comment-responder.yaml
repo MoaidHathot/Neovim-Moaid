@@ -234,6 +234,32 @@ steps:
         if (-not $prUrl) { $prUrl = $pr.url }
         if (-not $prUrl) { $prUrl = "https://dev.azure.com/{{vars.organization}}/{{vars.project}}/_git/{{vars.repository}}/pullrequest/$($pr.id)" }
 
+        function Resolve-PowerReviewOpenPrUrl {
+          param(
+            [Parameter(Mandatory)]$Result,
+            [Parameter(Mandatory)][string]$FallbackPrUrl
+          )
+
+          $candidates = @(
+            $Result.prUrl,
+            $Result.url,
+            $Result.pullRequest.url,
+            $Result.pull_request.url,
+            $Result.session.prUrl,
+            $Result.session.url,
+            $Result.session.pullRequest.url,
+            $Result.session.pull_request.url,
+            $FallbackPrUrl
+          )
+
+          foreach ($candidate in $candidates) {
+            $value = [string]$candidate
+            if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+          }
+
+          return ''
+        }
+
         function Invoke-PowerReviewOpen {
           param([Parameter(Mandatory)][string]$PrUrl)
 
@@ -267,10 +293,12 @@ steps:
             throw "PowerReview open stdout was not valid JSON for '$PrUrl'. Stdout: $jsonText Stderr: $stderr"
           }
 
-          if (-not $result -or [string]::IsNullOrWhiteSpace([string]$result.prUrl)) {
-            throw "PowerReview open JSON did not contain a non-empty prUrl for '$PrUrl'. Stdout: $jsonText"
+          $openPrUrl = Resolve-PowerReviewOpenPrUrl -Result $result -FallbackPrUrl $PrUrl
+          if ([string]::IsNullOrWhiteSpace($openPrUrl)) {
+            throw "PowerReview open JSON did not contain a usable PR URL for '$PrUrl'. Stdout: $jsonText"
           }
 
+          $result | Add-Member -NotePropertyName prUrl -NotePropertyValue $openPrUrl -Force
           return $result
         }
 
