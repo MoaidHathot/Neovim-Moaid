@@ -59,6 +59,7 @@ steps:
       $cutoffUtc     = $nowUtc.AddDays(-1 * $retentionDays)
 
       $report = [ordered]@{
+        summary        = $null
         ephermalDir    = $ephermalDir
         retentionDays  = $retentionDays
         dryRun         = $dryRun
@@ -72,9 +73,32 @@ steps:
         errors         = @()
       }
 
+      # Tracks files that pass every guard (i.e., were old enough to remove).
+      # `deleted.Count` alone can't be reused for this in LIVE mode because a
+      # Remove-Item failure would route the entry to `errors` instead.
+      $oldCount = 0
+
       if (-not (Test-Path -LiteralPath $ephermalDir -PathType Container)) {
         $report.errors += @{ message = "Ephermal directory does not exist: $ephermalDir" }
-        $report | ConvertTo-Json -Depth 10
+        $report.summary = [ordered]@{
+          mode             = if ($dryRun) { 'DRY RUN' } else { 'LIVE' }
+          filesExisting    = 0
+          old              = 0
+          removed          = 0
+          wouldRemove      = 0
+          kept             = 0
+          skippedNoFlag    = 0
+          skippedParse     = 0
+          errors           = $report.errors.Count
+        }
+        $banner = "**MODE: $($report.summary.mode)** — ephermal directory not found; no work performed."
+        $lines = @()
+        $lines += $banner
+        $lines += ''
+        $lines += '```json'
+        $lines += ($report | ConvertTo-Json -Depth 10)
+        $lines += '```'
+        ($lines -join "`n")
         return
       }
 
@@ -145,6 +169,7 @@ steps:
           }
 
           # --- Eligible: delete (or pretend to) ---------------------------
+          $oldCount++
           if ($dryRun) {
             $report.deleted += @{
               file      = $f.Name
@@ -166,7 +191,65 @@ steps:
         }
       }
 
-      $report | ConvertTo-Json -Depth 10
+      # ── Build summary (so machine consumers don't have to count arrays) ──
+      $mode             = if ($dryRun) { 'DRY RUN' } else { 'LIVE' }
+      $removedCount     = if ($dryRun) { 0 } else { $report.deleted.Count }
+      $wouldRemoveCount = if ($dryRun) { $report.deleted.Count } else { 0 }
+
+      $report.summary = [ordered]@{
+        mode             = $mode
+        filesExisting    = $report.scanned
+        old              = $oldCount
+        removed          = $removedCount
+        wouldRemove      = $wouldRemoveCount
+        kept             = $report.keptYoung.Count
+        skippedNoFlag    = $report.skippedNoFlag.Count
+        skippedParse     = $report.skippedParse.Count
+        errors           = $report.errors.Count
+      }
+
+      # ── Build the banner (clearly distinguishes DRY RUN vs LIVE) ─────────
+      if ($dryRun) {
+        $banner = "**MODE: DRY RUN** — no files were modified. " +
+                  "$wouldRemoveCount file(s) would be deleted " +
+                  "(of $oldCount eligible, $($report.scanned) scanned)."
+      } else {
+        $errorSuffix = if ($report.errors.Count -gt 0) {
+          " ($($report.errors.Count) error(s) — see below)"
+        } else { '' }
+        $banner = "**MODE: LIVE** — $removedCount file(s) deleted " +
+                  "(of $oldCount eligible, $($report.scanned) scanned)$errorSuffix."
+      }
+
+      # ── Render Markdown: banner -> stats table -> JSON code fence ────────
+      $removedLabel = if ($dryRun) {
+        "$removedCount (dry run — $wouldRemoveCount would be removed)"
+      } else {
+        "$removedCount"
+      }
+
+      $lines = @()
+      $lines += $banner
+      $lines += ''
+      $lines += '## Statistics'
+      $lines += ''
+      $lines += '| Metric                                       | Count |'
+      $lines += '|----------------------------------------------|------:|'
+      $lines += "| Files scanned                                | $($report.scanned) |"
+      $lines += "| Old (older than retention window)            | $oldCount |"
+      $lines += "| Removed                                      | $removedLabel |"
+      $lines += "| Kept (within retention window)               | $($report.keptYoung.Count) |"
+      $lines += "| Skipped (no ephermal marker)                 | $($report.skippedNoFlag.Count) |"
+      $lines += "| Skipped (createdAt parse error)              | $($report.skippedParse.Count) |"
+      $lines += "| Errors                                       | $($report.errors.Count) |"
+      $lines += ''
+      $lines += '## Sweep Report'
+      $lines += ''
+      $lines += '```json'
+      $lines += ($report | ConvertTo-Json -Depth 10)
+      $lines += '```'
+
+      ($lines -join "`n")
 
   # ── Step 2: Render a human-friendly summary ────────────────────────────
   - name: format-summary
@@ -175,16 +258,12 @@ steps:
     template: |
       # Ephermal Cleanup — Summary
 
-      **Run ID:**         {{orchestration.runId}}
-      **Started at:**     {{orchestration.startedAt}}
-      **Retention:**      {{param.retentionDays}} day(s)
-      **Dry run:**        {{param.dryRun}}
+      **Run ID:**     {{orchestration.runId}}
+      **Started at:** {{orchestration.startedAt}}
+      **Retention:**  {{param.retentionDays}} day(s)
+      **Dry run:**    {{param.dryRun}}
 
-      ## Sweep Report
-
-      ```json
       {{sweep-ephermal-dir.output}}
-      ```
 
       Files listed under `deleted` were removed (or, when `dryRun` was true,
       flagged as `would-delete`). Files under `keptYoung` are still within
