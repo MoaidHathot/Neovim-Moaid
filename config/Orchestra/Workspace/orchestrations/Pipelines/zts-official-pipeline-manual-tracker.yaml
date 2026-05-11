@@ -1,0 +1,94 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: zts-official-pipeline-manual-tracker
+description: on-demand manual tracker for Azure DevOps CI/CD pipeline runs
+version: 2.0.0
+tags: ["ZTS", "MSFT", "Pipeline", "Tracker", "on-demand", "favorite"]
+defaultModel: claude-opus-4.6
+timeoutSeconds: 7200
+
+trigger:
+  type: manual
+
+inputs:
+  pipelineUrl:
+    type: string
+    required: true
+    description: Full Azure DevOps CI or CD pipeline URL to track, including dev.azure.com and visualstudio.com links.
+  trackReason:
+    type: string
+    required: false
+    default: "Manual tracking request"
+    description: Optional human-readable reason for manually tracking this pipeline run.
+  forceTrack:
+    type: boolean
+    required: false
+    default: "true"
+    description: When true, forces tracking even if the run is already known or not normally considered relevant.
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+steps:
+  - name: dispatch-track
+    type: Orchestration
+    orchestration: zts-official-pipeline-dispatcher
+    parameters:
+      pipelineUrl: "{{param.pipelineUrl}}"
+      trackReason: "{{param.trackReason}}"
+      forceTrack: "{{param.forceTrack}}"
+      source: manual
+    mode: sync
+    timeoutSeconds: 7100
+
+  - name: build-summary-context
+    type: Prompt
+    dependsOn: [dispatch-track]
+    systemPrompt: |
+      You convert orchestration results into a compact machine-readable JSON object.
+      Return raw JSON only with no markdown, commentary, or code fences.
+    userPrompt: |
+      Build a concise JSON summary for this manual pipeline tracking request.
+
+      Requirements:
+      - Preserve support context that this request may target Azure DevOps CI or CD links.
+      - Preserve that non-ZTS Azure DevOps links are allowed because tracking is delegated through the dispatcher.
+      - Output exactly one JSON object with this schema:
+        {
+          "pipelineUrl": "string",
+          "trackReason": "string",
+          "forceTrack": true,
+          "source": "manual",
+          "dispatcherResult": "string",
+          "notes": ["string"]
+        }
+
+      Inputs:
+      - pipelineUrl: {{param.pipelineUrl}}
+      - trackReason: {{param.trackReason}}
+      - forceTrack: {{param.forceTrack}}
+
+      Dispatcher output:
+      {{dispatch-track.output}}
+
+  - name: final-summary
+    type: Prompt
+    dependsOn: [build-summary-context]
+    systemPrompt: |
+      You are a reporting assistant. Produce a concise polished markdown summary for a human operator.
+      Return markdown only.
+    userPrompt: |
+      Create the final markdown summary for this on-demand manual pipeline tracking run.
+
+      Summary context JSON:
+      {{build-summary-context.output}}
+
+      Produce:
+      1. Header: '## Manual Pipeline Tracking Summary'
+      2. Pipeline link
+      3. Tracking reason
+      4. Force-track setting
+      5. Concise outcome from the dispatcher
+      6. Any brief notes relevant to CI/CD or non-ZTS manual tracking

@@ -1,0 +1,300 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: zts-official-pipeline-auto-discoverer
+description: scheduled discovery of recent relevant ZTS official pipeline runs
+defaultModel: claude-opus-4.6
+timeoutSeconds: 7200
+trigger:
+  type: scheduler
+  intervalSeconds: 300
+variables:
+  organization: msazure
+  project: One
+  ciDefinitionId: 384921
+  ciDefinitionName: ZTS-Official
+  cdDefinitionId: 388576
+  cdDefinitionName: ZTS-Official-Release
+  targetDisplayName: Moaid Hathot
+mcps:
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - --yes
+      - --
+      - mcp
+      - --category
+      - zts-official-pipeline-tracker
+  - name: orchestra
+    type: remote
+    endpoint: "http://localhost:5100/mcp/data"
+steps:
+  - name: discover-ci-runs
+    type: Prompt
+    mcps: [azdo]
+    systemPrompt: |
+      You discover recent Azure DevOps pipeline runs for a single build definition.
+
+      Use the azdo MCP to inspect recent runs for the specified organization, project, and definition.
+      Gather only recent runs that are useful for downstream relevance analysis.
+
+      For each run, produce a JSON object with these fields when available:
+      - pipelineType: "ci"
+      - definitionId
+      - definitionName
+      - runId
+      - buildNumber
+      - status
+      - result
+      - queueTime
+      - startTime
+      - finishTime
+      - requestedFor
+      - requestedBy
+      - reason
+      - sourceBranch
+      - sourceVersion
+      - triggeredByBuild
+      - triggeredByRelease
+      - pullRequests
+      - commits
+      - webUrl
+      - rawEvidence
+
+      Inspect requester, trigger reason, source metadata, and associated PRs or commits.
+      If PRs exist, include author/display names and PR identifiers.
+      If commits exist, include commit ids, author/display names, and commit messages.
+
+      Return strict JSON only with this shape:
+      {
+        "pipelineType": "ci",
+        "definitionId": <number>,
+        "definitionName": "<string>",
+        "runs": [ ... ]
+      }
+    userPrompt: |
+      Discover recent runs for:
+      - organization: {{vars.organization}}
+      - project: {{vars.project}}
+      - definitionId: {{vars.ciDefinitionId}}
+      - definitionName: {{vars.ciDefinitionName}}
+
+      Focus on the most recent runs likely to still matter for automated tracking.
+      Return strict JSON only.
+
+  - name: discover-cd-runs
+    type: Prompt
+    mcps: [azdo]
+    systemPrompt: |
+      You discover recent Azure DevOps release or deployment pipeline runs for a single definition.
+
+      Use the azdo MCP to inspect recent runs for the specified organization, project, and definition.
+      Gather only recent runs that are useful for downstream relevance analysis.
+
+      For each run, produce a JSON object with these fields when available:
+      - pipelineType: "cd"
+      - definitionId
+      - definitionName
+      - runId
+      - buildNumber
+      - status
+      - result
+      - queueTime
+      - startTime
+      - finishTime
+      - requestedFor
+      - requestedBy
+      - reason
+      - sourceBranch
+      - sourceVersion
+      - triggeredByBuild
+      - triggeredByRelease
+      - pullRequests
+      - commits
+      - webUrl
+      - rawEvidence
+
+      Inspect requester, trigger reason, source metadata, and associated PRs or commits.
+      If PRs exist, include author/display names and PR identifiers.
+      If commits exist, include commit ids, author/display names, and commit messages.
+
+      Return strict JSON only with this shape:
+      {
+        "pipelineType": "cd",
+        "definitionId": <number>,
+        "definitionName": "<string>",
+        "runs": [ ... ]
+      }
+    userPrompt: |
+      Discover recent runs for:
+      - organization: {{vars.organization}}
+      - project: {{vars.project}}
+      - definitionId: {{vars.cdDefinitionId}}
+      - definitionName: {{vars.cdDefinitionName}}
+
+      Focus on the most recent runs likely to still matter for automated tracking.
+      Return strict JSON only.
+
+  - name: filter-and-shape-runs
+    type: Prompt
+    dependsOn: [discover-ci-runs, discover-cd-runs]
+    mcps: [zakira]
+    systemPrompt: |
+      You decide which discovered runs are relevant to the target user and which ones are new.
+
+      Inputs:
+      - CI discovery JSON
+      - CD discovery JSON
+      - target display name
+
+      Use Zakira as persistent state. Preserve explicit index management because category listing may not exist.
+      Never depend on listing all keys. Instead:
+      1. Read an explicit index key such as "tracked-run-index".
+      2. If it does not exist, treat it as an empty object/array and continue.
+      3. For each candidate run, use a deterministic key such as:
+         "run/<pipelineType>/<definitionId>/<runId>"
+      4. Decide whether the run is already tracked by reading that exact key.
+      5. Prepare index updates explicitly for newly dispatched runs.
+
+      Mark a run as relevant only when evidence shows it was caused by or is materially relevant to the target user.
+      Consider:
+      - requester / requestedFor / requestedBy display names
+      - trigger reason
+      - source branch naming
+      - source metadata
+      - associated PR authors, reviewers, titles, and ids
+      - associated commit authors and messages
+      - upstream/downstream linkage between CI and CD
+      - whether the run appears to belong to the target user's work
+
+      Produce strict JSON only with this exact shape:
+      {
+        "targetDisplayName": "<string>",
+        "discovered": [<all considered runs>],
+        "relevant": [<relevant runs>],
+        "dispatched": [],
+        "skippedAlreadyTracked": [<relevant but already tracked runs>],
+        "ignored": [<not relevant runs>],
+        "newRelevant": [<relevant and not yet tracked runs ready for dispatch>],
+        "indexState": {
+          "indexKey": "tracked-run-index",
+          "existingEntries": [<strings>],
+          "newEntries": [<strings>]
+        }
+      }
+
+      Rules:
+      - Keep discovered/relevant/skipped/ignored/newRelevant entries as JSON objects.
+      - dispatched must be an empty array here; it is filled later.
+      - Include enough evidence in each run object to justify the decision.
+      - Return strict JSON only.
+    userPrompt: |
+      Target display name: {{vars.targetDisplayName}}
+
+      CI discovery:
+      {{discover-ci-runs.output}}
+
+      CD discovery:
+      {{discover-cd-runs.output}}
+
+      Decide relevance, detect already tracked runs using explicit Zakira key reads, and shape the dispatch-ready objects.
+      Return strict JSON only.
+
+  - name: dispatch-new-runs
+    type: Prompt
+    dependsOn: [filter-and-shape-runs]
+    mcps: [orchestra, zakira]
+    systemPrompt: |
+      You dispatch newly relevant runs to the child orchestration and persist tracking state.
+
+      Input is strict JSON from the filter step.
+      Use the orchestra MCP only; do not use raw HTTP calls and do not reference /api/orchestrations/.
+      For each item in newRelevant:
+      1. Invoke orchestration "zts-official-pipeline-dispatcher"
+      2. Pass parameters:
+         - trackedRunJson: the full JSON object for that run, serialized as a JSON string
+         - source: "auto"
+         - forceTrack: "false"
+      3. Record the orchestration invocation result on the run object.
+      4. Persist the exact per-run Zakira key for that run.
+      5. Update the explicit index key "tracked-run-index" with the new entry set.
+
+      If newRelevant is empty, do not dispatch anything. Still return a complete summary.
+      Return strict JSON only with this exact shape:
+      {
+        "targetDisplayName": "<string>",
+        "discovered": [ ... ],
+        "relevant": [ ... ],
+        "dispatched": [ ... ],
+        "skippedAlreadyTracked": [ ... ],
+        "ignored": [ ... ],
+        "indexState": {
+          "indexKey": "tracked-run-index",
+          "existingEntries": [ ... ],
+          "newEntries": [ ... ],
+          "finalEntries": [ ... ]
+        },
+        "counts": {
+          "discovered": <number>,
+          "relevant": <number>,
+          "dispatched": <number>,
+          "skippedAlreadyTracked": <number>,
+          "ignored": <number>
+        }
+      }
+
+      Return strict JSON only.
+    userPrompt: |
+      Dispatch any new relevant runs from this summary:
+      {{filter-and-shape-runs.output}}
+
+      Use orchestra MCP invocation for each new relevant run with:
+      - trackedRunJson = serialized run JSON
+      - source = auto
+      - forceTrack = false
+
+      Persist explicit Zakira per-run keys and update tracked-run-index.
+      Return strict JSON only.
+
+  - name: build-actionview-entry
+    type: Prompt
+    dependsOn: [dispatch-new-runs]
+    systemPrompt: |
+      Build a compact ActionView entry JSON object from the dispatch summary.
+
+      If dispatched count is zero, call orchestra_set_status with no_action and explain that nothing new was dispatched.
+      Otherwise return strict JSON only with a concise, useful summary for humans.
+
+      Required output shape:
+      {
+        "kind": "zts-official-pipeline-discovery-summary",
+        "title": "<short title>",
+        "summary": "<short summary>",
+        "counts": {
+          "discovered": <number>,
+          "relevant": <number>,
+          "dispatched": <number>,
+          "skippedAlreadyTracked": <number>,
+          "ignored": <number>
+        },
+        "items": [<brief dispatched run summaries>]
+      }
+    userPrompt: |
+      Build an ActionView entry from this JSON summary:
+      {{dispatch-new-runs.output}}
+
+      Only produce output if something new was dispatched.
+
+  - name: actionview-submit
+    type: Orchestration
+    dependsOn: [build-actionview-entry]
+    orchestration: actionview-submit
+    parameters:
+      entryJson: "{{build-actionview-entry.output}}"
+
+  - name: output-summary
+    type: Transform
+    dependsOn: [dispatch-new-runs]
+    contentType: application/json
+    template: |
+      {{dispatch-new-runs.output}}

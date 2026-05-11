@@ -1,0 +1,280 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: zts-official-pipeline-tracker
+description: scheduled tracker for active Azure DevOps pipeline runs
+defaultModel: claude-opus-4.6
+timeoutSeconds: 7200
+trigger:
+  type: scheduler
+  intervalSeconds: 300
+mcps:
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - --yes
+      - --
+      - mcp
+      - --category
+      - zts-official-pipeline-tracker
+  - name: orchestra
+    type: remote
+    endpoint: "http://localhost:5100/mcp/data"
+steps:
+  - name: ensure-tracked-runs-index
+    type: Prompt
+    mcps: [zakira]
+    systemPrompt: |
+      You manage persistent tracker state in Zakira for Azure DevOps pipeline runs.
+
+      Rules:
+      - Use Zakira only.
+      - Explicitly manage one index document and separate per-run documents because listing support may not exist.
+      - The index document key is `tracked-runs-index`.
+      - The index document must be JSON with this shape:
+        {
+          "key": "tracked-runs-index",
+          "updatedAt": "<iso8601>",
+          "runs": [
+            {
+              "runKey": "<stable unique key>",
+              "definitionId": "<string>",
+              "runId": "<string>",
+              "project": "<string>",
+              "status": "<string>",
+              "result": "<string or empty>",
+              "isActive": true,
+              "groupId": "<stable actionview group id>",
+              "recordKey": "<per-run record key>",
+              "lastCheckedAt": "<iso8601 or empty>"
+            }
+          ]
+        }
+      - Each per-run document key must be the `recordKey` stored in the index.
+      - If the index document does not exist, create it with an empty `runs` array and the current timestamp.
+      - Read every per-run document referenced by active index entries so the caller receives the freshest persisted state.
+      - Return JSON only with this shape:
+        {
+          "indexKey": "tracked-runs-index",
+          "index": { ... },
+          "activeRuns": [ ... per-run records ... ]
+        }
+      - Do not include prose, markdown, or comments.
+    userPrompt: |
+      Load or create the Zakira tracked-runs index document and return all currently active tracked run records.
+
+  - name: gate-active-runs
+    type: Prompt
+    dependsOn: [ensure-tracked-runs-index]
+    systemPrompt: |
+      You are a scheduler gate for the pipeline tracker.
+
+      Read the provided JSON. If there are zero active runs, call orchestra_set_status with:
+      - status: no_action
+      - reason: No active tracked pipeline runs
+
+      If active runs exist, return JSON only:
+      { "activeCount": <number>, "proceed": true }
+
+      Do not add prose.
+    userPrompt: |
+      Decide whether this tracker run should continue.
+
+      {{ensure-tracked-runs-index.output}}
+
+  - name: refresh-active-run-statuses
+    type: Prompt
+    dependsOn: [gate-active-runs]
+    mcps: [azdo]
+    systemPrompt: |
+      You refresh Azure DevOps pipeline run state.
+
+      Requirements:
+      - Use Azure DevOps MCP tools only.
+      - For each active tracked run from the input, fetch its current pipeline/build/run state from Azure DevOps.
+      - Preserve the caller's runKey, recordKey, and groupId in your output.
+      - Normalize each item to:
+        {
+          "runKey": "<string>",
+          "recordKey": "<string>",
+          "groupId": "<string>",
+          "project": "<string>",
+          "definitionId": "<string>",
+          "runId": "<string>",
+          "previousStatus": "<string>",
+          "previousResult": "<string>",
+          "currentStatus": "<string>",
+          "currentResult": "<string>",
+          "terminalState": "success" | "failure" | "active",
+          "checkedAt": "<iso8601>",
+          "summary": "<single-line status summary>"
+        }
+      - Treat completed+succeeded as success.
+      - Treat completed+failed, completed+canceled, completed+partiallySucceeded, and any equivalent failure outcome as failure.
+      - Treat all other states as active.
+      - Return JSON only:
+        { "runs": [ ... ] }
+      - No markdown or prose.
+    userPrompt: |
+      Refresh the current Azure DevOps status for these tracked runs and classify each one.
+
+      {{ensure-tracked-runs-index.output}}
+
+  - name: shape-run-updates
+    type: Script
+    dependsOn: [ensure-tracked-runs-index, refresh-active-run-statuses]
+    shell: pwsh
+    script: |
+      $state = @'
+      {{ensure-tracked-runs-index.output}}
+      '@ | ConvertFrom-Json -Depth 100
+
+      $refresh = @'
+      {{refresh-active-run-statuses.output}}
+      '@ | ConvertFrom-Json -Depth 100
+
+      $index = $state.index
+      $refreshRuns = @($refresh.runs)
+
+      $active = New-Object System.Collections.Generic.List[object]
+      $succeeded = New-Object System.Collections.Generic.List[object]
+      $failed = New-Object System.Collections.Generic.List[object]
+
+      foreach ($run in $refreshRuns) {
+        $indexEntry = $null
+        if ($index -and $index.runs) {
+          $indexEntry = @($index.runs) | Where-Object { $_.runKey -eq $run.runKey } | Select-Object -First 1
+        }
+
+        $existingRecord = @($state.activeRuns) | Where-Object { $_.runKey -eq $run.runKey } | Select-Object -First 1
+        $groupId = if ($run.groupId) { [string]$run.groupId } elseif ($existingRecord.groupId) { [string]$existingRecord.groupId } else { "zts-official-pipeline-tracker:$($run.project):$($run.definitionId):$($run.runId)" }
+
+        $normalized = [ordered]@{
+          runKey = [string]$run.runKey
+          recordKey = [string]$(if ($run.recordKey) { $run.recordKey } elseif ($existingRecord.recordKey) { $existingRecord.recordKey } else { "tracked-run-$($run.runKey)" })
+          groupId = $groupId
+          project = [string]$run.project
+          definitionId = [string]$run.definitionId
+          runId = [string]$run.runId
+          previousStatus = [string]$run.previousStatus
+          previousResult = [string]$run.previousResult
+          currentStatus = [string]$run.currentStatus
+          currentResult = [string]$run.currentResult
+          terminalState = [string]$run.terminalState
+          checkedAt = [string]$run.checkedAt
+          summary = [string]$run.summary
+          actionViewSubmittedAt = if ($existingRecord.actionViewSubmittedAt) { [string]$existingRecord.actionViewSubmittedAt } else { "" }
+          indexEntry = $indexEntry
+          existingRecord = $existingRecord
+        }
+
+        switch ($normalized.terminalState) {
+          'success' { $succeeded.Add($normalized) | Out-Null }
+          'failure' { $failed.Add($normalized) | Out-Null }
+          default { $active.Add($normalized) | Out-Null }
+        }
+      }
+
+      [ordered]@{
+        checkedRuns = $refreshRuns.Count
+        active = @($active)
+        succeeded = @($succeeded)
+        failed = @($failed)
+      } | ConvertTo-Json -Depth 100 -Compress
+
+  - name: persist-nonterminal-runs
+    type: Prompt
+    dependsOn: [shape-run-updates]
+    mcps: [zakira]
+    systemPrompt: |
+      You persist non-terminal tracker state in Zakira.
+
+      Requirements:
+      - Read the JSON payload.
+      - For every item in `active`, update that per-run document so it remains active.
+      - Update only current status/result fields, `lastCheckedAt`, `groupId`, and any normalized tracking fields needed for future checks.
+      - Do not create or submit any ActionView entry.
+      - Update the `tracked-runs-index` document so each active run remains present with isActive=true and refreshed status/result/lastCheckedAt metadata.
+      - Leave succeeded and failed runs untouched in this step.
+      - Return JSON only:
+        { "updatedActiveCount": <number> }
+      - No markdown or prose.
+    userPrompt: |
+      Persist the non-terminal tracked run updates.
+
+      {{shape-run-updates.output}}
+
+  - name: process-terminal-runs
+    type: Prompt
+    dependsOn: [shape-run-updates]
+    mcps: [zakira, orchestra]
+    systemPrompt: |
+      You finalize terminal tracked runs.
+
+      Requirements:
+      - Read the provided JSON payload.
+      - For every item in `succeeded`:
+        1. Update the per-run Zakira document with terminal success details, `isActive=false`, `lastCheckedAt`, and the preserved `groupId`.
+        2. Update the `tracked-runs-index` document so the run is marked inactive with terminal status/result metadata.
+        3. Dynamically invoke the child orchestration `actionview-submit` through the Orchestra MCP.
+        4. Pass ONLY these child parameters:
+           - entryJson
+           - groupId (optional, but include it when present)
+        5. Build `entryJson` as a JSON string summarizing the successful pipeline run.
+      - For every item in `failed`:
+        1. Dynamically invoke the child orchestration `zts-official-pipeline-investigator` through the Orchestra MCP and wait for its final result.
+        2. Capture a concise investigation summary from the child orchestration result.
+        3. Update the per-run Zakira document with terminal failure details, `isActive=false`, `lastCheckedAt`, preserved `groupId`, and the investigation summary.
+        4. Update the `tracked-runs-index` document so the run is marked inactive with terminal failure metadata.
+        5. Dynamically invoke the child orchestration `actionview-submit` through the Orchestra MCP.
+        6. Pass ONLY these child parameters:
+           - entryJson
+           - groupId (optional, but include it when present)
+        7. Build `entryJson` as a JSON string summarizing the failed pipeline run and the investigation result.
+      - Never use payloadJson, contentJson, title, or markdown as actionview-submit parameters.
+      - Do not emit duplicate ActionView submissions for runs that already have `actionViewSubmittedAt` populated.
+      - Return JSON only:
+        {
+          "succeededProcessed": <number>,
+          "failedProcessed": <number>,
+          "investigationsTriggered": <number>,
+          "results": [
+            {
+              "runKey": "<string>",
+              "terminalState": "success" | "failure",
+              "groupId": "<string>",
+              "investigationSummary": "<string>",
+              "actionViewSubmitted": true | false
+            }
+          ]
+        }
+      - No prose or markdown.
+    userPrompt: |
+      Finalize all terminal tracked runs, invoke the required child orchestrations through the Orchestra MCP, persist the results, and avoid duplicate ActionView spam.
+
+      {{shape-run-updates.output}}
+
+  - name: build-final-summary
+    type: Script
+    dependsOn: [shape-run-updates, persist-nonterminal-runs, process-terminal-runs]
+    shell: pwsh
+    script: |
+      $shape = @'
+      {{shape-run-updates.output}}
+      '@ | ConvertFrom-Json -Depth 100
+
+      $activePersist = @'
+      {{persist-nonterminal-runs.output}}
+      '@ | ConvertFrom-Json -Depth 100
+
+      $terminal = @'
+      {{process-terminal-runs.output}}
+      '@ | ConvertFrom-Json -Depth 100
+
+      [ordered]@{
+        checked = [int]$shape.checkedRuns
+        succeeded = [int]$terminal.succeededProcessed
+        failed = [int]$terminal.failedProcessed
+        remainedActive = [int]$activePersist.updatedActiveCount
+        investigationsTriggered = [int]$terminal.investigationsTriggered
+      } | ConvertTo-Json -Depth 20 -Compress

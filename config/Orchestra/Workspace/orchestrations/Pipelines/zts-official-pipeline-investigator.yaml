@@ -1,0 +1,446 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: zts-official-pipeline-investigator
+description: investigate failed Azure DevOps CI/CD runs and persist findings
+defaultModel: claude-opus-4.6
+timeoutSeconds: 7200
+trigger:
+  type: manual
+inputs:
+  pipelineUrl:
+    type: string
+    required: true
+    description: Full Azure DevOps pipeline, build, release, or run URL to investigate.
+  pipelineKind:
+    type: string
+    required: false
+    default: ""
+    description: Optional caller-supplied pipeline kind hint such as ci, cd, release, build, or deployment.
+  trackedRecordJson:
+    type: string
+    required: false
+    default: ""
+    description: Optional Zakira tracked record JSON from a prior workflow, used to update persisted investigation status and result fields.
+mcps:
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - --yes
+      - --
+      - mcp
+      - --category
+      - zts-official-pipeline-tracker
+steps:
+  - name: normalize-inputs
+    type: Script
+    shell: pwsh
+    script: |
+      $pipelineUrl = $args[0]
+      $pipelineKind = $args[1]
+      $trackedRecordJson = $args[2]
+
+      $trimmedKind = if ([string]::IsNullOrWhiteSpace($pipelineKind)) { "" } else { $pipelineKind.Trim() }
+      $inferredKind = $trimmedKind
+
+      if ([string]::IsNullOrWhiteSpace($inferredKind)) {
+        $urlLower = $pipelineUrl.ToLowerInvariant()
+        if ($urlLower -match '/_release\?' -or $urlLower -match '/release\?' -or $urlLower -match 'releaseid=') {
+          $inferredKind = 'release'
+        } elseif ($urlLower -match '/_build/results\?' -or $urlLower -match 'view=results') {
+          $inferredKind = 'ci'
+        } elseif ($urlLower -match 'deployment' -or $urlLower -match 'stageattempt') {
+          $inferredKind = 'cd'
+        } else {
+          $inferredKind = 'unknown'
+        }
+      }
+
+      $trackedRecord = $null
+      if (-not [string]::IsNullOrWhiteSpace($trackedRecordJson)) {
+        $trackedRecord = $trackedRecordJson | ConvertFrom-Json -Depth 100
+      }
+
+      $result = [ordered]@{
+        pipelineUrl = $pipelineUrl
+        pipelineKind = $inferredKind
+        trackedRecordProvided = $null -ne $trackedRecord
+        trackedRecord = $trackedRecord
+      }
+
+      $result | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{param.pipelineUrl}}"
+      - "{{param.pipelineKind}}"
+      - "{{param.trackedRecordJson}}"
+
+  - name: investigate-failed-run
+    type: Prompt
+    dependsOn: [normalize-inputs]
+    mcps: [azdo]
+    systemPrompt: |
+      You investigate failed Azure DevOps CI/CD runs using Azure DevOps MCP tools.
+      Use the tools to inspect the exact run indicated by the provided URL.
+
+      Requirements:
+      1. Fetch authoritative run metadata, definition or pipeline name, project, repository, branch, result, status, queue/start/finish times, requester, and links.
+      2. Identify the failed stage, failed job, and the most relevant failing task or step.
+      3. Collect concise but useful log or timeline excerpts that support the diagnosis.
+      4. Trace the run back to likely pull requests, commits, authors, source branch, target branch, and relevant work items when available.
+      5. For CD or release style runs, inspect deployment logs or step text and include raw evidence text that may contain an ev2portal.azure.net rollout link.
+      6. If evidence is incomplete, say so plainly and lower confidence rather than guessing.
+
+      Output STRICT JSON only. Do not wrap in markdown. Do not add commentary.
+      Use this exact top-level shape:
+      {
+        "pipeline": {
+          "url": "",
+          "kind": "",
+          "organization": "",
+          "project": "",
+          "definitionName": "",
+          "definitionId": "",
+          "runId": "",
+          "runNumber": "",
+          "status": "",
+          "result": "",
+          "branch": "",
+          "sourceVersion": "",
+          "requestedBy": "",
+          "startedAt": "",
+          "finishedAt": ""
+        },
+        "failure": {
+          "impactedStage": "",
+          "impactedJob": "",
+          "impactedTask": "",
+          "likelyCause": "",
+          "confidence": "",
+          "evidence": [
+            {
+              "kind": "",
+              "location": "",
+              "excerpt": ""
+            }
+          ]
+        },
+        "changes": {
+          "pullRequests": [
+            {
+              "id": "",
+              "title": "",
+              "status": "",
+              "url": "",
+              "sourceBranch": "",
+              "targetBranch": "",
+              "author": ""
+            }
+          ],
+          "commits": [
+            {
+              "id": "",
+              "comment": "",
+              "author": "",
+              "timestamp": ""
+            }
+          ],
+          "workItems": [
+            {
+              "id": "",
+              "type": "",
+              "title": "",
+              "state": "",
+              "url": ""
+            }
+          ]
+        },
+        "releaseSignals": {
+          "rawTextBlocks": [
+            ""
+          ],
+          "candidateUrls": [
+            ""
+          ]
+        },
+        "nextSteps": [
+          ""
+        ],
+        "gaps": [
+          ""
+        ]
+      }
+    userPrompt: |
+      Investigate this failed Azure DevOps run and return only the required JSON.
+
+      Normalized input:
+      {{normalize-inputs.output}}
+
+      Focus points:
+      - Determine whether this is CI, CD, or release behavior based on the run and the normalized input.
+      - Include enough raw release or deployment text in releaseSignals.rawTextBlocks for deterministic regex extraction of any ev2portal.azure.net rollout link.
+      - Prefer precise suspected PRs and commits over long lists.
+      - Include concrete next steps grounded in the failing stage, task, and evidence.
+
+  - name: extract-rollout-link
+    type: Script
+    dependsOn: [investigate-failed-run]
+    shell: pwsh
+    script: |
+      $investigation = $args[0] | ConvertFrom-Json -Depth 100
+
+      $texts = New-Object System.Collections.Generic.List[string]
+
+      if ($null -ne $investigation.releaseSignals) {
+        if ($null -ne $investigation.releaseSignals.rawTextBlocks) {
+          foreach ($item in $investigation.releaseSignals.rawTextBlocks) {
+            if ($null -ne $item -and -not [string]::IsNullOrWhiteSpace([string]$item)) {
+              [void]$texts.Add([string]$item)
+            }
+          }
+        }
+
+        if ($null -ne $investigation.releaseSignals.candidateUrls) {
+          foreach ($item in $investigation.releaseSignals.candidateUrls) {
+            if ($null -ne $item -and -not [string]::IsNullOrWhiteSpace([string]$item)) {
+              [void]$texts.Add([string]$item)
+            }
+          }
+        }
+      }
+
+      if ($null -ne $investigation.failure -and $null -ne $investigation.failure.evidence) {
+        foreach ($evidence in $investigation.failure.evidence) {
+          if ($null -ne $evidence.excerpt -and -not [string]::IsNullOrWhiteSpace([string]$evidence.excerpt)) {
+            [void]$texts.Add([string]$evidence.excerpt)
+          }
+        }
+      }
+
+      $combined = ($texts.ToArray() -join "`n")
+      $pattern = 'https://ev2portal\.azure\.net[^\s)"''<>]+'
+      $matches = [regex]::Matches($combined, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
+      $urls = New-Object System.Collections.Generic.List[string]
+      foreach ($match in $matches) {
+        $value = $match.Value.TrimEnd('.', ',', ';')
+        if (-not [string]::IsNullOrWhiteSpace($value) -and -not $urls.Contains($value)) {
+          [void]$urls.Add($value)
+        }
+      }
+
+      $result = [ordered]@{
+        hasRolloutLink = $urls.Count -gt 0
+        rolloutLink = if ($urls.Count -gt 0) { $urls[0] } else { "" }
+        allRolloutLinks = $urls.ToArray()
+        followUpNote = if ($urls.Count -gt 0) { "Rollout link found; suitable for follow-up with Ev2Mcp." } else { "" }
+      }
+
+      $result | ConvertTo-Json -Depth 20 -Compress
+    arguments:
+      - "{{investigate-failed-run.output}}"
+
+  - name: shape-investigation-record
+    type: Script
+    dependsOn: [normalize-inputs, investigate-failed-run, extract-rollout-link]
+    shell: pwsh
+    script: |
+      $normalized = $args[0] | ConvertFrom-Json -Depth 100
+      $investigation = $args[1] | ConvertFrom-Json -Depth 100
+      $rollout = $args[2] | ConvertFrom-Json -Depth 100
+
+      $confidence = if ([string]::IsNullOrWhiteSpace([string]$investigation.failure.confidence)) { "medium" } else { [string]$investigation.failure.confidence }
+      $impactedStage = [string]$investigation.failure.impactedStage
+      $likelyCause = [string]$investigation.failure.likelyCause
+
+      $suspectedPrs = @()
+      if ($null -ne $investigation.changes.pullRequests) {
+        $suspectedPrs = @($investigation.changes.pullRequests | Select-Object -First 5)
+      }
+
+      $suspectedCommits = @()
+      if ($null -ne $investigation.changes.commits) {
+        $suspectedCommits = @($investigation.changes.commits | Select-Object -First 5)
+      }
+
+      $nextSteps = @()
+      if ($null -ne $investigation.nextSteps) {
+        $nextSteps = @($investigation.nextSteps)
+      }
+
+      $resultText = if ($investigation.pipeline.result) { [string]$investigation.pipeline.result } else { "failed" }
+      $statusText = "investigated"
+
+      $summaryObject = [ordered]@{
+        pipelineUrl = $normalized.pipelineUrl
+        pipelineKind = $investigation.pipeline.kind
+        run = $investigation.pipeline
+        failure = [ordered]@{
+          impactedStage = $impactedStage
+          impactedJob = [string]$investigation.failure.impactedJob
+          impactedTask = [string]$investigation.failure.impactedTask
+          likelyCause = $likelyCause
+          confidence = $confidence
+        }
+        suspectedPullRequests = $suspectedPrs
+        suspectedCommits = $suspectedCommits
+        workItems = $investigation.changes.workItems
+        rollout = $rollout
+        nextSteps = $nextSteps
+      }
+
+      $markdownLines = New-Object System.Collections.Generic.List[string]
+      [void]$markdownLines.Add("# Azure DevOps Pipeline Investigation")
+      [void]$markdownLines.Add("")
+      [void]$markdownLines.Add("| Field | Value |")
+      [void]$markdownLines.Add("| --- | --- |")
+      [void]$markdownLines.Add("| Pipeline | $([string]$investigation.pipeline.definitionName) |")
+      [void]$markdownLines.Add("| Run | $([string]$investigation.pipeline.runNumber) |")
+      [void]$markdownLines.Add("| Kind | $([string]$investigation.pipeline.kind) |")
+      [void]$markdownLines.Add("| Result | $resultText |")
+      [void]$markdownLines.Add("| Impacted stage | $impactedStage |")
+      [void]$markdownLines.Add("| Impacted task | $([string]$investigation.failure.impactedTask) |")
+      [void]$markdownLines.Add("| Confidence | $confidence |")
+      if ($rollout.hasRolloutLink) {
+        [void]$markdownLines.Add("| Rollout link | $([string]$rollout.rolloutLink) |")
+      }
+      [void]$markdownLines.Add("")
+      [void]$markdownLines.Add("## Likely failure cause")
+      [void]$markdownLines.Add("")
+      [void]$markdownLines.Add($likelyCause)
+      [void]$markdownLines.Add("")
+      if ($suspectedPrs.Count -gt 0) {
+        [void]$markdownLines.Add("## Suspected pull requests")
+        [void]$markdownLines.Add("")
+        foreach ($pr in $suspectedPrs) {
+          [void]$markdownLines.Add("- PR $([string]$pr.id): $([string]$pr.title) ($([string]$pr.author))")
+        }
+        [void]$markdownLines.Add("")
+      }
+      if ($suspectedCommits.Count -gt 0) {
+        [void]$markdownLines.Add("## Suspected commits")
+        [void]$markdownLines.Add("")
+        foreach ($commit in $suspectedCommits) {
+          $shortId = [string]$commit.id
+          if ($shortId.Length -gt 12) { $shortId = $shortId.Substring(0, 12) }
+          [void]$markdownLines.Add("- $shortId - $([string]$commit.comment)")
+        }
+        [void]$markdownLines.Add("")
+      }
+      [void]$markdownLines.Add("## Next steps")
+      [void]$markdownLines.Add("")
+      foreach ($step in $nextSteps) {
+        [void]$markdownLines.Add("- $([string]$step)")
+      }
+      if ($rollout.hasRolloutLink) {
+        [void]$markdownLines.Add("")
+        [void]$markdownLines.Add("> Rollout link found and persisted. It is suitable for follow-up with Ev2Mcp.")
+      }
+
+      $entry = [ordered]@{
+        schema = "actionview-entry/v1"
+        source = "zts-official-pipeline-investigator"
+        kind = "azdo-pipeline-investigation"
+        title = "Pipeline investigation: $([string]$investigation.pipeline.definitionName) run $([string]$investigation.pipeline.runNumber)"
+        status = "warning"
+        summary = [ordered]@{
+          likelyFailureCause = $likelyCause
+          impactedStage = $impactedStage
+          confidence = $confidence
+          rolloutLink = [string]$rollout.rolloutLink
+        }
+        data = $summaryObject
+        markdown = ($markdownLines -join "`n")
+      }
+
+      $result = [ordered]@{
+        investigationStatus = $statusText
+        result = $resultText
+        rolloutLink = [string]$rollout.rolloutLink
+        summary = $summaryObject
+        actionViewEntryJson = ($entry | ConvertTo-Json -Depth 100 -Compress)
+      }
+
+      $result | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{normalize-inputs.output}}"
+      - "{{investigate-failed-run.output}}"
+      - "{{extract-rollout-link.output}}"
+
+  - name: persist-zakira-record
+    type: Prompt
+    dependsOn: [normalize-inputs, shape-investigation-record]
+    mcps: [zakira]
+    systemPrompt: |
+      You update or resolve a Zakira tracking record for this pipeline investigation.
+
+      Requirements:
+      1. Use the provided tracked record JSON when present.
+      2. If no tracked record JSON is present, try to resolve an existing record using the pipeline URL and run metadata from the investigation summary.
+      3. Persist these fields when you can update a record:
+         - investigationStatus
+         - result
+         - rolloutLink
+         - likelyFailureCause
+         - impactedStage
+         - confidence
+         - suspectedPullRequests
+         - suspectedCommits
+         - nextSteps
+      4. If no record can be resolved, do not fabricate one. Return resolved=false and explain why.
+      5. Output STRICT JSON only.
+
+      Return this shape exactly:
+      {
+        "resolved": false,
+        "updated": false,
+        "recordKey": "",
+        "reason": "",
+        "persistedFields": {
+          "investigationStatus": "",
+          "result": "",
+          "rolloutLink": ""
+        }
+      }
+    userPrompt: |
+      Update the tracked Zakira record if provided or resolvable.
+
+      Normalized input:
+      {{normalize-inputs.output}}
+
+      Investigation payload:
+      {{shape-investigation-record.output}}
+
+  - name: submit-actionview
+    type: Orchestration
+    dependsOn: [shape-investigation-record]
+    orchestration: actionview-submit
+    parameters:
+      entryJson: "{{shape-investigation-record.output}}"
+    inputHandlerPrompt: |
+      The input is a JSON object that includes a property named actionViewEntryJson.
+      Return a JSON object with exactly one property:
+      {
+        "entryJson": "<the actionViewEntryJson string>"
+      }
+
+      Do not include any other keys.
+
+  - name: final-summary
+    type: Prompt
+    dependsOn: [investigate-failed-run, extract-rollout-link, persist-zakira-record, submit-actionview]
+    systemPrompt: |
+      You produce a polished, concise human-facing markdown summary of a pipeline investigation.
+      Keep it brief but concrete.
+      Highlight the likely cause, impacted stage, suspected PRs or commits, confidence, rollout link if present, Zakira persistence outcome, and next steps.
+      If a rollout link exists, explicitly note that it is suitable for follow-up with Ev2Mcp.
+    userPrompt: |
+      Create the final summary markdown from these machine outputs.
+
+      Investigation:
+      {{investigate-failed-run.output}}
+
+      Rollout extraction:
+      {{extract-rollout-link.output}}
+
+      Zakira persistence:
+      {{persist-zakira-record.output}}

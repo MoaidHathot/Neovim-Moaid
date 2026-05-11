@@ -1,0 +1,495 @@
+name: zts-official-pipeline-dispatcher
+description: reusable dispatcher for tracking Azure DevOps CI/CD runs
+version: 1.0.0
+tags: ["ZTS", "MSFT", "Azure-DevOps", "Pipeline", "Tracking", "Dispatcher"]
+defaultModel: claude-opus-4.6
+timeoutSeconds: 7200
+
+trigger:
+  type: manual
+
+inputs:
+  pipelineUrl:
+    type: string
+    description: Full Azure DevOps CI build or CD release URL to normalize and track.
+    required: false
+  trackedRunJson:
+    type: string
+    description: Pre-fetched tracked-run JSON to normalize, enrich, and persist instead of resolving from a URL.
+    required: false
+    default: ""
+    multiline: true
+  source:
+    type: string
+    description: Whether this dispatch was triggered automatically or manually.
+    required: true
+    enum: [auto, manual]
+  forceTrack:
+    type: boolean
+    description: When true, persist and dispatch tracking even if the run is already tracked or not relevant to the user.
+    required: false
+    default: "false"
+  trackReason:
+    type: string
+    description: Optional human-readable reason for tracking or re-tracking this run.
+    required: false
+    default: ""
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 900
+
+variables:
+  trackedRunsIndexKey: tracked-runs-index
+  targetUserDisplayName: Moaid Hathot
+
+mcps:
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - --yes
+      - --
+      - mcp
+      - --category
+      - zts-official-pipeline-tracker
+
+steps:
+  - name: normalize-tracked-run
+    type: Prompt
+    systemPrompt: |
+      You are an Azure DevOps pipeline tracking normalizer.
+
+      Your job is to normalize either:
+      1. a manually supplied Azure DevOps pipeline URL, or
+      2. a pre-fetched trackedRunJson document
+
+      into a single canonical tracked-run record for downstream persistence.
+
+      Requirements:
+      - Support both dev.azure.com and visualstudio.com URLs.
+      - Support CI build URLs and CD/release URLs, including:
+        - definition URLs
+        - run/result URLs
+        - summary/detail URLs that still identify the build or release
+      - If the user provided only a definition URL, resolve it to:
+        1. the most recent active run if one exists
+        2. otherwise the latest recent run
+      - If trackedRunJson is provided, treat it as the authoritative seed, but still use Azure DevOps tools to fill missing details or canonicalize links when needed.
+      - Preserve the ability to track non-default CI/CD links; do not hardcode any ZTS-only assumptions.
+      - Gather enough Azure DevOps data to populate:
+        kind, runId, definitionId, definitionName, pipelineUrl, queuedBy, associatedPullRequests, associatedChanges, status, terminalState
+      - Also include a resolved recordKey using:
+        - ci:<runId> for CI/build runs
+        - cd:<runId> for CD/release runs
+      - Set source from the orchestration input.
+      - Set trackReason from the orchestration input.
+      - Set discoveredAt and lastCheckedAt to the current timestamp in ISO-8601 UTC.
+      - Set investigationStatus to "pending".
+      - Set actionViewGroupId to "pipeline-<kind>-<runId>".
+      - If both pipelineUrl and trackedRunJson are empty or cannot be resolved into a run, call orchestra_set_status with status "failed" and explain why.
+
+      Output ONLY valid JSON with this shape:
+      {
+        "inputKind": "pipeline-url" | "tracked-run-json",
+        "resolvedFrom": "build-run-url" | "release-run-url" | "build-definition-url" | "release-definition-url" | "tracked-run-json",
+        "canonicalRecord": {
+          "kind": "ci" | "cd",
+          "runId": "<string>",
+          "definitionId": "<string>",
+          "definitionName": "<string>",
+          "pipelineUrl": "<canonical full url>",
+          "source": "auto" | "manual",
+          "trackReason": "<string>",
+          "relevantToUser": false,
+          "relevanceReason": "",
+          "queuedBy": {
+            "displayName": "<string>",
+            "uniqueName": "<string>",
+            "id": "<string>"
+          },
+          "associatedPullRequests": [],
+          "associatedChanges": [],
+          "status": "<string>",
+          "discoveredAt": "<iso-utc>",
+          "lastCheckedAt": "<iso-utc>",
+          "terminalState": true,
+          "investigationStatus": "pending",
+          "actionViewGroupId": "<string>"
+        },
+        "recordKey": "ci:<runId>|cd:<runId>"
+      }
+    userPrompt: |
+      Normalize this run for tracking.
+
+      pipelineUrl:
+      {{param.pipelineUrl}}
+
+      trackedRunJson:
+      {{param.trackedRunJson}}
+
+      source:
+      {{param.source}}
+
+      trackReason:
+      {{param.trackReason}}
+
+      forceTrack:
+      {{param.forceTrack}}
+
+      Use Azure DevOps tools to resolve whichever input is available into one canonical tracked-run record. Return only the JSON object.
+    outputHandlerPrompt: |
+      Ensure the output is valid JSON matching the requested object shape. Remove markdown fences and commentary. If the model returned malformed JSON, repair it without changing the intended values.
+    mcps: [azdo]
+    timeoutSeconds: 1200
+
+  - name: assess-relevance
+    type: Prompt
+    dependsOn: [normalize-tracked-run]
+    systemPrompt: |
+      You are a pipeline relevance evaluator.
+
+      Determine whether the normalized Azure DevOps run is relevant to the user '{{vars.targetUserDisplayName}}'.
+
+      Relevance rules:
+      - Check requester / queuedBy identity
+      - Check commit authorship
+      - Check associated PR authorship
+      - Use Azure DevOps tools to fetch additional build/release/PR/change details as needed
+      - A run is relevant when any strong signal ties it to '{{vars.targetUserDisplayName}}'
+      - In manual mode, retain the discovered relevance result, but downstream logic may still force tracking
+      - Explain the strongest reason in a short machine-friendly sentence
+
+      Output ONLY valid JSON:
+      {
+        "relevantToUser": true,
+        "relevanceReason": "<short reason>",
+        "queuedBy": { ...normalized identity... },
+        "associatedPullRequests": [
+          {
+            "id": "<string>",
+            "title": "<string>",
+            "url": "<string>",
+            "author": "<string>",
+            "status": "<string>"
+          }
+        ],
+        "associatedChanges": [
+          {
+            "id": "<string>",
+            "message": "<string>",
+            "author": "<string>",
+            "timestamp": "<string>"
+          }
+        ],
+        "status": "<current pipeline status>",
+        "terminalState": true
+      }
+    userPrompt: |
+      Evaluate whether this normalized run is relevant to '{{vars.targetUserDisplayName}}'.
+
+      Normalized run:
+      {{normalize-tracked-run.output}}
+
+      Return only the JSON object.
+    outputHandlerPrompt: |
+      Ensure the output is valid JSON only. Preserve arrays and objects exactly, remove markdown fences, and repair minor formatting issues if needed.
+    mcps: [azdo]
+    timeoutSeconds: 1200
+
+  - name: check-existing-tracking-state
+    type: Prompt
+    dependsOn: [normalize-tracked-run]
+    systemPrompt: |
+      You are a Zakira tracking-state checker.
+
+      Use Zakira memory tools to inspect:
+      1. the index document at key '{{vars.trackedRunsIndexKey}}'
+      2. the per-run record using the normalized recordKey
+
+      If the index does not exist, treat it as:
+      { "key": "{{vars.trackedRunsIndexKey}}", "records": [] }
+
+      Output ONLY valid JSON:
+      {
+        "indexKey": "{{vars.trackedRunsIndexKey}}",
+        "recordKey": "<record key>",
+        "indexExists": true,
+        "recordExists": true,
+        "indexDocument": {
+          "key": "{{vars.trackedRunsIndexKey}}",
+          "records": [
+            {
+              "recordKey": "<string>",
+              "kind": "ci|cd",
+              "runId": "<string>",
+              "definitionId": "<string>",
+              "definitionName": "<string>",
+              "pipelineUrl": "<string>",
+              "status": "<string>",
+              "terminalState": true,
+              "lastCheckedAt": "<string>",
+              "actionViewGroupId": "<string>"
+            }
+          ]
+        },
+        "existingRecord": null
+      }
+
+      Do not mutate memory in this step.
+    userPrompt: |
+      Check whether this run is already tracked.
+
+      Normalized run:
+      {{normalize-tracked-run.output}}
+
+      Read the tracked-runs index and the per-run record. Return only the JSON object.
+    outputHandlerPrompt: |
+      Ensure the result is valid JSON only. If memory is missing, represent it using the requested fallback structure.
+    mcps: [zakira]
+    timeoutSeconds: 180
+
+  - name: decide-dispatch
+    type: Prompt
+    dependsOn: [normalize-tracked-run, assess-relevance, check-existing-tracking-state]
+    systemPrompt: |
+      You are the dispatcher gate for pipeline tracking.
+
+      Merge the normalized record, relevance analysis, and existing tracking state into a final dispatch decision.
+
+      Decision rules:
+      - If source is "auto" and the run is not relevant to the user, and forceTrack is false:
+        - call orchestra_set_status with status "no_action"
+        - then call orchestra_complete with status "success" and reason explaining the run is not relevant
+      - If an existing tracked record already exists and forceTrack is false:
+        - call orchestra_set_status with status "no_action"
+        - then call orchestra_complete with status "success" and reason explaining duplicate tracking was avoided
+      - Manual mode may track irrelevant runs when forceTrack is true
+      - If forceTrack is true, allow create-or-update dispatch even for duplicates or irrelevant runs
+      - Always carry forward the enriched fields from the relevance step
+      - Set investigationStatus:
+        - "pending" when this is a new or forced tracking dispatch
+        - "already-tracked" only for informational duplicate decisions that would otherwise no-action
+      - Keep terminal runs trackable; do not reject them just because terminalState is true
+
+      Output ONLY valid JSON:
+      {
+        "decision": "track" | "update",
+        "reason": "<short reason>",
+        "recordKey": "<string>",
+        "indexKey": "{{vars.trackedRunsIndexKey}}",
+        "finalRecord": {
+          "kind": "ci|cd",
+          "runId": "<string>",
+          "definitionId": "<string>",
+          "definitionName": "<string>",
+          "pipelineUrl": "<string>",
+          "source": "auto|manual",
+          "trackReason": "<string>",
+          "relevantToUser": true,
+          "relevanceReason": "<string>",
+          "queuedBy": {},
+          "associatedPullRequests": [],
+          "associatedChanges": [],
+          "status": "<string>",
+          "discoveredAt": "<string>",
+          "lastCheckedAt": "<string>",
+          "terminalState": true,
+          "investigationStatus": "<string>",
+          "actionViewGroupId": "<string>"
+        },
+        "existingRecord": null
+      }
+    userPrompt: |
+      Make the dispatch decision.
+
+      Normalized run:
+      {{normalize-tracked-run.output}}
+
+      Relevance:
+      {{assess-relevance.output}}
+
+      Existing tracking state:
+      {{check-existing-tracking-state.output}}
+
+      Source: {{param.source}}
+      Force track: {{param.forceTrack}}
+      Track reason: {{param.trackReason}}
+
+      Return only the JSON object unless you trigger the appropriate no-action tools.
+    outputHandlerPrompt: |
+      Ensure the result is valid JSON only. Remove markdown fences and normalize booleans, strings, arrays, and objects to valid JSON.
+    timeoutSeconds: 300
+
+  - name: persist-tracking-state
+    type: Prompt
+    dependsOn: [decide-dispatch, check-existing-tracking-state]
+    systemPrompt: |
+      You are a Zakira persistence agent for tracked pipeline runs.
+
+      Use Zakira memory tools to create or update:
+      1. the per-run record at the provided recordKey
+      2. the index document at '{{vars.trackedRunsIndexKey}}'
+
+      Persistence rules:
+      - The per-run record key must remain exactly ci:<runId> or cd:<runId>
+      - The index document must remain a single object with:
+        {
+          "key": "{{vars.trackedRunsIndexKey}}",
+          "records": [ ... ]
+        }
+      - Ensure the index contains exactly one summary entry per recordKey
+      - For the index summary entry, keep:
+        recordKey, kind, runId, definitionId, definitionName, pipelineUrl, status, terminalState, lastCheckedAt, actionViewGroupId
+      - When the record already exists, update it in place
+      - Preserve that already-terminal runs are still persisted
+      - Use a clear reason describing whether this is initial tracking or a refresh
+
+      Output ONLY valid JSON:
+      {
+        "indexKey": "{{vars.trackedRunsIndexKey}}",
+        "recordKey": "<string>",
+        "action": "created" | "updated",
+        "persistedRecord": { ...full tracked record... },
+        "indexSummaryEntry": { ...summary entry... }
+      }
+    userPrompt: |
+      Persist this tracking decision to Zakira.
+
+      Dispatch decision:
+      {{decide-dispatch.output}}
+
+      Existing tracking state:
+      {{check-existing-tracking-state.output}}
+
+      Create or update the per-run record and the tracked-runs index. Return only the JSON object.
+    outputHandlerPrompt: |
+      Ensure the output is valid JSON only. Preserve the persisted record and summary entry as JSON objects.
+    mcps: [zakira]
+    timeoutSeconds: 300
+
+  - name: build-actionview-entry
+    type: Prompt
+    dependsOn: [decide-dispatch, persist-tracking-state]
+    systemPrompt: |
+      You build complete ActionView entry JSON for pipeline tracking dispatches.
+
+      Build the full entry JSON string manually. Do not delegate submission in this step.
+      The entry should summarize discovery/start-tracking for this pipeline run and be suitable for actionview-submit.
+
+      Requirements:
+      - Output ONLY raw JSON for the ActionView entry
+      - source must be '{{orchestration.name}}'
+      - include groupId equal to the tracked record's actionViewGroupId
+      - make the title clear and concise
+      - use informative tags
+      - include machine-derived facts from the tracked record
+      - content should be polished and human-facing
+      - include the canonical pipeline URL
+      - mention whether the run is already terminal
+      - mention whether it was auto or manual discovery
+      - mention why it is relevant or forced
+      - do not include any markdown fences
+
+      Suggested entry shape:
+      - type: pipeline-tracking-dispatch
+      - source: '{{orchestration.name}}'
+      - title
+      - subtitle
+      - severity
+      - groupId
+      - tags
+      - content blocks
+      - actions
+    userPrompt: |
+      Build the full ActionView entry JSON for this tracking dispatch.
+
+      Dispatch decision:
+      {{decide-dispatch.output}}
+
+      Persisted state:
+      {{persist-tracking-state.output}}
+
+      Return only the ActionView entry JSON string.
+    outputHandlerPrompt: |
+      Ensure the output is a single valid JSON object with no markdown fences or commentary.
+    timeoutSeconds: 120
+
+  - name: submit-actionview-entry
+    type: Orchestration
+    dependsOn: [build-actionview-entry, decide-dispatch]
+    orchestration: actionview-submit
+    parameters:
+      entryJson: "{{build-actionview-entry.output}}"
+      groupId: "{{decide-dispatch.output.actionViewGroupId}}"
+    mode: sync
+    timeoutSeconds: 600
+
+  - name: finalize-tracked-record
+    type: Prompt
+    dependsOn: [submit-actionview-entry, persist-tracking-state]
+    systemPrompt: |
+      You are a Zakira finalizer for pipeline tracking records.
+
+      Update the persisted per-run record after ActionView submission.
+      Use Zakira memory tools to ensure the final record reflects:
+      - the latest known status
+      - lastCheckedAt
+      - actionViewGroupId
+      - investigationStatus suitable for the next tracker/investigation pass
+
+      Rules:
+      - Keep all existing tracked record fields
+      - If the ActionView submission succeeded, set investigationStatus to "queued"
+      - Keep terminal runs persisted and marked for later handling
+      - Do not change the recordKey format
+
+      Output ONLY valid JSON:
+      {
+        "recordKey": "<string>",
+        "finalRecord": { ...full tracked record... },
+        "actionViewSubmission": "<short summary>"
+      }
+    userPrompt: |
+      Finalize the tracked record after ActionView submission.
+
+      Persisted state:
+      {{persist-tracking-state.output}}
+
+      ActionView submission result:
+      {{submit-actionview-entry.output}}
+
+      Update the per-run record and return only the JSON object.
+    outputHandlerPrompt: |
+      Ensure the output is valid JSON only. Preserve the final tracked record as a JSON object.
+    mcps: [zakira]
+    timeoutSeconds: 300
+
+  - name: generate-summary
+    type: Prompt
+    dependsOn: [finalize-tracked-record, submit-actionview-entry]
+    systemPrompt: |
+      You are a reporting assistant. Produce a concise polished markdown summary for a pipeline tracking dispatch.
+    userPrompt: |
+      Create the final human-facing summary for this pipeline tracking dispatch.
+
+      Final tracked record:
+      {{finalize-tracked-record.output}}
+
+      ActionView submission:
+      {{submit-actionview-entry.output}}
+
+      Produce polished markdown with:
+      1. Header: '## Pipeline Tracking Dispatch Summary'
+      2. The pipeline kind, run ID, and definition name
+      3. The canonical pipeline URL
+      4. Whether tracking was auto or manual
+      5. Whether it was relevant to the user and why
+      6. Whether the run is already terminal
+      7. Confirmation that the tracked state and ActionView entry were recorded
+    timeoutSeconds: 60
