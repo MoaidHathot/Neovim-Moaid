@@ -10,6 +10,7 @@ All tools return JSON. Errors are returned as `{ "error": "message" }`.
 
 - Read-only tools (session, PR description, files, diff, threads, draft counts)
 - Sync and iteration tools (sync threads, check iteration, iteration diff)
+- New-replies tools (get new replies, acknowledge replies)
 - Write tools (create comment/reply drafts, edit/delete drafts, create draft operations)
 - Working directory and file access tools (working directory, read file, list files)
 - Fix worktree tools (prepare worktree, get path, create branch)
@@ -92,8 +93,6 @@ Get PR review session metadata.
 The `metadata` block is derived from the session and is useful for AI agents deciding review priority, readiness, remaining unresolved feedback, and stale session risk.
 
 **Error:** `"No session found for this PR. Run 'powerreview open --pr-url <url>' first."`
-
-`powerreview open --pr-url <url>` is safe to call for both new sessions and refreshing an existing session.
 
 ---
 
@@ -279,7 +278,14 @@ Get a summary of draft operation counts by status and kind.
 
 ## SyncThreads
 
-Sync comment threads from the remote provider (e.g., Azure DevOps). Updates the local session with the latest threads and checks for new iterations. Call this before reading threads to ensure you have the most up-to-date data.
+Sync comment threads from the remote provider (e.g., Azure DevOps). Updates the
+local session with the latest threads and checks for new iterations.
+
+Also computes a **reply-classification delta** against the snapshot taken on the
+previous sync, writes it to the session's `last_deltas`, and returns a count
+summary in the response. Call this before reading threads to ensure you have
+the most up-to-date data. To fetch the actual new replies after a sync, call
+`GetNewReplies`.
 
 **Parameters:**
 
@@ -304,15 +310,179 @@ Sync comment threads from the remote provider (e.g., Azure DevOps). Updates the 
       "reviewed_files": ["src/config.cs"],
       "changed_since_review": ["src/main.cs", "src/utils.cs"]
     }
+  },
+  "silent_priming": false,
+  "deltas": {
+    "reply_to_ai": 1,
+    "reply_to_human": 0,
+    "reply_in_others_thread": 4,
+    "new_thread_others": 1
   }
 }
 ```
 
-When no new iteration is detected, `iteration_check` is `null`.
+- When no new iteration is detected, `iteration_check` is `null`.
+- `silent_priming: true` (with `deltas: null`) means this was the **first sync
+  after the session was upgraded to schema v8 or after the snapshot was
+  cleared**. The classifier intentionally produces no deltas in this case to
+  avoid flagging every existing comment as "new". Treat the session as caught
+  up; rely on `ListCommentThreads` for the current state.
+- `deltas` counts only **unacked** comments. After calling
+  `AcknowledgeReplies` on a thread, those comments are excluded from future
+  syncs' deltas.
+
+**Bucket definitions** (see `GetNewReplies` for full schema):
+
+| Bucket | Meaning |
+|---|---|
+| `reply_to_ai` | New/edited comments on threads where the AI participated (via published drafts). Highest priority for AI follow-up. |
+| `reply_to_human` | New/edited comments on threads where the local human user participated, AI did not. |
+| `reply_in_others_thread` | New/edited comments on threads where neither the local user nor AI ever participated. |
+| `new_thread_others` | Brand-new threads opened by someone other than the local user / AI. |
+
+The classifier also computes a `self_echo` bucket for our own publishes
+reflected back from the server; it is never surfaced as actionable. Comments
+authored by the local user (matched by id from `local_identity`) or by AI
+(matched via `published_comment_id`) are always routed to `self_echo`.
 
 **Errors:**
 - `"No session found for this PR."` -- no active session
 - Provider-specific sync errors
+
+---
+
+## GetNewReplies
+
+Get new/edited comments since the previous sync, classified by recipient. Reads
+from the cached `last_deltas` populated by `SyncThreads` — does **not** make a
+remote call. Comments already covered by an `AcknowledgeReplies` watermark are
+suppressed.
+
+Use this as the primary discovery path for "what does the AI need to respond
+to?" — it returns only actionable items, grouped by thread, with a body preview
+so you can decide whether to fetch the full thread.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `prUrl` | string | Yes | The pull request URL |
+| `scope` | string | No | Filter scope (default: `"to_me"`). See below. |
+| `threadId` | number | No | Limit to a single thread id. |
+
+**Scope values:**
+
+| Scope | Returns |
+|---|---|
+| `"to_ai"` | Replies on threads where AI participated (most relevant for AI follow-up). |
+| `"to_me"` *(default)* | `to_ai` + replies on threads where the human user participated. Recommended default for AI agents assisting the user. |
+| `"to_others"` | Replies on threads with no local participation + new threads opened by others (full-PR awareness). |
+| `"all"` | Union of all actionable buckets (excludes `self_echo`). |
+| `"self_echo"` | Debug: our own published comments reflected back. UI/AI should never act on these. |
+
+**Returns:**
+
+```json
+{
+  "scope": "to_me",
+  "computed_at": "2026-05-11T10:00:00Z",
+  "total_comments": 1,
+  "threads": [
+    {
+      "thread_id": 123,
+      "file_path": "src/foo.cs",
+      "comments": [
+        {
+          "thread_id": 123,
+          "comment_id": 789,
+          "parent_comment_id": null,
+          "change": "new",
+          "file_path": "src/foo.cs",
+          "line_start": 42,
+          "line_end": 42,
+          "author": {
+            "name": "Reviewer Name",
+            "id": "00000000-0000-0000-0000-000000000000",
+            "unique_name": "reviewer@example.com"
+          },
+          "created_at": "2026-05-11T09:55:00Z",
+          "updated_at": "2026-05-11T09:55:00Z",
+          "body_preview": "Could you rename `foo` to `bar` for consistency...",
+          "ai_participated": true,
+          "human_participated": false
+        }
+      ]
+    }
+  ]
+}
+```
+
+- `change` is `"new"` if the comment id wasn't in the previous snapshot, or
+  `"edited"` if the id existed but its `updated_at` changed.
+- `body_preview` is the first 200 chars of the body collapsed to a single line.
+- `ai_participated` / `human_participated` describe the **thread**, not the
+  individual comment, so the AI can decide whether to keep the conversation
+  going or hand it back to the user.
+
+**Workflow:** call `SyncThreads` first, then call `GetNewReplies` to fetch the
+detail. After acting on a comment, call `AcknowledgeReplies` so it doesn't
+re-appear on the next sync.
+
+**Errors:**
+- `"No session found for this PR."` -- no active session
+- `"Unknown scope '...'"` -- invalid scope value
+
+---
+
+## AcknowledgeReplies
+
+Mark replies as acknowledged by advancing per-thread watermarks. Comments with
+`id <= through_comment_id` on a given thread are suppressed from `GetNewReplies`
+and from the `deltas` summary on subsequent `SyncThreads` calls.
+
+Watermarks are **monotonic**: calling with a lower id than the existing
+watermark is a no-op for that thread (it cannot un-ack).
+
+Use this after the AI has either drafted a follow-up reply or has explicitly
+decided to ignore the reply, so the same comment doesn't keep appearing in
+`GetNewReplies` forever.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `prUrl` | string | Yes | The pull request URL |
+| `acks` | string | Yes | Pairs of thread id + through-comment id. Format: `"threadId:throughCommentId"` separated by commas, e.g. `"123:789,456:1011"`. |
+| `ackedBy` | string | No | Who is acknowledging: `"ai"` (default for MCP) or `"human"`. Recorded for audit. |
+
+The `through_comment_id` is the highest comment id you have processed on that
+thread. Acknowledging through a higher id implicitly acks all lower ids on the
+same thread.
+
+**Returns:**
+
+```json
+{
+  "acknowledged": 2,
+  "requested": 3,
+  "acked_by": "ai"
+}
+```
+
+- `requested` is the number of pairs parsed from `acks`.
+- `acknowledged` is the number of pairs that actually advanced the watermark
+  (i.e. were strictly greater than the existing value). `requested - acknowledged`
+  pairs were no-ops because the existing watermark was already at or above the
+  requested value.
+
+Side-effect: the call also re-runs reply-classification against the current
+threads and the existing snapshot, so the just-acknowledged comments are
+removed from `last_deltas` immediately. The next `GetNewReplies` call will
+reflect the new state without waiting for the next sync.
+
+**Errors:**
+- `"No valid ack pairs provided..."` -- the `acks` string couldn't be parsed
+- `"Session not found: ..."` -- no active session
 
 ---
 

@@ -8,13 +8,19 @@ compatibility: Requires the PowerReview MCP server connected via stdio. Requires
 
 ## Prerequisites
 
-A review session must already be open for the PR. If `GetReviewSession` returns an error, ask the user to open the session first. The `open` command is safe for both new sessions and refreshing an existing session:
+A review session must already be open for the PR. If `GetReviewSession` returns an error, ask the user to open the session first:
 
 ```
-powerreview open --pr-url <url>
+powerreview open --pr-url <url> --repo-path <path>
 ```
 
 All tools require `prUrl` -- the full pull request URL (Azure DevOps or GitHub format).
+
+If `GetReviewSession` shows `local_identity: null` on the session, ask the user
+to run `powerreview identity refresh --pr-url <url>` once. Reply classification
+still works in this state (via `published_comment_id` on AI-submitted drafts),
+but identity-based matching helps recognize comments the user posted directly
+from the provider's web UI as "self" rather than as third-party replies.
 
 ## Tool invocation
 
@@ -25,6 +31,8 @@ If using the CLI instead of MCP, each tool has an equivalent CLI command. The ma
 | MCP Tool | CLI Equivalent |
 |----------|---------------|
 | `SyncThreads(prUrl)` | `powerreview sync --pr-url <url>` |
+| `GetNewReplies(prUrl, scope?, threadId?)` | `powerreview replies --pr-url <url> [--scope <scope>] [--thread-id <n>]` |
+| `AcknowledgeReplies(prUrl, acks, ackedBy?)` | `powerreview ack --pr-url <url> --thread-id <n> [--through <comment_id>] [--by ai\|human]` |
 | `ListCommentThreads(prUrl)` | `powerreview threads --pr-url <url>` |
 | `GetReviewSession(prUrl)` | `powerreview session --pr-url <url>` |
 | `ReplyToThread(prUrl, threadId, body)` | `powerreview reply --pr-url <url> --thread-id <n> --body <text>` |
@@ -55,18 +63,31 @@ When the user wants you to respond to comments on their PR, follow these steps:
 
 ```
 Response Progress:
-- [ ] Step 1: Sync and load the latest comment threads
-- [ ] Step 2: Identify new/unaddressed comments
+- [ ] Step 1: Sync and load the latest comment threads (call SyncThreads)
+- [ ] Step 2: Identify new/unaddressed comments (call GetNewReplies)
 - [ ] Step 3: For each comment, decide the action (reply, code fix, or won't fix)
 - [ ] Step 4: Execute the appropriate action
+- [ ] Step 4b: Acknowledge handled comments (call AcknowledgeReplies)
 - [ ] Step 5: Summarize what was done
 ```
 
 ### Step 1: Sync and load threads
 
 1. Call `SyncThreads` to fetch the latest comment threads from the remote provider.
-2. Call `ListCommentThreads` to see all threads and their statuses.
-3. Call `GetReviewSession` to understand the PR context (branches, files, iteration, reviewers, work items, and `metadata`).
+   The response now includes a `deltas` summary with counts of new/edited comments
+   classified by recipient (`reply_to_ai`, `reply_to_human`, `reply_in_others_thread`,
+   `new_thread_others`). If `silent_priming` is `true`, this was the first sync after
+   upgrade — treat the session as "caught up" (no actionable deltas exist yet) and
+   proceed by summarizing the current open threads from `ListCommentThreads` rather
+   than waiting for deltas. The next sync onward will produce real deltas.
+2. If `deltas.reply_to_ai > 0` (or `deltas.reply_to_human > 0` and the user wants
+   AI to handle their replies too), call `GetNewReplies(prUrl, scope="to_me")` to
+   get the actual list of new replies that need attention. This avoids re-scanning
+   every thread on a busy PR.
+3. Optionally call `ListCommentThreads` if you need the full thread context for
+   threads that aren't in the deltas.
+4. Call `GetReviewSession` to understand the PR context (branches, files, iteration,
+   reviewers, work items, and `metadata`).
 
 Use session `metadata` when relevant:
 
@@ -80,13 +101,32 @@ Use session `metadata` when relevant:
 
 ### Step 2: Identify new/unaddressed comments
 
-Look through the threads for comments that need a response. Focus on:
+**Preferred path: use `GetNewReplies`.** It returns only the comments that have
+arrived (or been edited) since the previous sync, grouped by thread, with a
+`body_preview` so you can decide whether to fetch the full thread.
 
-- Threads with status `Active` or `Pending` (not yet resolved)
-- Threads from required reviewers, especially when `metadata.reviewers.required_pending` is non-zero
-- Comments from reviewers (not from the PR author)
-- Comments that ask questions, request changes, or point out issues
-- Comments that don't already have a reply addressing them
+Scopes to use:
+- `to_ai` (default for AI agents): replies on threads where AI participated. Highest priority.
+- `to_me`: `to_ai` + replies on threads the human user participated in.
+- `to_others` / `all`: full PR awareness — usually only when the user explicitly asks.
+
+If `GetNewReplies` returns nothing actionable, fall back to scanning
+`ListCommentThreads` for threads with status `Active`/`Pending` from required
+reviewers (e.g. when starting a session and there's no diff yet).
+
+### Step 2b: Acknowledge after acting
+
+After you've drafted a follow-up reply (or explicitly decided not to respond),
+call `AcknowledgeReplies` so the same reply doesn't keep appearing in
+`GetNewReplies` on every subsequent sync. Format:
+
+```
+AcknowledgeReplies(prUrl="<url>", acks="123:789,456:1011", ackedBy="ai")
+```
+
+The `through_comment_id` should be the highest comment id you've handled on
+that thread. Watermarks are monotonic so it's safe to re-ack — calling with a
+lower id is a no-op.
 
 ### Step 3: Decide the action
 
@@ -117,12 +157,6 @@ Call `ReplyToThread` with:
 - `agentName` -- your agent name (optional)
 
 The reply is created as a draft. The user must approve it before it is submitted.
-
-When replying as a reviewer agent rather than the PR author assistant, set `agentName` to the stable reviewer name and include a hidden body marker so future automation can track ownership:
-
-```markdown
-<!-- powerreview-agent: <agent name> -->
-```
 
 #### For thread status decisions:
 
