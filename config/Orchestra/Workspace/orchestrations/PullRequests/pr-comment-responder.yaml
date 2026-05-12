@@ -20,7 +20,7 @@ variables:
   authorName: Moaid Hathot
   zakiraCategory: pr-comment-response-state
   pullRequestsDir: "../../orchestrations/PullRequests"
-  skillsDirPowerReview: "{{vars.pullRequestsDir}}/skills-powerreview"
+  skillsDirPowerReview: "../../skills/powerreview"
   skillsDirActionView: "{{vars.pullRequestsDir}}/skills-actionview"
 
 defaultRetryPolicy:

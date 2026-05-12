@@ -1,6 +1,6 @@
 ---
 name: reusable-orchestrations
-description: Catalogue of architecturally useful Orchestra orchestrations already registered in this workspace that should be reused (via the `Orchestration` step type or the data-plane `invoke_orchestration` MCP tool) instead of being re-implemented inline. Use this skill when authoring a new orchestration that needs to publish ActionView entries, generate other orchestrations from natural-language descriptions, or run an ephemeral self-healing task. Pair it with `orchestration-authoring` (schema reference) and `mcp-catalog` (MCP wiring).
+description: Catalogue of architecturally useful Orchestra orchestrations already registered in this workspace that should be reused (via the `Orchestration` step type or the data-plane `invoke_orchestration` MCP tool) instead of being re-implemented inline. Use this skill when authoring a new orchestration that needs to publish ActionView entries, generate other orchestrations from natural-language descriptions, or run an ephemeral self-healing task. Pair it with `writing-orchestrations` (schema reference) and `mcp-catalog` (MCP wiring).
 ---
 
 # Reusable Orchestrations Catalogue
@@ -21,7 +21,7 @@ The three entries below are kept deliberately short. Each section answers:
    is the default; the data-plane MCP is the alternative for agent-driven flows).
 
 If something is not listed here, it is not part of this skill -- consult
-`orchestration-authoring` for the YAML schema or `mcp-catalog` for MCP wiring.
+`writing-orchestrations` for the YAML schema or `mcp-catalog` for MCP wiring.
 
 ---
 
@@ -89,7 +89,7 @@ context-leak markers, structural-validates required top-level keys) before
 writing it to disk as UTF-8 without BOM.
 
 It is the fast variant of the (slower, multi-step) `generate-orchestration`.
-Both load the `orchestration-authoring` and `mcp-catalog` skills so the model
+Both load the `writing-orchestrations` and `mcp-catalog` skills so the model
 already knows the schema and the MCP catalogue when it writes the YAML.
 
 ### When to use it
@@ -214,11 +214,11 @@ it via `{{run-task.output}}` in a downstream step.
 | Land an entry in ActionView                                          | `actionview-submit`              |
 | Programmatically write a new orchestration file from a description   | `generate-orchestration-fast`    |
 | Run a one-off task that may need to be re-authored on failure        | `run-self-healing`               |
-| Hand-author a long-lived orchestration                               | Neither -- write it yourself, using `orchestration-authoring` |
+| Hand-author a long-lived orchestration                               | Neither -- write it yourself, using `writing-orchestrations` |
 
 ## Related skills
 
-- `orchestration-authoring` -- complete property-level YAML reference for
+- `writing-orchestrations` -- complete property-level YAML reference for
   authoring orchestrations. Required reading before invoking
   `generate-orchestration-fast` or `run-self-healing`, because both ultimately
   emit YAML that must conform to the same schema.

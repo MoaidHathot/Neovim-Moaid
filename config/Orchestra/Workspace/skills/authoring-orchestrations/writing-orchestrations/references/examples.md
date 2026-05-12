@@ -748,7 +748,7 @@ steps:
     mcps:
       - orchestra-control
     skillDirectories:
-      - ./skills/orchestration-authoring
+      - ./skills/writing-orchestrations
     systemPrompt: |
       You are an expert Orchestra orchestration author. Generate valid,
       production-quality Orchestra orchestration YAML files based on user
@@ -791,7 +791,7 @@ steps:
       - generate
     model: claude-opus-4.6
     skillDirectories:
-      - ./skills/orchestration-authoring
+      - ./skills/writing-orchestrations
     systemPrompt: |
       You are an Orchestra orchestration validator. Review the YAML for
       structural and semantic correctness. If valid, respond with VALID

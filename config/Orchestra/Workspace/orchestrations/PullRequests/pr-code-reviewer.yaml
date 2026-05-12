@@ -24,7 +24,7 @@ variables:
   liabadiSkillsDir: "{{vars.liabadiDir}}/Skills"
   ohadsDir: "{{vars.personasDir}}/ohads"
   ohadsSkillsDir: "{{vars.ohadsDir}}/Skills"
-  skillsDirPowerReview: "./skills-powerreview"
+  skillsDirPowerReview: "../../skills/powerreview"
   skillsDirActionView: "./skills-actionview"
   promptsDir: "./prompts"
 

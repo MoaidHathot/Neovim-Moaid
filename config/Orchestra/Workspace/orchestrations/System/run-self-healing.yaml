@@ -141,8 +141,8 @@ steps:
     dependsOn: [validate-inputs]
     mcps: [orchestra]
     skillDirectories:
-      - ../../orchestrations/System/skills/orchestration-authoring
-      - ../../orchestrations/System/skills/mcp-catalog
+      - ../../skills/authoring-orchestrations/writing-orchestrations
+      - ../../skills/authoring-orchestrations/mcp-catalog
     timeoutSeconds: 13800
     infiniteSessions:
       enabled: true

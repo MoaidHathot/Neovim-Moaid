@@ -38,7 +38,7 @@ variables:
   zakiraCategory: pr-code-review-state
   staleReviewMinutes: "60"
   reviewerAgentNames: ".NET Expert, Principal Engineer, Security Expert, DTFx Expert, liabadi, ohads"
-  skillsDirPowerReview: "./skills-powerreview"
+  skillsDirPowerReview: "../../skills/powerreview"
 
 defaultRetryPolicy:
   maxRetries: 2

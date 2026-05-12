@@ -1,5 +1,5 @@
 ---
-name: orchestration-authoring
+name: writing-orchestrations
 description: Creates and validates Orchestra orchestration files (JSON/YAML) that define DAGs of steps (Prompt, Command, Script, Http, Transform, Approval, Orchestration) with triggers, hooks, MCPs, subagents, loops, typed inputs, human-in-the-loop pauses, and template expressions. Use when authoring new orchestrations, generating orchestration files from descriptions, reviewing existing orchestrations for correctness, or debugging orchestration issues.
 ---
 

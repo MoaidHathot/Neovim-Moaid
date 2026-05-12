@@ -45,7 +45,7 @@ variables:
   zakiraCategory: pr-comment-response-state
   staleRespondingMinutes: "75"
   agentName: PR Author Assistant
-  skillsDirPowerReview: "./skills-powerreview"
+  skillsDirPowerReview: "../../skills/powerreview"
 
 defaultRetryPolicy:
   maxRetries: 2

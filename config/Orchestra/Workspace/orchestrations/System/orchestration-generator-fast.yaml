@@ -48,8 +48,8 @@ steps:
     parameters:
       - description
     skillDirectories:
-      - ../../orchestrations/System/skills/orchestration-authoring
-      - ../../orchestrations/System/skills/mcp-catalog
+      - ../../skills/authoring-orchestrations/writing-orchestrations
+      - ../../skills/authoring-orchestrations/mcp-catalog
     reasoningLevel: Low
     systemPrompt: |
       You are an expert Orchestra orchestration author. Generate a single
