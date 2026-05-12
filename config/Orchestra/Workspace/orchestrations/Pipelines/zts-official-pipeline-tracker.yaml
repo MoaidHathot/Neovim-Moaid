@@ -5,6 +5,8 @@ version: 1.0.0
 tags: ["ZTS", "pipelines", "MSFT", "Azure-DevOps", "Pipeline", "Tracker", "auto"]
 defaultModel: gpt-5.4
 timeoutSeconds: 7200
+variables:
+  pollIntervalSeconds: "300"
 trigger:
   type: scheduler
   intervalSeconds: 300
@@ -206,59 +208,189 @@ steps:
 
       {{shape-run-updates.output}}
 
+  - name: build-success-entries
+    type: Script
+    dependsOn: [shape-run-updates]
+    shell: pwsh
+    script: |
+      $shape = @'
+      {{shape-run-updates.output}}
+      '@ | ConvertFrom-Json -Depth 100
+
+      $entries = New-Object System.Collections.Generic.List[object]
+      $skipped = New-Object System.Collections.Generic.List[object]
+
+      foreach ($run in @($shape.succeeded)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$run.actionViewSubmittedAt)) {
+          [void]$skipped.Add([ordered]@{
+            runKey = [string]$run.runKey
+            reason = "already-submitted"
+            existingSubmittedAt = [string]$run.actionViewSubmittedAt
+          })
+          continue
+        }
+
+        $project = [string]$run.project
+        $definitionId = [string]$run.definitionId
+        $runId = [string]$run.runId
+        $groupId = if (-not [string]::IsNullOrWhiteSpace([string]$run.groupId)) { [string]$run.groupId } else { "pipeline-success-$runId" }
+        $title = "Pipeline succeeded: $project run $runId"
+        $subtitle = [string]$run.summary
+        if ([string]::IsNullOrWhiteSpace($subtitle)) { $subtitle = "Terminal status: $($run.currentStatus) ($($run.currentResult))" }
+
+        $tagsList = New-Object System.Collections.Generic.List[string]
+        [void]$tagsList.Add("ZTS")
+        [void]$tagsList.Add("Pipeline")
+        [void]$tagsList.Add("Tracker")
+        [void]$tagsList.Add("Success")
+        if (-not [string]::IsNullOrWhiteSpace($project)) { [void]$tagsList.Add($project) }
+
+        $detailsPairs = [ordered]@{
+          Project = $project
+          DefinitionId = $definitionId
+          RunId = $runId
+          Status = [string]$run.currentStatus
+          Result = [string]$run.currentResult
+          CheckedAt = [string]$run.checkedAt
+        }
+
+        $contentBlocks = New-Object System.Collections.Generic.List[object]
+        [void]$contentBlocks.Add([ordered]@{
+          type  = "keyValue"
+          label = "Run"
+          pairs = $detailsPairs
+        })
+        if (-not [string]::IsNullOrWhiteSpace([string]$run.existingRecord.pipelineUrl)) {
+          [void]$contentBlocks.Add([ordered]@{
+            type  = "link"
+            label = "Open pipeline run"
+            url   = [string]$run.existingRecord.pipelineUrl
+          })
+        }
+
+        $entry = [ordered]@{
+          schemaVersion = "1"
+          type          = "azdo-pipeline-success"
+          source        = "zts-official-pipeline-tracker"
+          title         = $title
+          subtitle      = $subtitle
+          severity      = "low"
+          icon          = "check-circle"
+          tags          = $tagsList.ToArray()
+          groupId       = $groupId
+          content       = $contentBlocks.ToArray()
+        }
+
+        [void]$entries.Add([ordered]@{
+          runKey    = [string]$run.runKey
+          recordKey = [string]$run.recordKey
+          groupId   = $groupId
+          entryJson = ($entry | ConvertTo-Json -Depth 100 -Compress)
+        })
+      }
+
+      [ordered]@{
+        entries = @($entries)
+        skipped = @($skipped)
+        count   = $entries.Count
+      } | ConvertTo-Json -Depth 100 -Compress
+
   - name: process-terminal-runs
     type: Prompt
-    dependsOn: [shape-run-updates]
+    dependsOn: [shape-run-updates, build-success-entries]
     mcps: [zakira, orchestra]
     systemPrompt: |
-      You finalize terminal tracked runs.
+      You finalize terminal tracked runs. ActionView entries for successes are
+      pre-built deterministically by the upstream `build-success-entries`
+      step; ActionView entries for failures are produced and submitted by the
+      `zts-official-pipeline-investigator` child orchestration. You never
+      author ActionView entry JSON yourself.
 
-      Requirements:
-      - Read the provided JSON payload.
-      - For every item in `succeeded`:
-        1. Update the per-run Zakira document with terminal success details, `isActive=false`, `lastCheckedAt`, and the preserved `groupId`.
-        2. Update the `tracked-runs-index` document so the run is marked inactive with terminal status/result metadata.
-        3. Dynamically invoke the child orchestration `actionview-submit` through the Orchestra MCP.
-        4. Pass ONLY these child parameters:
-           - entryJson
-           - groupId (optional, but include it when present)
-        5. Build `entryJson` as a JSON string summarizing the successful pipeline run.
-      - For every item in `failed`:
-        1. Dynamically invoke the child orchestration `zts-official-pipeline-investigator` through the Orchestra MCP and wait for its final result.
-        2. Capture a concise investigation summary from the child orchestration result.
-        3. Update the per-run Zakira document with terminal failure details, `isActive=false`, `lastCheckedAt`, preserved `groupId`, and the investigation summary.
-        4. Update the `tracked-runs-index` document so the run is marked inactive with terminal failure metadata.
-        5. Dynamically invoke the child orchestration `actionview-submit` through the Orchestra MCP.
-        6. Pass ONLY these child parameters:
-           - entryJson
-           - groupId (optional, but include it when present)
-        7. Build `entryJson` as a JSON string summarizing the failed pipeline run and the investigation result.
-      - Never use payloadJson, contentJson, title, or markdown as actionview-submit parameters.
-      - Do not emit duplicate ActionView submissions for runs that already have `actionViewSubmittedAt` populated.
-      - Return JSON only:
-        {
-          "succeededProcessed": <number>,
-          "failedProcessed": <number>,
-          "investigationsTriggered": <number>,
-          "results": [
-            {
-              "runKey": "<string>",
-              "terminalState": "success" | "failure",
-              "groupId": "<string>",
-              "investigationSummary": "<string>",
-              "actionViewSubmitted": true | false
-            }
-          ]
-        }
-      - No prose or markdown.
+      Inputs:
+        - shape: the JSON produced by `shape-run-updates` (active / succeeded
+          / failed run buckets).
+        - prebuilt: the JSON produced by `build-success-entries` (one
+          pre-validated entryJson per success run that has not yet been
+          submitted).
+
+      For each `entry` in `prebuilt.entries`:
+        1. Invoke the child orchestration `actionview-submit` through the
+           Orchestra MCP with parameters:
+             - entryJson: the entry's `entryJson` string verbatim
+             - groupId:   the entry's `groupId`
+           Wait for the child orchestration to finish.
+        2. Update the per-run Zakira document at `entry.recordKey` with:
+             currentStatus, currentResult (from the matching shape.succeeded
+             item), terminalState="success", isActive=false,
+             lastCheckedAt=current ISO-8601 UTC,
+             actionViewSubmittedAt=current ISO-8601 UTC,
+             actionViewGroupId=entry.groupId.
+        3. Update the `tracked-runs-index` document so the matching run entry
+           reflects isActive=false and the new status/result.
+
+      For each `run` in `shape.failed` where
+      `actionViewSubmittedAt` is empty:
+        1. Invoke the child orchestration `zts-official-pipeline-investigator`
+           through the Orchestra MCP with parameters:
+             - pipelineUrl: the run's pipelineUrl (use
+               run.existingRecord.pipelineUrl when available, otherwise
+               derive from project/definitionId/runId)
+             - pipelineKind: "ci" or "cd" inferred from the run; empty string
+               if unknown
+             - trackedRecordJson: the run.existingRecord serialized as a JSON
+               string (or "" when absent)
+             - existingActionViewGroupId: the run's groupId
+           Wait for the child orchestration to finish. It submits its own
+           ActionView entry.
+        2. Capture a concise investigation summary string from the child's
+           final result.
+        3. Update the per-run Zakira document with:
+             currentStatus, currentResult (from the shape.failed item),
+             terminalState="failure", isActive=false,
+             lastCheckedAt=current ISO-8601 UTC,
+             actionViewSubmittedAt=current ISO-8601 UTC,
+             actionViewGroupId=run.groupId,
+             investigationStatus="investigated",
+             investigationSummary=<the captured summary>.
+        4. Update the `tracked-runs-index` document so the matching run entry
+           reflects isActive=false and the new status/result.
+
+      Do not invoke actionview-submit for failed runs. Do not invoke the
+      investigator for succeeded runs. Do not emit duplicate ActionView
+      submissions for any run that already has `actionViewSubmittedAt`
+      populated; record those in `skipped`.
+
+      Return strict JSON only with this shape:
+      {
+        "succeededProcessed": <number>,
+        "failedProcessed": <number>,
+        "investigationsTriggered": <number>,
+        "skipped": [
+          { "runKey": "<string>", "reason": "<string>" }
+        ],
+        "results": [
+          {
+            "runKey": "<string>",
+            "terminalState": "success" | "failure",
+            "groupId": "<string>",
+            "investigationSummary": "<string>",
+            "actionViewSubmitted": true
+          }
+        ]
+      }
+      No prose or markdown.
     userPrompt: |
-      Finalize all terminal tracked runs, invoke the required child orchestrations through the Orchestra MCP, persist the results, and avoid duplicate ActionView spam.
+      Finalize all terminal tracked runs.
 
+      shape:
       {{shape-run-updates.output}}
+
+      prebuilt:
+      {{build-success-entries.output}}
 
   - name: build-final-summary
     type: Script
-    dependsOn: [shape-run-updates, persist-nonterminal-runs, process-terminal-runs]
+    dependsOn: [shape-run-updates, persist-nonterminal-runs, process-terminal-runs, build-success-entries]
     shell: pwsh
     script: |
       $shape = @'
@@ -273,10 +405,16 @@ steps:
       {{process-terminal-runs.output}}
       '@ | ConvertFrom-Json -Depth 100
 
+      $prebuilt = @'
+      {{build-success-entries.output}}
+      '@ | ConvertFrom-Json -Depth 100
+
       [ordered]@{
         checked = [int]$shape.checkedRuns
         succeeded = [int]$terminal.succeededProcessed
         failed = [int]$terminal.failedProcessed
         remainedActive = [int]$activePersist.updatedActiveCount
         investigationsTriggered = [int]$terminal.investigationsTriggered
+        successEntriesPrebuilt = [int]$prebuilt.count
+        skippedSuccessEntries = @($prebuilt.skipped).Count
       } | ConvertTo-Json -Depth 20 -Compress

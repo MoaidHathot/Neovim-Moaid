@@ -22,6 +22,11 @@ inputs:
     required: false
     default: ""
     description: Optional Zakira tracked record JSON from a prior workflow, used to update persisted investigation status and result fields.
+  existingActionViewGroupId:
+    type: string
+    required: false
+    default: ""
+    description: Optional stable ActionView groupId from an upstream tracked-run record. When set, the submitted ActionView entry reuses it for visual grouping. When empty, the orchestration derives a groupId from the pipeline kind and run id.
 mcps:
   - name: zakira
     type: local
@@ -249,6 +254,7 @@ steps:
       $normalized = $args[0] | ConvertFrom-Json -Depth 100
       $investigation = $args[1] | ConvertFrom-Json -Depth 100
       $rollout = $args[2] | ConvertFrom-Json -Depth 100
+      $existingGroupId = [string]$args[3]
 
       $confidence = if ([string]::IsNullOrWhiteSpace([string]$investigation.failure.confidence)) { "medium" } else { [string]$investigation.failure.confidence }
       $impactedStage = [string]$investigation.failure.impactedStage
@@ -271,6 +277,16 @@ steps:
 
       $resultText = if ($investigation.pipeline.result) { [string]$investigation.pipeline.result } else { "failed" }
       $statusText = "investigated"
+
+      $pipelineKindForGroup = if (-not [string]::IsNullOrWhiteSpace([string]$investigation.pipeline.kind)) { [string]$investigation.pipeline.kind } else { [string]$normalized.pipelineKind }
+      if ([string]::IsNullOrWhiteSpace($pipelineKindForGroup)) { $pipelineKindForGroup = "unknown" }
+      $runIdForGroup = if (-not [string]::IsNullOrWhiteSpace([string]$investigation.pipeline.runId)) { [string]$investigation.pipeline.runId } else { "unknown" }
+
+      $groupId = if (-not [string]::IsNullOrWhiteSpace($existingGroupId)) {
+        $existingGroupId
+      } else {
+        "pipeline-$pipelineKindForGroup-$runIdForGroup"
+      }
 
       $summaryObject = [ordered]@{
         pipelineUrl = $normalized.pipelineUrl
@@ -338,26 +354,67 @@ steps:
         [void]$markdownLines.Add("> Rollout link found and persisted. It is suitable for follow-up with Ev2Mcp.")
       }
 
+      $entryTitle = "Pipeline investigation: $([string]$investigation.pipeline.definitionName) run $([string]$investigation.pipeline.runNumber)"
+      $entrySubtitle = if ([string]::IsNullOrWhiteSpace($likelyCause)) { "Failed run investigated" } else { "Likely cause: $likelyCause" }
+
+      $tagsList = New-Object System.Collections.Generic.List[string]
+      [void]$tagsList.Add("ZTS")
+      [void]$tagsList.Add("Pipeline")
+      [void]$tagsList.Add("Investigation")
+      if (-not [string]::IsNullOrWhiteSpace($pipelineKindForGroup) -and $pipelineKindForGroup -ne "unknown") {
+        [void]$tagsList.Add($pipelineKindForGroup)
+      }
+
+      $detailsPairs = [ordered]@{
+        Pipeline = [string]$investigation.pipeline.definitionName
+        Run = [string]$investigation.pipeline.runNumber
+        Kind = [string]$investigation.pipeline.kind
+        Result = $resultText
+        ImpactedStage = $impactedStage
+        ImpactedTask = [string]$investigation.failure.impactedTask
+        Confidence = $confidence
+      }
+      if ($rollout.hasRolloutLink) {
+        $detailsPairs["RolloutLink"] = [string]$rollout.rolloutLink
+      }
+
+      $contentBlocks = New-Object System.Collections.Generic.List[object]
+      [void]$contentBlocks.Add([ordered]@{
+        type  = "keyValue"
+        label = "Run"
+        pairs = $detailsPairs
+      })
+      [void]$contentBlocks.Add([ordered]@{
+        type  = "markdown"
+        label = "Report"
+        body  = ($markdownLines -join "`n")
+      })
+      if (-not [string]::IsNullOrWhiteSpace([string]$normalized.pipelineUrl)) {
+        [void]$contentBlocks.Add([ordered]@{
+          type  = "link"
+          label = "Open pipeline run"
+          url   = [string]$normalized.pipelineUrl
+        })
+      }
+
       $entry = [ordered]@{
-        schema = "actionview-entry/v1"
-        source = "zts-official-pipeline-investigator"
-        kind = "azdo-pipeline-investigation"
-        title = "Pipeline investigation: $([string]$investigation.pipeline.definitionName) run $([string]$investigation.pipeline.runNumber)"
-        status = "warning"
-        summary = [ordered]@{
-          likelyFailureCause = $likelyCause
-          impactedStage = $impactedStage
-          confidence = $confidence
-          rolloutLink = [string]$rollout.rolloutLink
-        }
-        data = $summaryObject
-        markdown = ($markdownLines -join "`n")
+        schemaVersion = "1"
+        type          = "azdo-pipeline-investigation"
+        source        = "zts-official-pipeline-investigator"
+        title         = $entryTitle
+        subtitle      = $entrySubtitle
+        severity      = "high"
+        icon          = "alert-triangle"
+        tags          = $tagsList.ToArray()
+        groupId       = $groupId
+        content       = $contentBlocks.ToArray()
       }
 
       $result = [ordered]@{
         investigationStatus = $statusText
         result = $resultText
         rolloutLink = [string]$rollout.rolloutLink
+        groupId = $groupId
         summary = $summaryObject
         actionViewEntryJson = ($entry | ConvertTo-Json -Depth 100 -Compress)
       }
@@ -367,6 +424,7 @@ steps:
       - "{{normalize-inputs.output}}"
       - "{{investigate-failed-run.output}}"
       - "{{extract-rollout-link.output}}"
+      - "{{param.existingActionViewGroupId}}"
 
   - name: persist-zakira-record
     type: Prompt
@@ -419,13 +477,14 @@ steps:
     parameters:
       entryJson: "{{shape-investigation-record.output}}"
     inputHandlerPrompt: |
-      The input is a JSON object that includes a property named actionViewEntryJson.
-      Return a JSON object with exactly one property:
+      The input is a JSON object that includes properties named `actionViewEntryJson` and `groupId`.
+      Return a JSON object with exactly two properties:
       {
-        "entryJson": "<the actionViewEntryJson string>"
+        "entryJson": "<the actionViewEntryJson string verbatim>",
+        "groupId": "<the groupId string verbatim, or empty string if absent>"
       }
 
-      Do not include any other keys.
+      Do not include any other keys. Do not modify entryJson contents.
 
   - name: final-summary
     type: Prompt

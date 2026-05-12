@@ -259,28 +259,26 @@ steps:
     type: Prompt
     dependsOn: [normalize-tracked-run, assess-relevance, check-existing-tracking-state]
     systemPrompt: |
-      You are the dispatcher gate for pipeline tracking.
+      You compile the normalized record, relevance analysis, and existing
+      tracking state into a single dispatch decision JSON. You are NOT a gate
+      and you do NOT call orchestra_set_status or orchestra_complete. The
+      deterministic Script step `gate-dispatch` that follows you decides
+      whether to proceed; your job is only to produce a complete decision
+      object so that the gate has everything it needs.
 
-      Merge the normalized record, relevance analysis, and existing tracking state into a final dispatch decision.
-
-      Decision rules:
-      - If source is "auto" and the run is not relevant to the user, and forceTrack is false:
-        - call orchestra_set_status with status "no_action"
-        - then call orchestra_complete with status "success" and reason explaining the run is not relevant
-      - If an existing tracked record already exists and forceTrack is false:
-        - call orchestra_set_status with status "no_action"
-        - then call orchestra_complete with status "success" and reason explaining duplicate tracking was avoided
-      - Manual mode may track irrelevant runs when forceTrack is true
-      - If forceTrack is true, allow create-or-update dispatch even for duplicates or irrelevant runs
-      - Always carry forward the enriched fields from the relevance step
+      Decision rules to encode in the output:
+      - decision = "track" when (source == "manual") OR (relevantToUser == true) OR (forceTrack == true)
+      - decision = "skip-irrelevant" when source == "auto" AND relevantToUser == false AND forceTrack == false
+      - decision = "skip-already-tracked" when existingRecord is non-null AND forceTrack == false
+      - Carry forward all enriched fields from the relevance step.
       - Set investigationStatus:
-        - "pending" when this is a new or forced tracking dispatch
-        - "already-tracked" only for informational duplicate decisions that would otherwise no-action
-      - Keep terminal runs trackable; do not reject them just because terminalState is true
+        - "pending" for new or forced tracking dispatch
+        - "already-tracked" for duplicate-skip decisions
+      - Keep terminal runs trackable; do not reject them just because terminalState is true.
 
       Output ONLY valid JSON:
       {
-        "decision": "track" | "update",
+        "decision": "track" | "skip-irrelevant" | "skip-already-tracked",
         "reason": "<short reason>",
         "recordKey": "<string>",
         "indexKey": "{{vars.trackedRunsIndexKey}}",
@@ -307,7 +305,7 @@ steps:
         "existingRecord": null
       }
     userPrompt: |
-      Make the dispatch decision.
+      Compile the dispatch decision JSON.
 
       Normalized run:
       {{normalize-tracked-run.output}}
@@ -322,14 +320,54 @@ steps:
       Force track: {{param.forceTrack}}
       Track reason: {{param.trackReason}}
 
-      Return only the JSON object unless you trigger the appropriate no-action tools.
+      Return only the JSON object. Do not call any orchestra_* tools.
     outputHandlerPrompt: |
       Ensure the result is valid JSON only. Remove markdown fences and normalize booleans, strings, arrays, and objects to valid JSON.
     timeoutSeconds: 300
 
+  - name: gate-dispatch
+    type: Prompt
+    dependsOn: [decide-dispatch]
+    parameters:
+      - source
+      - forceTrack
+    systemPrompt: |
+      You are a deterministic DAG gate for the pipeline dispatcher. You receive
+      a single dispatch decision JSON object plus the orchestration's `source`
+      and `forceTrack` parameters. You apply mechanical rules; you do not
+      reason.
+
+      Mechanical rules:
+        1. If decision == "skip-irrelevant":
+             - Call orchestra_set_status with status "no_action" and a short
+               reason of "Run is not relevant to the user; auto dispatch
+               suppressed."
+             - Return strict JSON: {"proceed": false, "reason": "skip-irrelevant"}
+        2. Else if decision == "skip-already-tracked":
+             - Call orchestra_set_status with status "no_action" and a short
+               reason of "Run is already tracked; duplicate dispatch
+               suppressed."
+             - Return strict JSON: {"proceed": false, "reason": "skip-already-tracked"}
+        3. Otherwise (decision == "track"):
+             - Return strict JSON: {"proceed": true, "reason": "dispatch"}
+
+      Do NOT call any other tools. Do NOT add commentary. Output strict JSON
+      only.
+    userPrompt: |
+      Apply the gate rules.
+
+      Source: {{param.source}}
+      ForceTrack: {{param.forceTrack}}
+
+      Dispatch decision:
+      {{decide-dispatch.output}}
+    outputHandlerPrompt: |
+      Ensure the output is a single JSON object with exactly the keys `proceed` (boolean) and `reason` (string).
+    timeoutSeconds: 60
+
   - name: persist-tracking-state
     type: Prompt
-    dependsOn: [decide-dispatch, check-existing-tracking-state]
+    dependsOn: [gate-dispatch, decide-dispatch, check-existing-tracking-state]
     systemPrompt: |
       You are a Zakira persistence agent for tracked pipeline runs.
 
@@ -374,96 +412,37 @@ steps:
     mcps: [zakira]
     timeoutSeconds: 300
 
-  - name: build-actionview-entry
-    type: Prompt
-    dependsOn: [decide-dispatch, persist-tracking-state]
-    systemPrompt: |
-      You build complete ActionView entry JSON for pipeline tracking dispatches.
-
-      Build the full entry JSON string manually. Do not delegate submission in this step.
-      The entry should summarize discovery/start-tracking for this pipeline run and be suitable for actionview-submit.
-
-      Requirements:
-      - Output ONLY raw JSON for the ActionView entry
-      - source must be '{{orchestration.name}}'
-      - include groupId equal to the tracked record's actionViewGroupId
-      - make the title clear and concise
-      - use informative tags
-      - include machine-derived facts from the tracked record
-      - content should be polished and human-facing
-      - include the canonical pipeline URL
-      - mention whether the run is already terminal
-      - mention whether it was auto or manual discovery
-      - mention why it is relevant or forced
-      - do not include any markdown fences
-
-      Suggested entry shape:
-      - type: pipeline-tracking-dispatch
-      - source: '{{orchestration.name}}'
-      - title
-      - subtitle
-      - severity
-      - groupId
-      - tags
-      - content blocks
-      - actions
-    userPrompt: |
-      Build the full ActionView entry JSON for this tracking dispatch.
-
-      Dispatch decision:
-      {{decide-dispatch.output}}
-
-      Persisted state:
-      {{persist-tracking-state.output}}
-
-      Return only the ActionView entry JSON string.
-    outputHandlerPrompt: |
-      Ensure the output is a single valid JSON object with no markdown fences or commentary.
-    timeoutSeconds: 120
-
-  - name: submit-actionview-entry
-    type: Orchestration
-    dependsOn: [build-actionview-entry, decide-dispatch]
-    orchestration: actionview-submit
-    parameters:
-      entryJson: "{{build-actionview-entry.output}}"
-      groupId: "{{decide-dispatch.output.actionViewGroupId}}"
-    mode: sync
-    timeoutSeconds: 600
-
   - name: finalize-tracked-record
     type: Prompt
-    dependsOn: [submit-actionview-entry, persist-tracking-state]
+    dependsOn: [persist-tracking-state]
     systemPrompt: |
       You are a Zakira finalizer for pipeline tracking records.
 
-      Update the persisted per-run record after ActionView submission.
-      Use Zakira memory tools to ensure the final record reflects:
-      - the latest known status
-      - lastCheckedAt
-      - actionViewGroupId
-      - investigationStatus suitable for the next tracker/investigation pass
+      Update the persisted per-run record so the scheduled tracker picks it up
+      on its next sweep. No ActionView submission happens in this orchestration
+      anymore — ActionView entries are produced only by the tracker on terminal
+      transition (success) or by the investigator (failure), each via the
+      shared actionview-submit child orchestration.
 
       Rules:
-      - Keep all existing tracked record fields
-      - If the ActionView submission succeeded, set investigationStatus to "queued"
-      - Keep terminal runs persisted and marked for later handling
-      - Do not change the recordKey format
+      - Keep all existing tracked record fields.
+      - Set investigationStatus to "queued" so the tracker knows it is owned
+        by the lifecycle pipeline.
+      - Update lastCheckedAt to the current ISO-8601 UTC timestamp.
+      - Preserve actionViewGroupId exactly as persisted.
+      - Keep terminal runs persisted and marked for later handling.
+      - Do not change the recordKey format.
 
       Output ONLY valid JSON:
       {
         "recordKey": "<string>",
-        "finalRecord": { ...full tracked record... },
-        "actionViewSubmission": "<short summary>"
+        "finalRecord": { ...full tracked record... }
       }
     userPrompt: |
-      Finalize the tracked record after ActionView submission.
+      Finalize the tracked record after persistence.
 
       Persisted state:
       {{persist-tracking-state.output}}
-
-      ActionView submission result:
-      {{submit-actionview-entry.output}}
 
       Update the per-run record and return only the JSON object.
     outputHandlerPrompt: |
@@ -473,7 +452,7 @@ steps:
 
   - name: generate-summary
     type: Prompt
-    dependsOn: [finalize-tracked-record, submit-actionview-entry]
+    dependsOn: [finalize-tracked-record, gate-dispatch]
     systemPrompt: |
       You are a reporting assistant. Produce a concise polished markdown summary for a pipeline tracking dispatch.
     userPrompt: |
@@ -482,15 +461,16 @@ steps:
       Final tracked record:
       {{finalize-tracked-record.output}}
 
-      ActionView submission:
-      {{submit-actionview-entry.output}}
+      Gate result:
+      {{gate-dispatch.output}}
 
       Produce polished markdown with:
       1. Header: '## Pipeline Tracking Dispatch Summary'
       2. The pipeline kind, run ID, and definition name
       3. The canonical pipeline URL
       4. Whether tracking was auto or manual
-      5. Whether it was relevant to the user and why
+      5. Whether the run is relevant to the user, and the reason
       6. Whether the run is already terminal
-      7. Confirmation that the tracked state and ActionView entry were recorded
+      7. Confirmation that the tracked state was recorded and queued for the scheduled tracker
+      8. A note that ActionView entries are emitted by the tracker on terminal transition (success) or by the investigator (failure)
     timeoutSeconds: 60
