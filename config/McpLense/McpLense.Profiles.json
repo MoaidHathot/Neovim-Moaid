@@ -1,0 +1,13 @@
+{
+  "authProfiles": [
+    {
+      "name": "agent365",
+      "auth": {
+        "type": "interactive-browser",
+        "clientId": "env:VSCODE_CLIENT_ID",
+        "tenantId": "env:CORP_TENANT_ID",
+        "scopes": ["${VSCODE_AUDIENCE}/.default"]
+      }
+    }
+  ]
+}
