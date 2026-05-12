@@ -1,7 +1,9 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
 name: zts-official-pipeline-auto-discoverer
 description: scheduled discovery of recent relevant ZTS official pipeline runs
-defaultModel: claude-opus-4.6
+version: 1.0.0
+tags: ["ZTS", "pipelines", "MSFT", "Azure-DevOps", "Pipeline", "auto-discovery", "auto"]
+defaultModel: gpt-5.4
 timeoutSeconds: 7200
 trigger:
   type: scheduler
@@ -9,9 +11,9 @@ trigger:
 variables:
   organization: msazure
   project: One
-  ciDefinitionId: 384921
+  ciDefinitionId: "384921"
   ciDefinitionName: ZTS-Official
-  cdDefinitionId: 388576
+  cdDefinitionId: "388576"
   cdDefinitionName: ZTS-Official-Release
   targetDisplayName: Moaid Hathot
 mcps:

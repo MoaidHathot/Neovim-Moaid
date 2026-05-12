@@ -2,8 +2,8 @@
 name: zts-official-pipeline-manual-tracker
 description: on-demand manual tracker for Azure DevOps CI/CD pipeline runs
 version: 2.0.0
-tags: ["ZTS", "MSFT", "Pipeline", "Tracker", "on-demand", "favorite"]
-defaultModel: claude-opus-4.6
+tags: ["ZTS", "pipelines", "MSFT", "Pipeline", "Tracker", "on-demand", "favorite"]
+defaultModel: gpt-5.4
 timeoutSeconds: 7200
 
 trigger:

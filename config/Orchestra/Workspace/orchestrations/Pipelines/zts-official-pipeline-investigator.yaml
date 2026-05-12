@@ -1,7 +1,9 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
 name: zts-official-pipeline-investigator
 description: investigate failed Azure DevOps CI/CD runs and persist findings
-defaultModel: claude-opus-4.6
+version: 1.0.0
+tags: ["ZTS", "pipelines", "MSFT", "Azure-DevOps", "Pipeline", "Investigator", "auto"]
+defaultModel: gpt-5.4
 timeoutSeconds: 7200
 trigger:
   type: manual
