@@ -1,10 +1,53 @@
 {
+  "//": "Worked example: connect McpLense to a Microsoft Agent365 MCP endpoint via Entra ID.",
+  "//1": "This file is an *auth profile* config (Phase A): it describes HOW to authenticate, not",
+  "//2": "WHICH server to connect to. The same profile services every Agent365 MCP under a tenant",
+  "//3": "(MailTools, CalendarTools, FilesTools, ...) without per-server duplication.",
+  "//4": "",
+  "//5": "Drop this file into one of:",
+  "//6": "  $XDG_CONFIG_HOME/McpLense/McpLense.Profiles.json   (single-file layout)",
+  "//7": "  $XDG_CONFIG_HOME/McpLense/profiles/agent365.json   (per-profile layout)",
+  "//8": "or pass it explicitly with: mcplense inspect <url> --profiles ./agent365.json",
+  "//9": "",
+  "//10": "On Windows without XDG_CONFIG_HOME, McpLense falls back to %APPDATA%\\McpLense.",
+  "//11": "On Linux/macOS without XDG_CONFIG_HOME, McpLense falls back to ~/.config/McpLense.",
+  "//12": "",
+  "//13": "TWO PROFILES ARE PROVIDED:",
+  "//14": "",
+  "//15": "  'agent365' (interactive-browser)",
+  "//16": "    First-time login pops a browser; subsequent commands reuse a token cached in the OS",
+  "//17": "    credential store (DPAPI on Windows, Keychain on macOS, libsecret on Linux).",
+  "//18": "    Requires the env vars VSCODE_CLIENT_ID / CORP_TENANT_ID / VSCODE_AUDIENCE to be set.",
+  "//19": "",
+  "//20": "  'agent365-cli' (azure-cli)",
+  "//21": "    Delegates to the Azure CLI: McpLense calls 'az account get-access-token --resource",
+  "//22": "    <scope>' for every request. No interactive browser pop, no MSAL cache. Requires:",
+  "//23": "      1. Azure CLI installed and on PATH.",
+  "//24": "      2. 'az login' completed beforehand (one-time, outside McpLense).",
+  "//25": "      3. The signed-in account has access to the target Entra app.",
+  "//26": "    Ideal for headless / CI / SSH-only environments where no browser is available.",
+  "//27": "    Requires the env vars CORP_TENANT_ID / VSCODE_AUDIENCE to be set; the CLI uses its",
+  "//28": "    own pre-registered client id so VSCODE_CLIENT_ID is NOT needed for this profile.",
+  "//29": "",
+  "//30": "Pick exactly one profile per invocation:",
+  "//31": "  mcplense inspect <url> --profile agent365",
+  "//32": "  mcplense inspect <url> --profile agent365-cli",
+  "//33": "When only one of the two profiles is loaded (e.g. you delete the other entry),",
+  "//34": "McpLense picks it automatically and --profile is optional.",
   "authProfiles": [
     {
       "name": "agent365",
       "auth": {
         "type": "interactive-browser",
         "clientId": "env:VSCODE_CLIENT_ID",
+        "tenantId": "env:CORP_TENANT_ID",
+        "scopes": ["${VSCODE_AUDIENCE}/.default"]
+      }
+    },
+    {
+      "name": "agent365-cli",
+      "auth": {
+        "type": "azure-cli",
         "tenantId": "env:CORP_TENANT_ID",
         "scopes": ["${VSCODE_AUDIENCE}/.default"]
       }
