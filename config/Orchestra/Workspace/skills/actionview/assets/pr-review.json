@@ -1,0 +1,148 @@
+{
+  "schemaVersion": "1",
+  "type": "pr-review",
+  "source": "github-pr-bot",
+  "title": "PR #482: Add user preference caching layer",
+  "subtitle": "acme/backend - opened by @danielk",
+  "severity": "medium",
+  "icon": "git-pull-request",
+  "tags": ["backend", "performance", "caching"],
+  "content": [
+    {
+      "type": "keyValue",
+      "label": "Pull Request Details",
+      "pairs": {
+        "Repository": "acme/backend",
+        "Branch": "feature/user-pref-cache -> main",
+        "Author": "@danielk",
+        "Files Changed": "7",
+        "Lines": "+184 / -23"
+      }
+    },
+    {
+      "type": "markdown",
+      "body": "## Summary\n\nRedis-backed cache for user preferences. Reduces p95 on `/api/settings` from ~120ms to ~15ms.\n\n### AI Analysis\n\n**Risk**: Low-Medium. Watch for race conditions in `Update()` and DateTimeOffset round-trip serialization."
+    },
+    {
+      "type": "section",
+      "title": "Finding: hard-coded TTL",
+      "content": [
+        {
+          "type": "code",
+          "language": "csharp",
+          "filename": "src/Services/UserPreferenceCacheService.cs",
+          "highlight": [5],
+          "body": "public class UserPreferenceCacheService\n{\n    private readonly IDistributedCache _cache;\n    private static readonly TimeSpan CacheTTL = TimeSpan.FromMinutes(5);\n    // ...\n}"
+        },
+        {
+          "type": "alert",
+          "level": "warning",
+          "body": "Line 5: hard-coded TTL. Consider moving to appsettings."
+        }
+      ],
+      "actions": [
+        {
+          "label": "Post Comment",
+          "style": "primary",
+          "confirmMessage": "Edit the AI-suggested comment and submit when ready.",
+          "parameters": [
+            {
+              "name": "body",
+              "label": "Comment",
+              "type": "multiline",
+              "default": "Consider making CacheTTL configurable via appsettings instead of hard-coding TimeSpan.FromMinutes(5).",
+              "required": true,
+              "helpText": "Markdown is supported by GitHub."
+            }
+          ],
+          "command": {
+            "type": "http",
+            "method": "POST",
+            "url": "https://api.github.com/repos/acme/backend/pulls/482/comments",
+            "headers": {
+              "Authorization": "Bearer {{GITHUB_TOKEN}}",
+              "Accept": "application/vnd.github+json"
+            },
+            "body": {
+              "body": "{{param.body}}",
+              "path": "src/Services/UserPreferenceCacheService.cs",
+              "line": 5
+            }
+          },
+          "onSuccess": "keep"
+        }
+      ]
+    },
+    {
+      "type": "link",
+      "label": "View on GitHub",
+      "url": "https://github.com/acme/backend/pull/482",
+      "body": "Open pull request in browser"
+    }
+  ],
+  "actions": [
+    {
+      "label": "Approve PR",
+      "style": "success",
+      "confirmMessage": "Approve PR #482? An optional message can be included.",
+      "parameters": [
+        {
+          "name": "message",
+          "label": "Approval Message",
+          "type": "multiline",
+          "default": "LGTM - caching approach looks good. Ship it!",
+          "placeholder": "Optional approval message"
+        }
+      ],
+      "command": {
+        "type": "http",
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/backend/pulls/482/reviews",
+        "headers": {
+          "Authorization": "Bearer {{GITHUB_TOKEN}}",
+          "Accept": "application/vnd.github+json"
+        },
+        "body": {
+          "event": "APPROVE",
+          "body": "{{param.message}}"
+        }
+      },
+      "onSuccess": "archive"
+    },
+    {
+      "label": "Request Changes",
+      "style": "danger",
+      "parameters": [
+        {
+          "name": "reason",
+          "label": "Reason",
+          "type": "multiline",
+          "default": "Please address the cache invalidation race condition.",
+          "required": true
+        },
+        {
+          "name": "severity",
+          "label": "Severity",
+          "type": "select",
+          "options": ["nit", "suggestion", "blocker"],
+          "default": "blocker",
+          "required": true
+        }
+      ],
+      "command": {
+        "type": "http",
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/backend/pulls/482/reviews",
+        "headers": {
+          "Authorization": "Bearer {{GITHUB_TOKEN}}",
+          "Accept": "application/vnd.github+json"
+        },
+        "body": {
+          "event": "REQUEST_CHANGES",
+          "body": "[{{param.severity}}] {{param.reason}}"
+        }
+      },
+      "onSuccess": "archive"
+    }
+  ]
+}

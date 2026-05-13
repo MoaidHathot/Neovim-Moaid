@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1",
+  "type": "alert",
+  "source": "watchdog",
+  "title": "Disk usage > 90% on db-prod-3",
+  "severity": "high",
+  "icon": "alert-triangle",
+  "tags": ["infra", "disk"],
+  "content": [
+    {
+      "type": "keyValue",
+      "pairs": {
+        "Host": "db-prod-3",
+        "Mount": "/var/lib/postgresql/data",
+        "Used": "92%",
+        "Available": "47 GB",
+        "First Detected": "2026-05-11T14:22:00Z"
+      }
+    },
+    {
+      "type": "alert",
+      "level": "warning",
+      "body": "Sustained disk pressure for 15 minutes. WAL archive growing at ~3 GB/h."
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "1",
+  "type": "deploy",
+  "source": "deploy-bot",
+  "title": "Deploy api-server v2.14.3 to production",
+  "subtitle": "release/v2.14.3 - 12 commits since prod",
+  "severity": "high",
+  "icon": "rocket",
+  "tags": ["deploy", "production"],
+  "content": [
+    {
+      "type": "keyValue",
+      "label": "Deploy Details",
+      "pairs": {
+        "Service": "api-server",
+        "Version": "v2.14.3",
+        "Environment": "production",
+        "Commits": "12",
+        "Last Deploy": "3 days ago"
+      }
+    },
+    {
+      "type": "table",
+      "label": "Pre-deploy Checks",
+      "columns": ["Check", "Result"],
+      "rows": [
+        ["CI build", "passed"],
+        ["Integration tests", "passed"],
+        ["Security scan", "passed"],
+        ["Canary (5%)", "healthy for 1h"]
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "label": "Approve Deploy",
+      "style": "success",
+      "confirmMessage": "Promote v2.14.3 to 100% production traffic?",
+      "parameters": [
+        {
+          "name": "note",
+          "label": "Deploy Note",
+          "type": "text",
+          "placeholder": "Optional note for the audit log"
+        }
+      ],
+      "command": {
+        "type": "http",
+        "method": "POST",
+        "url": "https://ci.example.com/api/deploy/{{DEPLOY_ID}}/approve",
+        "headers": { "Authorization": "Bearer {{CI_TOKEN}}" },
+        "body": { "approver": "actionview", "note": "{{param.note}}" }
+      },
+      "onSuccess": "archive"
+    },
+    {
+      "label": "Reject",
+      "style": "danger",
+      "parameters": [
+        {
+          "name": "reason",
+          "label": "Reason for rejection",
+          "type": "multiline",
+          "required": true
+        }
+      ],
+      "command": {
+        "type": "http",
+        "method": "POST",
+        "url": "https://ci.example.com/api/deploy/{{DEPLOY_ID}}/reject",
+        "headers": { "Authorization": "Bearer {{CI_TOKEN}}" },
+        "body": { "reason": "{{param.reason}}" }
+      },
+      "onSuccess": "archive"
+    }
+  ]
+}

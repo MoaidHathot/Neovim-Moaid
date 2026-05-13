@@ -187,7 +187,7 @@ steps:
       {{enumerate-runs.output}}
     outputHandlerPrompt: |
       Ensure the output is a single JSON object with the required keys.
-    timeoutSeconds: 60
+    timeoutSeconds: 120
 
   - name: dispatch-runs
     type: Prompt
