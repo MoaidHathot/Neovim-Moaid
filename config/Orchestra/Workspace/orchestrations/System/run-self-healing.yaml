@@ -15,7 +15,7 @@ description: |
 version: 1.0.0
 tags: ["meta", "ephermal", "self-healing", "system", "manual", "favorite"]
 defaultModel: gpt-5.4
-timeoutSeconds: 14400
+timeoutSeconds: 95400
 
 variables:
   ephermalDir: "{{orchestration.sourceDirectory}}/../Ephermal"
@@ -55,12 +55,28 @@ inputs:
       Keep this small; each attempt can launch long-running agents.
     required: false
     default: "3"
-  childTimeoutSeconds:
+  childWaitTimeoutSeconds:
     type: number
     description: |
-      Timeout in seconds for each generated child orchestration invocation.
+      How long (seconds) the controller waits for each generated child
+      orchestration invocation to return via `invoke_orchestration`. This is
+      the wait-for-completion timeout passed to the data-plane MCP — if it
+      fires, the parent stops waiting but the child run may still be alive in
+      the engine. Must be at least `childOrchestrationTimeoutSeconds + 60`
+      so the child's own internal abort cap is observed before this wait
+      timeout fires.
     required: false
-    default: "7200"
+    default: "21900"
+  childOrchestrationTimeoutSeconds:
+    type: number
+    description: |
+      The top-level `timeoutSeconds` value that the GENERATED child
+      orchestration must declare internally (its own hard abort cap).
+      Distinct from `childWaitTimeoutSeconds` (which is the parent's wait
+      window for `invoke_orchestration`). Forwarded verbatim into the
+      generation request so the LLM does not pick its own value.
+    required: false
+    default: "21600"
 
 mcps:
   - name: orchestra
@@ -74,7 +90,8 @@ steps:
     parameters:
       - parametersJson
       - maxAttempts
-      - childTimeoutSeconds
+      - childWaitTimeoutSeconds
+      - childOrchestrationTimeoutSeconds
     timeoutSeconds: 60
     stdin: "{{param.parametersJson}}"
     script: |
@@ -111,13 +128,53 @@ steps:
         exit 1
       }
 
-      $childTimeoutSeconds = 0
-      if (-not [int]::TryParse('{{param.childTimeoutSeconds}}', [ref]$childTimeoutSeconds)) {
-        Write-Error "childTimeoutSeconds must be an integer. Received: {{param.childTimeoutSeconds}}"
+      $childWaitTimeoutSeconds = 0
+      if (-not [int]::TryParse('{{param.childWaitTimeoutSeconds}}', [ref]$childWaitTimeoutSeconds)) {
+        Write-Error "childWaitTimeoutSeconds must be an integer. Received: {{param.childWaitTimeoutSeconds}}"
         exit 1
       }
-      if ($childTimeoutSeconds -lt 1) {
-        Write-Error "childTimeoutSeconds must be greater than 0. Received: $childTimeoutSeconds"
+      if ($childWaitTimeoutSeconds -lt 1) {
+        Write-Error "childWaitTimeoutSeconds must be greater than 0. Received: $childWaitTimeoutSeconds"
+        exit 1
+      }
+
+      $childOrchestrationTimeoutSeconds = 0
+      if (-not [int]::TryParse('{{param.childOrchestrationTimeoutSeconds}}', [ref]$childOrchestrationTimeoutSeconds)) {
+        Write-Error "childOrchestrationTimeoutSeconds must be an integer. Received: {{param.childOrchestrationTimeoutSeconds}}"
+        exit 1
+      }
+      if ($childOrchestrationTimeoutSeconds -lt 60 -or $childOrchestrationTimeoutSeconds -gt 86400) {
+        Write-Error "childOrchestrationTimeoutSeconds must be between 60 and 86400 seconds (1 minute to 24 hours). Received: $childOrchestrationTimeoutSeconds"
+        exit 1
+      }
+
+      # Cross-check 1: the parent's wait window must outlast the child's own
+      # internal abort cap so the parent observes a clean failure rather than a
+      # 504 while the child run is still alive in the engine.
+      $minimumWaitBuffer = 60
+      if ($childWaitTimeoutSeconds -lt ($childOrchestrationTimeoutSeconds + $minimumWaitBuffer)) {
+        Write-Error ("childWaitTimeoutSeconds ($childWaitTimeoutSeconds) must be >= " +
+          "childOrchestrationTimeoutSeconds ($childOrchestrationTimeoutSeconds) + $minimumWaitBuffer s buffer = " +
+          "$($childOrchestrationTimeoutSeconds + $minimumWaitBuffer). Raise childWaitTimeoutSeconds or " +
+          "lower childOrchestrationTimeoutSeconds.")
+        exit 1
+      }
+
+      # Cross-check 2: the full repair loop must fit inside the
+      # self-healing-controller step's timeout (currently 93800 s; if that
+      # step's `timeoutSeconds` is changed in this file, update this constant
+      # to match). Each attempt also pays generation + filesystem-watcher
+      # polling + repair-reasoning overhead — reserve a flat budget per
+      # attempt for that.
+      $controllerTimeoutSeconds = 93800
+      $perAttemptOverheadSeconds = 600
+      $totalBudget = $maxAttempts * ($childWaitTimeoutSeconds + $perAttemptOverheadSeconds)
+      if ($totalBudget -gt $controllerTimeoutSeconds) {
+        Write-Error ("Configuration exceeds the self-healing-controller step's budget: maxAttempts " +
+          "($maxAttempts) * (childWaitTimeoutSeconds ($childWaitTimeoutSeconds) + per-attempt " +
+          "overhead ($perAttemptOverheadSeconds)) = $totalBudget s, but the controller step is " +
+          "capped at $controllerTimeoutSeconds s. Reduce maxAttempts, reduce childWaitTimeoutSeconds, " +
+          "or raise the controller step's timeoutSeconds in this file.")
         exit 1
       }
 
@@ -127,13 +184,14 @@ steps:
       }
 
       [ordered]@{
-        parametersJson      = $normalizedParametersJson
-        maxAttempts         = $maxAttempts
-        childTimeoutSeconds = $childTimeoutSeconds
-        ephermalDir         = '{{vars.ephermalDir}}'
-        attemptNamePrefix   = '{{vars.attemptNamePrefix}}'
-        parentRunId         = '{{orchestration.runId}}'
-        startedAt           = '{{orchestration.startedAt}}'
+        parametersJson                   = $normalizedParametersJson
+        maxAttempts                      = $maxAttempts
+        childWaitTimeoutSeconds          = $childWaitTimeoutSeconds
+        childOrchestrationTimeoutSeconds = $childOrchestrationTimeoutSeconds
+        ephermalDir                      = '{{vars.ephermalDir}}'
+        attemptNamePrefix                = '{{vars.attemptNamePrefix}}'
+        parentRunId                      = '{{orchestration.runId}}'
+        startedAt                        = '{{orchestration.startedAt}}'
       } | ConvertTo-Json -Depth 5 -Compress
 
   - name: self-healing-controller
@@ -143,7 +201,7 @@ steps:
     skillDirectories:
       - ../../skills/authoring-orchestrations/writing-orchestrations
       - ../../skills/authoring-orchestrations/mcp-catalog
-    timeoutSeconds: 13800
+    timeoutSeconds: 93800
     infiniteSessions:
       enabled: true
       backgroundCompactionThreshold: 0.85
@@ -177,8 +235,12 @@ steps:
          - no top-level scheduler, webhook, or loop trigger
          - no dependency on other orchestrations unless the task explicitly
            requires it
-         - an orchestration-level timeout suitable for the task when not
-           otherwise specified
+         - an orchestration-level `timeoutSeconds:` at the top level set
+           to EXACTLY the integer value of `childOrchestrationTimeoutSeconds`
+           from the validated runtime configuration. Do not pick your own
+           value, do not round it, and do not change it between attempts.
+           This is the child's own internal abort cap and is distinct from
+           the parent's wait window.
       4. The generated child should declare and use typed inputs that match any
          keys in parametersJson when those values are relevant to the task.
       5. After generation, use `list_orchestrations` to verify the generated
@@ -186,7 +248,7 @@ steps:
          `list_orchestrations` a few times to absorb filesystem watcher latency.
          Do not invoke the generated attempt until it appears in the list.
       6. Invoke the generated orchestration through `invoke_orchestration` in
-         synchronous mode with timeoutSeconds = childTimeoutSeconds and
+         synchronous mode with timeoutSeconds = childWaitTimeoutSeconds and
          parameters = parametersJson.
       7. If the child succeeds and the output satisfies successCriteria, stop
          and return a final JSON object with status "succeeded".
@@ -195,6 +257,39 @@ steps:
          tool result:
          executionId, status, error message, failed step names, failed output,
          and any generated YAML shown by the generator result.
+
+         When the failure is a cancellation, ALWAYS read the run's
+         `cancellation` object (from `get_orchestration_status` or the
+         `invoke_orchestration` sync response). Use it to classify the failure
+         BEFORE deciding how to repair:
+           - `kind == "McpRequestAborted"` (or response `error == "timeout-mismatch"`):
+             this is a STRUCTURAL host/transport mismatch, not a child-design
+             problem. The child orchestration itself was NOT necessarily wrong
+             and may have been "almost done" (check `cancellation.progress`).
+             DO NOT redesign the child to be smaller or faster — that is unlikely
+             to fix it. Instead either lower `childWaitTimeoutSeconds` /
+             `childOrchestrationTimeoutSeconds` for the next attempt, or report
+             the structural mismatch in the failureSummary so the user can raise
+             `mcps[].timeoutSeconds` on this controller's own MCP entry (or the
+             host's `mcpServer.defaultOrchestraInvokeTimeoutSeconds`).
+           - `kind == "External"` with `detail` containing "REST" or
+             "cli" or "mcp:cancel_orchestration": user-driven cancel. Do not
+             retry — return status "failed" immediately and surface the detail.
+           - `kind == "External"` with `detail` containing "propagated from parent":
+             your own controller was cancelled, which propagated to the child.
+             Do not retry — the user wants you to stop.
+           - `kind == "SyncInvokeTimeout"`: server-side wrapper timeout fired.
+             The child design IS too slow for the requested wait window — either
+             redesign the child to fit, or raise `childWaitTimeoutSeconds`.
+           - `kind == "OrchestrationTimeout"`: the child's own internal abort
+             cap fired. Redesign the child to fit
+             `childOrchestrationTimeoutSeconds`, or raise it for the next attempt.
+           - Any other `kind`: treat as a child-design problem and continue
+             with the normal repair loop.
+
+         Always include `cancellation.kind`, `cancellation.detail`, and
+         `cancellation.progress` (if present) in `failureSummary` so the next
+         attempt's generation request and the final report carry full evidence.
       9. Build the next attempt's generation request from the original task,
          previous YAML, and failure evidence. State exactly what must be fixed.
       10. Repeat until success or maxAttempts is exhausted.
