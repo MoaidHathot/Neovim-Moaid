@@ -15,7 +15,10 @@ description: |
 version: 1.0.0
 tags: ["meta", "ephermal", "self-healing", "system", "manual", "favorite"]
 defaultModel: gpt-5.4
-timeoutSeconds: 95400
+# Orchestration-level cap. Must hold the self-healing-controller step's
+# timeoutSeconds (130000) plus a small buffer for validate-inputs (~60s)
+# and format-output (Transform, ~ms). 132000 = 130000 + 2000s headroom.
+# timeoutSeconds: 132000
 
 variables:
   ephermalDir: "{{orchestration.sourceDirectory}}/../Ephermal"
@@ -55,26 +58,23 @@ inputs:
       Keep this small; each attempt can launch long-running agents.
     required: false
     default: "3"
-  childWaitTimeoutSeconds:
+  childTimeoutSeconds:
     type: number
     description: |
-      How long (seconds) the controller waits for each generated child
-      orchestration invocation to return via `invoke_orchestration`. This is
-      the wait-for-completion timeout passed to the data-plane MCP — if it
-      fires, the parent stops waiting but the child run may still be alive in
-      the engine. Must be at least `childOrchestrationTimeoutSeconds + 60`
-      so the child's own internal abort cap is observed before this wait
-      timeout fires.
-    required: false
-    default: "21900"
-  childOrchestrationTimeoutSeconds:
-    type: number
-    description: |
-      The top-level `timeoutSeconds` value that the GENERATED child
-      orchestration must declare internally (its own hard abort cap).
-      Distinct from `childWaitTimeoutSeconds` (which is the parent's wait
-      window for `invoke_orchestration`). Forwarded verbatim into the
-      generation request so the LLM does not pick its own value.
+      The top-level `timeoutSeconds:` value baked into each generated child
+      orchestration (the child's own hard abort cap, enforced by its engine).
+
+      The controller's wait window for `invoke_orchestration` sync calls is
+      derived internally as `childTimeoutSeconds + 60s`. The 60s gap is the
+      cleanup margin that lets the child finalize its run.json BEFORE the
+      parent stops waiting — without it, the parent could time out first and
+      kill the child mid-cleanup, producing ambiguous "cancelled by caller"
+      records instead of clean `OrchestrationTimeout` cancellations.
+
+      Total budget consumed per attempt is roughly:
+        childTimeoutSeconds + 60 (wait buffer) + 600 (per-attempt overhead).
+      Cross-check 2 in the validate-inputs script ensures
+        maxAttempts * (childTimeoutSeconds + 660) <= self-healing-controller.timeoutSeconds.
     required: false
     default: "21600"
 
@@ -90,8 +90,7 @@ steps:
     parameters:
       - parametersJson
       - maxAttempts
-      - childWaitTimeoutSeconds
-      - childOrchestrationTimeoutSeconds
+      - childTimeoutSeconds
     timeoutSeconds: 60
     stdin: "{{param.parametersJson}}"
     script: |
@@ -128,53 +127,47 @@ steps:
         exit 1
       }
 
-      $childWaitTimeoutSeconds = 0
-      if (-not [int]::TryParse('{{param.childWaitTimeoutSeconds}}', [ref]$childWaitTimeoutSeconds)) {
-        Write-Error "childWaitTimeoutSeconds must be an integer. Received: {{param.childWaitTimeoutSeconds}}"
+      # Single user-facing timeout input: the child orchestration's own internal
+      # abort cap. The parent's wait window for invoke_orchestration is derived
+      # from this value by adding a fixed cleanup buffer below (see $waitBuffer).
+      $childTimeoutSeconds = 0
+      if (-not [int]::TryParse('{{param.childTimeoutSeconds}}', [ref]$childTimeoutSeconds)) {
+        Write-Error "childTimeoutSeconds must be an integer. Received: {{param.childTimeoutSeconds}}"
         exit 1
       }
-      if ($childWaitTimeoutSeconds -lt 1) {
-        Write-Error "childWaitTimeoutSeconds must be greater than 0. Received: $childWaitTimeoutSeconds"
-        exit 1
-      }
-
-      $childOrchestrationTimeoutSeconds = 0
-      if (-not [int]::TryParse('{{param.childOrchestrationTimeoutSeconds}}', [ref]$childOrchestrationTimeoutSeconds)) {
-        Write-Error "childOrchestrationTimeoutSeconds must be an integer. Received: {{param.childOrchestrationTimeoutSeconds}}"
-        exit 1
-      }
-      if ($childOrchestrationTimeoutSeconds -lt 60 -or $childOrchestrationTimeoutSeconds -gt 86400) {
-        Write-Error "childOrchestrationTimeoutSeconds must be between 60 and 86400 seconds (1 minute to 24 hours). Received: $childOrchestrationTimeoutSeconds"
+      if ($childTimeoutSeconds -lt 60 -or $childTimeoutSeconds -gt 86400) {
+        Write-Error "childTimeoutSeconds must be between 60 and 86400 seconds (1 minute to 24 hours). Received: $childTimeoutSeconds"
         exit 1
       }
 
-      # Cross-check 1: the parent's wait window must outlast the child's own
-      # internal abort cap so the parent observes a clean failure rather than a
-      # 504 while the child run is still alive in the engine.
-      $minimumWaitBuffer = 60
-      if ($childWaitTimeoutSeconds -lt ($childOrchestrationTimeoutSeconds + $minimumWaitBuffer)) {
-        Write-Error ("childWaitTimeoutSeconds ($childWaitTimeoutSeconds) must be >= " +
-          "childOrchestrationTimeoutSeconds ($childOrchestrationTimeoutSeconds) + $minimumWaitBuffer s buffer = " +
-          "$($childOrchestrationTimeoutSeconds + $minimumWaitBuffer). Raise childWaitTimeoutSeconds or " +
-          "lower childOrchestrationTimeoutSeconds.")
-        exit 1
-      }
+      # The parent's wait window for invoke_orchestration sync calls. Derived as
+      # childTimeoutSeconds + cleanup buffer so that the child's own internal
+      # timeout always fires FIRST, producing a clean OrchestrationTimeout
+      # cancellation that the parent observes as a normal sync response. Without
+      # this gap, the parent could time out first and produce ambiguous
+      # "cancelled by caller" records while the child is still cleaning up.
+      $waitBuffer = 60
+      $childWaitTimeoutSeconds = $childTimeoutSeconds + $waitBuffer
 
-      # Cross-check 2: the full repair loop must fit inside the
-      # self-healing-controller step's timeout (currently 93800 s; if that
-      # step's `timeoutSeconds` is changed in this file, update this constant
-      # to match). Each attempt also pays generation + filesystem-watcher
-      # polling + repair-reasoning overhead — reserve a flat budget per
-      # attempt for that.
-      $controllerTimeoutSeconds = 93800
+      # Cross-check: the full repair loop must fit inside the
+      # self-healing-controller step's timeout.
+      #
+      # HAND-SYNC POINT: $controllerTimeoutSeconds below MUST equal the
+      # self-healing-controller step's `timeoutSeconds:` value later in this
+      # file. Orchestra's step-level timeoutSeconds is parsed as an int and
+      # does NOT accept template expressions, so we can't reference this from
+      # vars / param. If you change one, change the other.
+      $controllerTimeoutSeconds = 130000
       $perAttemptOverheadSeconds = 600
       $totalBudget = $maxAttempts * ($childWaitTimeoutSeconds + $perAttemptOverheadSeconds)
       if ($totalBudget -gt $controllerTimeoutSeconds) {
         Write-Error ("Configuration exceeds the self-healing-controller step's budget: maxAttempts " +
-          "($maxAttempts) * (childWaitTimeoutSeconds ($childWaitTimeoutSeconds) + per-attempt " +
-          "overhead ($perAttemptOverheadSeconds)) = $totalBudget s, but the controller step is " +
-          "capped at $controllerTimeoutSeconds s. Reduce maxAttempts, reduce childWaitTimeoutSeconds, " +
-          "or raise the controller step's timeoutSeconds in this file.")
+          "($maxAttempts) * (childWaitTimeoutSeconds ($childWaitTimeoutSeconds = childTimeoutSeconds " +
+          "$childTimeoutSeconds + ${waitBuffer}s buffer) + per-attempt overhead " +
+          "($perAttemptOverheadSeconds)) = $totalBudget s, but the controller step is capped at " +
+          "$controllerTimeoutSeconds s. Reduce maxAttempts, reduce childTimeoutSeconds, or raise " +
+          "the controller step's timeoutSeconds in this file (and update the " +
+          "`$controllerTimeoutSeconds` constant in this script to match).")
         exit 1
       }
 
@@ -183,11 +176,21 @@ steps:
         $normalizedParametersJson = '{}'
       }
 
+      # Emit BOTH the user-facing input (childTimeoutSeconds) and the derived
+      # values (childWaitTimeoutSeconds, childOrchestrationTimeoutSeconds) so
+      # the controller's system prompt can continue to reference them by name
+      # at runtime without re-deriving the wait/orch split.
+      #
+      # childOrchestrationTimeoutSeconds is an alias for childTimeoutSeconds —
+      # they're the same number under the new single-input shape, but the
+      # alias preserves the semantic distinction ("the value baked into the
+      # child YAML's top-level timeoutSeconds") for the system prompt.
       [ordered]@{
         parametersJson                   = $normalizedParametersJson
         maxAttempts                      = $maxAttempts
+        childTimeoutSeconds              = $childTimeoutSeconds
         childWaitTimeoutSeconds          = $childWaitTimeoutSeconds
-        childOrchestrationTimeoutSeconds = $childOrchestrationTimeoutSeconds
+        childOrchestrationTimeoutSeconds = $childTimeoutSeconds
         ephermalDir                      = '{{vars.ephermalDir}}'
         attemptNamePrefix                = '{{vars.attemptNamePrefix}}'
         parentRunId                      = '{{orchestration.runId}}'
@@ -199,9 +202,13 @@ steps:
     dependsOn: [validate-inputs]
     mcps: [orchestra]
     skillDirectories:
-      - ../../skills/authoring-orchestrations/writing-orchestrations
-      - ../../skills/authoring-orchestrations/mcp-catalog
-    timeoutSeconds: 93800
+      - ../../skills/authoring-orchestrations
+    # HAND-SYNC POINT: this value MUST equal the $controllerTimeoutSeconds
+    # constant inside the validate-inputs script body. Orchestra's step-level
+    # timeoutSeconds is parsed as a plain int and does NOT accept template
+    # expressions, so we can't extract this to a vars entry today. If you
+    # change one, change the other.
+    timeoutSeconds: 130000
     infiniteSessions:
       enabled: true
       backgroundCompactionThreshold: 0.85
@@ -237,10 +244,12 @@ steps:
            requires it
          - an orchestration-level `timeoutSeconds:` at the top level set
            to EXACTLY the integer value of `childOrchestrationTimeoutSeconds`
-           from the validated runtime configuration. Do not pick your own
-           value, do not round it, and do not change it between attempts.
-           This is the child's own internal abort cap and is distinct from
-           the parent's wait window.
+           from the validated runtime configuration (which is the same value
+           the user passed as the `childTimeoutSeconds` input — the script
+           emits both names for clarity). Do not pick your own value, do not
+           round it, and do not change it between attempts. This is the
+           child's own internal abort cap and is distinct from the parent's
+           wait window.
       4. The generated child should declare and use typed inputs that match any
          keys in parametersJson when those values are relevant to the task.
       5. After generation, use `list_orchestrations` to verify the generated
@@ -248,15 +257,35 @@ steps:
          `list_orchestrations` a few times to absorb filesystem watcher latency.
          Do not invoke the generated attempt until it appears in the list.
       6. Invoke the generated orchestration through `invoke_orchestration` in
-         synchronous mode with timeoutSeconds = childWaitTimeoutSeconds and
-         parameters = parametersJson.
+         synchronous mode with timeoutSeconds = childWaitTimeoutSeconds (the
+         derived field on the validated runtime configuration; it equals
+         childTimeoutSeconds + 60 internally) and parameters = parametersJson.
+
+         The sync response's `stepResults` map carries per-step `status`,
+         `content` (truncated to ~8000 chars by default), `errorMessage`,
+         `savedFiles`, plus the `contentLength` / `truncated` / `hasRawContent`
+         metadata flags. Read these directly — there is no need to follow up
+         with another tool call just to see per-step error messages.
+
+         If a step's content was truncated (`truncated: true`) and you need
+         the full body, call `get_orchestration_step(executionId, stepName,
+         length: -1)`. For very large outputs you can page with `offset`
+         and `length`.
       7. If the child succeeds and the output satisfies successCriteria, stop
          and return a final JSON object with status "succeeded".
       8. If generation fails, child invocation fails, or the child succeeds but
-         misses successCriteria, capture all available failure evidence from the
-         tool result:
-         executionId, status, error message, failed step names, failed output,
-         and any generated YAML shown by the generator result.
+         misses successCriteria, build a failureSummary from the data already
+         present in the sync response:
+
+           - `executionId`, `status`, top-level `error` / `errorMessage`,
+             `completionReason`, and `cancellation` come straight from the
+             response root.
+           - Per-step failure detail is in `stepResults[<stepName>].errorMessage`.
+             Use this directly; do not try to re-derive it by scanning the
+             child's generated YAML or its final content.
+           - If a specific failing step's `content` was truncated and you need
+             the full body to diagnose, fetch it once with
+             `get_orchestration_step(executionId, stepName, length: -1)`.
 
          When the failure is a cancellation, ALWAYS read the run's
          `cancellation` object (from `get_orchestration_status` or the
@@ -267,11 +296,10 @@ steps:
              problem. The child orchestration itself was NOT necessarily wrong
              and may have been "almost done" (check `cancellation.progress`).
              DO NOT redesign the child to be smaller or faster — that is unlikely
-             to fix it. Instead either lower `childWaitTimeoutSeconds` /
-             `childOrchestrationTimeoutSeconds` for the next attempt, or report
-             the structural mismatch in the failureSummary so the user can raise
-             `mcps[].timeoutSeconds` on this controller's own MCP entry (or the
-             host's `mcpServer.defaultOrchestraInvokeTimeoutSeconds`).
+             to fix it. Instead either lower `childTimeoutSeconds` for the next
+             attempt, or report the structural mismatch in the failureSummary
+             so the user can raise `mcps[].timeoutSeconds` on this controller's
+             own MCP entry (or the host's `mcpServer.defaultOrchestraInvokeTimeoutSeconds`).
            - `kind == "External"` with `detail` containing "REST" or
              "cli" or "mcp:cancel_orchestration": user-driven cancel. Do not
              retry — return status "failed" immediately and surface the detail.
@@ -280,19 +308,34 @@ steps:
              Do not retry — the user wants you to stop.
            - `kind == "SyncInvokeTimeout"`: server-side wrapper timeout fired.
              The child design IS too slow for the requested wait window — either
-             redesign the child to fit, or raise `childWaitTimeoutSeconds`.
+             redesign the child to fit, or raise `childTimeoutSeconds`.
            - `kind == "OrchestrationTimeout"`: the child's own internal abort
-             cap fired. Redesign the child to fit
-             `childOrchestrationTimeoutSeconds`, or raise it for the next attempt.
+             cap fired. Redesign the child to fit `childTimeoutSeconds`, or
+             raise it for the next attempt.
            - Any other `kind`: treat as a child-design problem and continue
              with the normal repair loop.
 
          Always include `cancellation.kind`, `cancellation.detail`, and
          `cancellation.progress` (if present) in `failureSummary` so the next
          attempt's generation request and the final report carry full evidence.
+         Populate `failureSummary` from the per-step `errorMessage` values
+         directly; do not synthesize errors from heuristic content parsing.
       9. Build the next attempt's generation request from the original task,
          previous YAML, and failure evidence. State exactly what must be fixed.
       10. Repeat until success or maxAttempts is exhausted.
+      11. RECOVERY — if your conversation has been compacted and your
+          `attempts` history is incomplete (e.g., you cannot recall which
+          ephermal orchestrations you already spawned, or what their
+          executionIds were), call `list_child_runs` with NO arguments. The
+          data-plane MCP auto-scopes the response to YOUR own execution
+          subtree via headers the engine stamps automatically on every
+          outbound MCP request — you do not need to pass `parentExecutionId`
+          or `rootExecutionId`. The response includes both active in-flight
+          children (source: "active", with totalSteps / completedSteps /
+          currentStep) and persisted terminal children (source: "persisted",
+          with durationSeconds / failedStepName / errorMessage). Rebuild your
+          `attempts[]` array from this before deciding whether to launch
+          the next attempt.
 
       Use normal child-orchestration retry/loop mechanisms inside generated
       YAML when they are helpful for transient failures or local Prompt

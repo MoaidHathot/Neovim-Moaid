@@ -432,7 +432,7 @@ endpoint `{{server.url}}/mcp/data` is *not* a Microsoft Graph endpoint,
 | `list_orchestrations` | Discover registered orchestrations and their inputs |
 | `invoke_orchestration` | Start a run (sync or async). Sync mode accepts `detail` (`summary` / `compact` / `full`) controlling per-step content size. Sync `stepResults` now include `errorMessage` per step. |
 | `get_orchestration_status` | Poll a run's status / fetch results. Accepts `detail`; per-step results include `errorMessage`, `contentLength`, `truncated`, `hasRawContent`. |
-| `get_orchestration_step` | Fetch full or paginated content of one step. Use when a step's content was truncated in `get_orchestration_status`. Supports `part` (`content`/`rawContent`/`errorMessage`/`all`) and `offset`/`length` paging. |
+| `get_orchestration_step` | Fetch full or paginated content of one step. Works for BOTH active (in-flight) and persisted runs. Use when a step's content was truncated in `get_orchestration_status`, or to drill into a sibling step of an active run mid-flight. Supports `part` (`content`/`rawContent`/`errorMessage`/`all`) and `offset`/`length` paging. Response carries `source` (`active` / `persisted`) and `runStatus` (the overall run status, distinct from the step's status). |
 | `list_child_runs` | List runs spawned within the caller's execution chain. Inside an orchestration, defaults to the caller's whole subtree via stamped headers; external callers must pass `parentExecutionId` or `rootExecutionId`. Supports `status` filter and `limit`/`offset`. |
 | `cancel_orchestration` | Cancel a running execution |
 | `list_pending_inputs` | List runs awaiting human input (Approval steps and `orchestra_request_user_input` tool calls). Optionally filter by orchestration name. |
@@ -445,6 +445,19 @@ endpoint `{{server.url}}/mcp/data` is *not* a Microsoft Graph endpoint,
 - `full` — No truncation. Use sparingly; responses can exceed 100 KB.
 
 When a step's content is truncated and you need the full body, call `get_orchestration_step(executionId, stepName, part: "content", length: -1)` (or `offset`/`length` for paging).
+
+**Active-run drill-in.** `get_orchestration_step` now serves data from in-flight runs too, via the host's active execution table. The response shape distinguishes live vs. terminal data:
+
+- `source: "active"` + `runStatus: "running"` — the overall run is still going. The targeted step has completed and its content is served from in-memory partial records.
+- `source: "persisted"` + `runStatus: "succeeded"|"failed"|"cancelled"` — the run terminated; data is from `run.json`.
+- `error: "step-in-flight"` — the targeted step is currently executing OR hasn't started yet. The response includes:
+  - `runStatus` (overall run status)
+  - `stepStatus` (`running` if it's the current step, `pending` otherwise)
+  - `currentStep` (what's running right now)
+  - `completedStepNames` (siblings you CAN drill into right now)
+  - `totalSteps` / `completedSteps`
+
+The companion signal: `get_orchestration_status` for active runs now returns `completedStepNames`, telling you which sibling steps you can drill into via `get_orchestration_step` without trial-and-error.
 
 **Self-healing pattern (in-process):** When a parent orchestration uses a `type: Orchestration` step, the parent's later steps can drill into the child via template bindings without ANY MCP call:
 
