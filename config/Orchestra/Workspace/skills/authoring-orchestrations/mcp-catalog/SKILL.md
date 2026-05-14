@@ -430,11 +430,46 @@ endpoint `{{server.url}}/mcp/data` is *not* a Microsoft Graph endpoint,
 | Tool | Purpose |
 |---|---|
 | `list_orchestrations` | Discover registered orchestrations and their inputs |
-| `invoke_orchestration` | Start a run (sync or async) |
-| `get_orchestration_status` | Poll a run's status / fetch results |
+| `invoke_orchestration` | Start a run (sync or async). Sync mode accepts `detail` (`summary` / `compact` / `full`) controlling per-step content size. Sync `stepResults` now include `errorMessage` per step. |
+| `get_orchestration_status` | Poll a run's status / fetch results. Accepts `detail`; per-step results include `errorMessage`, `contentLength`, `truncated`, `hasRawContent`. |
+| `get_orchestration_step` | Fetch full or paginated content of one step. Use when a step's content was truncated in `get_orchestration_status`. Supports `part` (`content`/`rawContent`/`errorMessage`/`all`) and `offset`/`length` paging. |
+| `list_child_runs` | List runs spawned within the caller's execution chain. Inside an orchestration, defaults to the caller's whole subtree via stamped headers; external callers must pass `parentExecutionId` or `rootExecutionId`. Supports `status` filter and `limit`/`offset`. |
 | `cancel_orchestration` | Cancel a running execution |
 | `list_pending_inputs` | List runs awaiting human input (Approval steps and `orchestra_request_user_input` tool calls). Optionally filter by orchestration name. |
 | `respond_to_input` | Submit a `choice` and/or `reply` to unblock a waiting run. Validates against any declared `choices` and rejects responses for runs with no active wait (e.g., after host restart for engine-tool waits). |
+
+**Response detail levels (for `invoke_orchestration` sync and `get_orchestration_status`):**
+
+- `summary` — Per-step `content` is omitted; metadata (`contentLength`, `truncated`, `hasRawContent`, `errorMessage`, `savedFiles`) is preserved. Best when you only need failure diagnostics.
+- `compact` (default) — Per-step content truncated to ~8000 chars with `... (truncated)` marker + structured metadata. Top-level summary truncated to ~16000 chars.
+- `full` — No truncation. Use sparingly; responses can exceed 100 KB.
+
+When a step's content is truncated and you need the full body, call `get_orchestration_step(executionId, stepName, part: "content", length: -1)` (or `offset`/`length` for paging).
+
+**Self-healing pattern (in-process):** When a parent orchestration uses a `type: Orchestration` step, the parent's later steps can drill into the child via template bindings without ANY MCP call:
+
+```yaml
+- name: attempt-1
+  type: Orchestration
+  orchestrationName: build-and-test
+  mode: sync
+
+- name: repair
+  type: Prompt
+  dependsOn: [attempt-1]
+  systemPrompt: |
+    Previous attempt {{attempt-1.executionId}} failed with status {{attempt-1.status}}.
+    Errors per step:
+    {{attempt-1.steps}}
+
+    Build step output (for context):
+    {{attempt-1.steps.build.output}}
+
+    Test step error:
+    {{attempt-1.steps.test.error}}
+```
+
+These bindings access untruncated, in-memory data and work for failed/cancelled child runs.
 
 **Top-level definition:**
 

@@ -229,6 +229,29 @@ steps:
     shell: pwsh
     script: |
         $ErrorActionPreference = 'Stop'
+
+        # Strict-safe optional property accessors. Reading $obj.Foo on a parsed
+        # JSON object that does not have a `Foo` property throws under
+        # Set-StrictMode -Version Latest; the helpers below return $null
+        # instead so the script works under both default and strict prologues.
+        function Get-OptionalProperty {
+          param($Object, [Parameter(Mandatory)][string]$Name)
+          if ($null -eq $Object) { return $null }
+          $prop = $Object.PSObject.Properties[$Name]
+          if ($null -eq $prop) { return $null }
+          return $prop.Value
+        }
+
+        function Get-NestedOptionalProperty {
+          param($Object, [Parameter(Mandatory)][string]$Path)
+          $current = $Object
+          foreach ($segment in $Path.Split('.')) {
+            $current = Get-OptionalProperty -Object $current -Name $segment
+            if ($null -eq $current) { return $null }
+          }
+          return $current
+        }
+
         $pr = ConvertFrom-Json -InputObject $args[0] -NoEnumerate -ErrorAction Stop
 
         function Normalize-PrUrl {
@@ -247,14 +270,14 @@ steps:
           )
 
           $candidates = @(
-            $Result.prUrl,
-            $Result.url,
-            $Result.pullRequest.url,
-            $Result.pull_request.url,
-            $Result.session.prUrl,
-            $Result.session.url,
-            $Result.session.pullRequest.url,
-            $Result.session.pull_request.url,
+            (Get-OptionalProperty $Result 'prUrl'),
+            (Get-OptionalProperty $Result 'url'),
+            (Get-NestedOptionalProperty $Result 'pullRequest.url'),
+            (Get-NestedOptionalProperty $Result 'pull_request.url'),
+            (Get-NestedOptionalProperty $Result 'session.prUrl'),
+            (Get-NestedOptionalProperty $Result 'session.url'),
+            (Get-NestedOptionalProperty $Result 'session.pullRequest.url'),
+            (Get-NestedOptionalProperty $Result 'session.pull_request.url'),
             $FallbackPrUrl
           )
 
@@ -266,9 +289,10 @@ steps:
           return ''
         }
 
-        $prUrl = $pr.prUrl
-        if ([string]::IsNullOrWhiteSpace([string]$prUrl)) { $prUrl = $pr.url }
-        if ([string]::IsNullOrWhiteSpace([string]$prUrl)) { $prUrl = "https://dev.azure.com/{{vars.organization}}/{{vars.project}}/_git/{{vars.repository}}/pullrequest/$($pr.id)" }
+        $prId = Get-OptionalProperty $pr 'id'
+        $prUrl = Get-OptionalProperty $pr 'prUrl'
+        if ([string]::IsNullOrWhiteSpace([string]$prUrl)) { $prUrl = Get-OptionalProperty $pr 'url' }
+        if ([string]::IsNullOrWhiteSpace([string]$prUrl)) { $prUrl = "https://dev.azure.com/{{vars.organization}}/{{vars.project}}/_git/{{vars.repository}}/pullrequest/$prId" }
         $prUrl = Normalize-PrUrl -Url $prUrl
 
         function Invoke-PowerReviewOpen {
@@ -314,19 +338,20 @@ steps:
         }
 
         $openResult = Invoke-PowerReviewOpen -PrUrl $prUrl
+        $prCreatedBy = Get-OptionalProperty $pr 'createdBy'
         [pscustomobject]@{
-          prId = $pr.id
-          prTitle = $pr.title
+          prId = $prId
+          prTitle = Get-OptionalProperty $pr 'title'
           prUrl = $prUrl
           powerReviewOpenPrUrl = $openResult.prUrl
-          author = if ($pr.createdBy) { $pr.createdBy } else { $pr.author }
-          iterationId = $pr.iterationId
-          sourceRefName = $pr.sourceRefName
-          targetRefName = $pr.targetRefName
-          reviewReason = $pr.reviewReason
-          reviewEvents = $pr.reviewEvents
-          existingZakiraState = $pr.existingZakiraState
-          existingPowerReviewSession = $pr.existingPowerReviewSession
+          author = if ($prCreatedBy) { $prCreatedBy } else { Get-OptionalProperty $pr 'author' }
+          iterationId = Get-OptionalProperty $pr 'iterationId'
+          sourceRefName = Get-OptionalProperty $pr 'sourceRefName'
+          targetRefName = Get-OptionalProperty $pr 'targetRefName'
+          reviewReason = Get-OptionalProperty $pr 'reviewReason'
+          reviewEvents = Get-OptionalProperty $pr 'reviewEvents'
+          existingZakiraState = Get-OptionalProperty $pr 'existingZakiraState'
+          existingPowerReviewSession = Get-OptionalProperty $pr 'existingPowerReviewSession'
           reviewerAgents = '{{vars.reviewerAgentNames}}'
           status = 'opened-or-refreshed'
         } | ConvertTo-Json -Compress -Depth 20

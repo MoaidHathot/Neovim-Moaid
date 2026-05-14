@@ -75,6 +75,28 @@ steps:
     script: |
         $ErrorActionPreference = 'Stop'
 
+        # Strict-safe optional property accessors. Reading $obj.Foo on a parsed
+        # JSON object that does not have a `Foo` property throws under
+        # Set-StrictMode -Version Latest; the helpers below return $null
+        # instead so the script works under both default and strict prologues.
+        function Get-OptionalProperty {
+          param($Object, [Parameter(Mandatory)][string]$Name)
+          if ($null -eq $Object) { return $null }
+          $prop = $Object.PSObject.Properties[$Name]
+          if ($null -eq $prop) { return $null }
+          return $prop.Value
+        }
+
+        function Get-NestedOptionalProperty {
+          param($Object, [Parameter(Mandatory)][string]$Path)
+          $current = $Object
+          foreach ($segment in $Path.Split('.')) {
+            $current = Get-OptionalProperty -Object $current -Name $segment
+            if ($null -eq $current) { return $null }
+          }
+          return $current
+        }
+
         $prUrlInput = $args[0]
         $prDataInput = $args[1]
         $mode = $args[2]
@@ -213,14 +235,18 @@ steps:
             $threadIds = @($threadIdsRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
           }
         }
-        if ($pr -and $pr.newCommentThreadIds) { $threadIds = @($threadIds + @($pr.newCommentThreadIds)) | Select-Object -Unique }
-        if ($pr -and $pr.commentEvents) { $threadIds = @($threadIds + @($pr.commentEvents | ForEach-Object { $_.threadId })) | Where-Object { $_ } | Select-Object -Unique }
+        $prNewCommentThreadIds = if ($pr) { Get-OptionalProperty $pr 'newCommentThreadIds' } else { $null }
+        if ($prNewCommentThreadIds) { $threadIds = @($threadIds + @($prNewCommentThreadIds)) | Select-Object -Unique }
+        $prCommentEvents = if ($pr) { Get-OptionalProperty $pr 'commentEvents' } else { $null }
+        if ($prCommentEvents) {
+          $threadIds = @($threadIds + @($prCommentEvents | ForEach-Object { Get-OptionalProperty $_ 'threadId' })) | Where-Object { $_ } | Select-Object -Unique
+        }
 
         $prUrl = $prUrlInput
-        if ([string]::IsNullOrWhiteSpace($prUrl) -and $pr) { $prUrl = $pr.prUrl }
-        if ([string]::IsNullOrWhiteSpace($prUrl) -and $pr) { $prUrl = $pr.url }
+        if ([string]::IsNullOrWhiteSpace($prUrl) -and $pr) { $prUrl = Get-OptionalProperty $pr 'prUrl' }
+        if ([string]::IsNullOrWhiteSpace($prUrl) -and $pr) { $prUrl = Get-OptionalProperty $pr 'url' }
 
-        $prId = if ($pr) { $pr.id } else { $null }
+        $prId = if ($pr) { Get-OptionalProperty $pr 'id' } else { $null }
         if (-not $prId -and $prUrl -match '/pullrequest/(\d+)') { $prId = [int]$Matches[1] }
         if ([string]::IsNullOrWhiteSpace($prUrl) -and $prId) {
           $prUrl = "https://dev.azure.com/{{vars.organization}}/{{vars.project}}/_git/{{vars.repository}}/pullrequest/$prId"
@@ -231,17 +257,17 @@ steps:
 
         [pscustomobject]@{
           id = $prId
-          title = if ($pr) { $pr.title } else { $null }
-          createdBy = if ($pr) { $pr.createdBy } else { $null }
-          creationDate = if ($pr) { $pr.creationDate } else { $null }
-          sourceRefName = if ($pr) { $pr.sourceRefName } else { $null }
-          targetRefName = if ($pr) { $pr.targetRefName } else { $null }
-          reviewers = if ($pr) { $pr.reviewers } else { @() }
-          iterationId = if ($pr) { $pr.iterationId } else { $null }
+          title = if ($pr) { Get-OptionalProperty $pr 'title' } else { $null }
+          createdBy = if ($pr) { Get-OptionalProperty $pr 'createdBy' } else { $null }
+          creationDate = if ($pr) { Get-OptionalProperty $pr 'creationDate' } else { $null }
+          sourceRefName = if ($pr) { Get-OptionalProperty $pr 'sourceRefName' } else { $null }
+          targetRefName = if ($pr) { Get-OptionalProperty $pr 'targetRefName' } else { $null }
+          reviewers = if ($pr) { Get-OptionalProperty $pr 'reviewers' } else { @() }
+          iterationId = if ($pr) { Get-OptionalProperty $pr 'iterationId' } else { $null }
           url = $prUrl
           prUrl = $prUrl
           targetThreadIds = @($threadIds)
-          inputCommentEvents = if ($pr -and $pr.commentEvents) { $pr.commentEvents } else { @() }
+          inputCommentEvents = if ($prCommentEvents) { $prCommentEvents } else { @() }
           dispatchMode = $mode
           forceProcess = $forceProcess
         } | ConvertTo-Json -Compress -Depth 20
@@ -259,6 +285,26 @@ steps:
     shell: pwsh
     script: |
         $ErrorActionPreference = 'Stop'
+
+        # Strict-safe optional property accessors (see normalize-comment-request).
+        function Get-OptionalProperty {
+          param($Object, [Parameter(Mandatory)][string]$Name)
+          if ($null -eq $Object) { return $null }
+          $prop = $Object.PSObject.Properties[$Name]
+          if ($null -eq $prop) { return $null }
+          return $prop.Value
+        }
+
+        function Get-NestedOptionalProperty {
+          param($Object, [Parameter(Mandatory)][string]$Path)
+          $current = $Object
+          foreach ($segment in $Path.Split('.')) {
+            $current = Get-OptionalProperty -Object $current -Name $segment
+            if ($null -eq $current) { return $null }
+          }
+          return $current
+        }
+
         $request = ConvertFrom-Json -InputObject $args[0] -NoEnumerate -ErrorAction Stop
 
         function Resolve-PowerReviewOpenPrUrl {
@@ -268,14 +314,14 @@ steps:
           )
 
           $candidates = @(
-            $Result.prUrl,
-            $Result.url,
-            $Result.pullRequest.url,
-            $Result.pull_request.url,
-            $Result.session.prUrl,
-            $Result.session.url,
-            $Result.session.pullRequest.url,
-            $Result.session.pull_request.url,
+            (Get-OptionalProperty $Result 'prUrl'),
+            (Get-OptionalProperty $Result 'url'),
+            (Get-NestedOptionalProperty $Result 'pullRequest.url'),
+            (Get-NestedOptionalProperty $Result 'pull_request.url'),
+            (Get-NestedOptionalProperty $Result 'session.prUrl'),
+            (Get-NestedOptionalProperty $Result 'session.url'),
+            (Get-NestedOptionalProperty $Result 'session.pullRequest.url'),
+            (Get-NestedOptionalProperty $Result 'session.pull_request.url'),
             $FallbackPrUrl
           )
 
