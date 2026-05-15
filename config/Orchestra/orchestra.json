@@ -34,5 +34,11 @@
 		"controlPlaneRoute": "/mcp/control",
 		"maxNestingDepth": 5,
 		"defaultOrchestraInvokeTimeoutSeconds": 86400
+	},
+	"sse": {
+		"maxAccumulatedEvents": 500000,
+		"maxChannelCapacity": 50000,
+		"maxSubscribers": 100,
+		"heartbeatIntervalSeconds": 20
 	}
 }
