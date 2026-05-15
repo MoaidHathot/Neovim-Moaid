@@ -722,6 +722,31 @@ Template expressions use `{{expression}}` syntax and are supported in prompts, U
 | `{{server.url}}` | Orchestra server URL. |
 | `{{workingDirectory}}` | The working directory context. |
 
+### Orchestration-step accessors
+
+For steps of type `Orchestration` (steps that invoke another orchestration), these
+additional accessors expose the child run's data — populated on every terminal branch,
+including failed and cancelled child runs:
+
+| Expression | Description |
+|---|---|
+| `{{stepName.executionId}}` | The child run's execution id (use with `get_orchestration_status` / `get_orchestration_step`). |
+| `{{stepName.status}}` | Lowercase child status (`succeeded`, `failed`, `cancelled`, `pending` for async dispatch). |
+| `{{stepName.errorMessage}}` | Top-level error message from the child run. |
+| `{{stepName.completionReason}}` | `orchestra_complete` reason, if any. |
+| `{{stepName.childResult}}` | JSON of `executionId`, `status`, `errorMessage`, `finalContent`, `completionReason`, `cancellation`, `stepResults`. |
+| `{{stepName.steps}}` | JSON map of all child-step results. |
+| `{{stepName.steps.<childStepName>.output}}` | Untruncated content of one child step. |
+| `{{stepName.steps.<childStepName>.rawOutput}}` | Pre-output-handler content of one child step. |
+| `{{stepName.steps.<childStepName>.error}}` | Error message of one child step. |
+| `{{stepName.steps.<childStepName>.status}}` | Lowercase status of one child step. |
+| `{{stepName.steps.<childStepName>.files}}` / `files[N]` | Saved files of one child step. |
+
+These accessors enable patterns like a self-healing parent orchestration that inspects
+its child's per-step errors via `{{attempt-1.steps.failing-step.error}}` and reuses a
+child's partial output via `{{attempt-1.steps.codegen.output}}` in the next attempt's
+prompt — without any MCP round-trip.
+
 Runtime file-writing steps should receive absolute paths. Build paths relative to the orchestration file with `{{orchestration.sourceDirectory}}/relative/path` rather than relying on the process working directory.
 
 ---

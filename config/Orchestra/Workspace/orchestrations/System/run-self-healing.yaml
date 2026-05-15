@@ -19,6 +19,7 @@ defaultModel: gpt-5.4
 # timeoutSeconds (130000) plus a small buffer for validate-inputs (~60s)
 # and format-output (Transform, ~ms). 132000 = 130000 + 2000s headroom.
 # timeoutSeconds: 132000
+timeoutSeconds: 0
 
 variables:
   ephermalDir: "{{orchestration.sourceDirectory}}/../Ephermal"
@@ -82,6 +83,14 @@ mcps:
   - name: orchestra
     type: remote
     endpoint: "{{server.url}}/mcp/data"
+    # Resolved at execution time from validate-inputs.output.controllerMcpTimeoutSeconds.
+    # The validate-inputs script emits this value as childWaitTimeoutSeconds + 300s slack,
+    # so the Copilot MCP SDK's built-in ~3-minute request timeout (the "180-second cliff")
+    # cannot prematurely abort the controller's sync invoke_orchestration call. The 300s
+    # slack also keeps us under the host's mcpServer.defaultOrchestraInvokeTimeoutSeconds
+    # cap (86400s in orchestra.json), so the server-side timeout-mismatch guardrail in
+    # DataPlaneTools won't fire either.
+    timeoutSeconds: "{{validate-inputs.output.controllerMcpTimeoutSeconds}}"
 
 steps:
   - name: validate-inputs
@@ -149,6 +158,38 @@ steps:
       $waitBuffer = 60
       $childWaitTimeoutSeconds = $childTimeoutSeconds + $waitBuffer
 
+      # The controller's outbound MCP transport timeout for /mcp/data. This is the
+      # value the orchestra MCP entry's `timeoutSeconds` template resolves to.
+      # We add a 300s slack on top of childWaitTimeoutSeconds so:
+      #   - The Copilot MCP SDK's built-in ~3-minute request timeout never fires
+      #     before the engine's own sync-invoke timeout (the well-known "180-second
+      #     cliff" that caused parent run 51e217979157 to silently fail).
+      #   - The DataPlaneTools server-side guardrail does not refuse the request
+      #     with "timeout-mismatch" because (childWaitTimeoutSeconds + 60) <=
+      #     controllerMcpTimeoutSeconds.
+      $mcpTransportSlack = 300
+      $controllerMcpTimeoutSeconds = $childWaitTimeoutSeconds + $mcpTransportSlack
+
+      # Cross-check: keep the controller MCP timeout under the host's documented
+      # mcpServer.defaultOrchestraInvokeTimeoutSeconds upper bound (currently 86400s
+      # in orchestra.json) minus a 60s safety margin to satisfy the server-side
+      # guardrail in DataPlaneTools.cs:140-170. We can't read the host config from
+      # here, so the value is hard-coded; if you bump the host default, bump this
+      # constant too.
+      $hostDefaultInvokeTimeoutSeconds = 86400
+      $hostMarginSeconds = 60
+      $maxAllowedControllerMcpTimeoutSeconds = $hostDefaultInvokeTimeoutSeconds - $hostMarginSeconds
+      if ($controllerMcpTimeoutSeconds -gt $maxAllowedControllerMcpTimeoutSeconds) {
+        Write-Error ("Derived controllerMcpTimeoutSeconds ($controllerMcpTimeoutSeconds = " +
+          "childTimeoutSeconds $childTimeoutSeconds + waitBuffer $waitBuffer + " +
+          "mcpTransportSlack $mcpTransportSlack) exceeds the host's documented " +
+          "mcpServer.defaultOrchestraInvokeTimeoutSeconds upper bound ($hostDefaultInvokeTimeoutSeconds) " +
+          "minus the $hostMarginSeconds s safety margin. Lower childTimeoutSeconds, or raise " +
+          "mcpServer.defaultOrchestraInvokeTimeoutSeconds in orchestra.json AND the " +
+          "`\$hostDefaultInvokeTimeoutSeconds` constant in this script.")
+        exit 1
+      }
+
       # Cross-check: the full repair loop must fit inside the
       # self-healing-controller step's timeout.
       #
@@ -177,20 +218,28 @@ steps:
       }
 
       # Emit BOTH the user-facing input (childTimeoutSeconds) and the derived
-      # values (childWaitTimeoutSeconds, childOrchestrationTimeoutSeconds) so
-      # the controller's system prompt can continue to reference them by name
-      # at runtime without re-deriving the wait/orch split.
+      # values (childWaitTimeoutSeconds, childOrchestrationTimeoutSeconds,
+      # controllerMcpTimeoutSeconds) so the controller's system prompt can continue
+      # to reference them by name at runtime without re-deriving the wait/orch split,
+      # and so the `mcps[].timeoutSeconds` template on the orchestra MCP can resolve.
       #
       # childOrchestrationTimeoutSeconds is an alias for childTimeoutSeconds —
       # they're the same number under the new single-input shape, but the
       # alias preserves the semantic distinction ("the value baked into the
       # child YAML's top-level timeoutSeconds") for the system prompt.
+      #
+      # controllerMcpTimeoutSeconds is consumed by the orchestra MCP entry's
+      # `timeoutSeconds` template at the top of this orchestration; it MUST
+      # equal childWaitTimeoutSeconds + 300s slack so the Copilot SDK's built-in
+      # ~3-minute MCP request timeout cannot fire before the engine's own
+      # sync-invoke deadline (the cause of run 51e217979157's silent failure).
       [ordered]@{
         parametersJson                   = $normalizedParametersJson
         maxAttempts                      = $maxAttempts
         childTimeoutSeconds              = $childTimeoutSeconds
         childWaitTimeoutSeconds          = $childWaitTimeoutSeconds
         childOrchestrationTimeoutSeconds = $childTimeoutSeconds
+        controllerMcpTimeoutSeconds      = $controllerMcpTimeoutSeconds
         ephermalDir                      = '{{vars.ephermalDir}}'
         attemptNamePrefix                = '{{vars.attemptNamePrefix}}'
         parentRunId                      = '{{orchestration.runId}}'
@@ -364,8 +413,34 @@ steps:
         ]
       }
 
+      MANDATORY status surfacing — read this carefully.
+      Orchestra's engine does NOT inspect the content of your final JSON to determine
+      whether this step succeeded or failed. By default it considers the step Succeeded
+      as long as you produced a final assistant message. That means if you emit
+      `"status": "failed"` in the JSON but do nothing else, the engine will record the
+      WHOLE self-healing run as Succeeded — exactly the silent-failure mode that bit
+      parent run 51e217979157.
+
+      To prevent that:
+      - Immediately BEFORE you emit your final JSON, when (and only when) your reported
+        `"status"` is `"failed"`, you MUST call the `orchestra_set_status` engine tool
+        with `status: "failed"` and a one-line `reason` that quotes the top-level
+        `result` field. This is what flips the engine-level step status to Failed so
+        the outer orchestration also reports Failed.
+      - Do NOT call `orchestra_set_status` when your reported `"status"` is `"succeeded"`.
+        The default Succeeded behavior is correct in that case and an explicit success
+        call would be redundant.
+      - Do NOT call `orchestra_set_status("no_action", ...)`. NoAction is a non-failure
+        terminal that SKIPS downstream steps; for this controller, the only valid final
+        states are succeeded (continue to format-output) and failed (also continue to
+        format-output, but with the outer run marked Failed).
+      - Call `orchestra_set_status` exactly once per run. After it returns, emit the
+        final JSON object as your concluding assistant message.
+
       If all attempts fail, do not invent success. Return status "failed" with
-      the complete attempt history and the best available final error summary.
+      the complete attempt history and the best available final error summary,
+      and remember to call `orchestra_set_status("failed", "<one-line summary>")`
+      first.
     userPrompt: |
       Run this task through the self-healing ephermal orchestration loop.
 

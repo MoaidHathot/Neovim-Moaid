@@ -334,6 +334,25 @@ Invokes another registered orchestration. Use this when a flow should delegate t
 
 `inputHandlerPrompt` can reshape child parameters before launch. It must return a JSON object mapping parameter names to string values. If handler parsing fails, runtime falls back to the original parameters, so use Script validation for hard guarantees.
 
+**Drill-in template bindings.** For every step whose `type` is `Orchestration`, dependants can read the child run's per-step data via these template accessors. The data is populated on every terminal branch (success, failure, cancellation) and is in-process / untruncated — no MCP round-trip needed.
+
+| Expression | Resolves to |
+|---|---|
+| `{{S.output}}` | Child's final content on success, or top-level error on failure (backward-compatible behavior) |
+| `{{S.executionId}}` | Child run's execution id |
+| `{{S.status}}` | Lowercase child status (`succeeded`/`failed`/`cancelled`/`pending`) |
+| `{{S.errorMessage}}` | Child's top-level error |
+| `{{S.completionReason}}` | `orchestra_complete` reason if early-completed |
+| `{{S.childResult}}` | Full JSON blob of executionId/status/error/finalContent/stepResults |
+| `{{S.steps}}` | JSON map of all child step results |
+| `{{S.steps.<childStep>.output}}` | Untruncated content of one child step |
+| `{{S.steps.<childStep>.rawOutput}}` | Pre-output-handler content of one child step |
+| `{{S.steps.<childStep>.error}}` | Error message of one child step |
+| `{{S.steps.<childStep>.status}}` | Lowercase status of one child step |
+| `{{S.steps.<childStep>.files}}` / `files[N]` | Saved file paths of one child step |
+
+Use these for self-healing repair patterns: a downstream Prompt step can inspect `{{attempt-1.steps.build.error}}` and `{{attempt-1.steps.codegen.output}}` to build a corrective prompt — works whether attempt-1 succeeded, failed, or was cancelled. See `examples/self-healing-with-child-bindings.yaml` for a complete pattern, or `docs/orchestration-step-deep-dive.md` for the full reference.
+
 ### Approval Step (type: "Approval")
 
 Pauses the orchestration and waits for human input. The step persists a pending input record, transitions to `AwaitingInput` status, fires the `step.awaitingInput` hook event, and blocks until a user responds via the host's HumanInput API (or via the CLI / Portal). The user's response (`reply` or `choice`, with `reply` winning) becomes the step's output content and can be referenced by downstream steps via `{{stepName.output}}`.
@@ -516,6 +535,18 @@ Syntax: `{{expression}}` -- supported in prompts, URLs, headers, bodies, templat
 | `{{step.type}}` | Current step type |
 | `{{server.url}}` | Orchestra server URL |
 | `{{workingDirectory}}` | Working directory |
+
+**Orchestration-step accessors** (only on steps whose `type` is `Orchestration`):
+
+| Expression | Description |
+|---|---|
+| `{{S.executionId}}` | Child run's execution id |
+| `{{S.status}}` | Lowercase child status (succeeded/failed/cancelled/pending) |
+| `{{S.errorMessage}}` | Child's top-level error |
+| `{{S.completionReason}}` | `orchestra_complete` reason if early-completed |
+| `{{S.childResult}}` | Full JSON of child run (executionId/status/error/finalContent/stepResults) |
+| `{{S.steps}}` | JSON map of all child step results |
+| `{{S.steps.X.output}}` / `rawOutput` / `error` / `status` / `files` / `files[N]` | Drill into one child step |
 
 ## Engine Tools (Built-in, available to all Prompt steps)
 

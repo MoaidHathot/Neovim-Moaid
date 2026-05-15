@@ -9,7 +9,7 @@ description: |
   ActionView entries. ActionView entries are emitted only by the
   scheduled tracker on terminal transition (success) or by the investigator
   (failure).
-version: 2.0.0
+version: 2.0.1
 tags: ["ZTS", "pipelines", "MSFT", "Azure-DevOps", "Pipeline", "auto-discovery", "auto"]
 defaultModel: gpt-5.4
 timeoutSeconds: 7200
@@ -140,6 +140,11 @@ steps:
     dependsOn: [discover-ci-runs, discover-cd-runs]
     shell: pwsh
     script: |
+      # NOTE: the body deliberately avoids the PowerShell 7.6.1 codegen path that
+      # throws "Argument types do not match" when a hash literal contains
+      # `if`-as-value entries together with `@($listOfObject)`. We compute every
+      # value into a local variable first and assign primitives/arrays into the
+      # hash. See run dbbadcb778b8 for the failing form.
       $ci = @'
       {{discover-ci-runs.output}}
       '@ | ConvertFrom-Json -Depth 100
@@ -158,11 +163,16 @@ steps:
         }
       }
 
+      $ciCount = if ($null -ne $ci -and $null -ne $ci.runs) { @($ci.runs).Count } else { 0 }
+      $cdCount = if ($null -ne $cd -and $null -ne $cd.runs) { @($cd.runs).Count } else { 0 }
+      $totalCount = $runs.Count
+      $runsArr = $runs.ToArray()
+
       [ordered]@{
-        ciCount = if ($null -ne $ci -and $null -ne $ci.runs) { @($ci.runs).Count } else { 0 }
-        cdCount = if ($null -ne $cd -and $null -ne $cd.runs) { @($cd.runs).Count } else { 0 }
-        totalCount = $runs.Count
-        runs = @($runs)
+        ciCount = $ciCount
+        cdCount = $cdCount
+        totalCount = $totalCount
+        runs = $runsArr
       } | ConvertTo-Json -Depth 100 -Compress
 
   - name: gate-discovery

@@ -32,6 +32,7 @@
 		"dataPlaneRoute": "/mcp/data",
 		"controlPlaneEnabled": false,
 		"controlPlaneRoute": "/mcp/control",
-		"maxNestingDepth": 5
+		"maxNestingDepth": 5,
+		"defaultOrchestraInvokeTimeoutSeconds": 86400
 	}
 }

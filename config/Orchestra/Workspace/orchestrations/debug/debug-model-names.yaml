@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: debug-model-names
+description: Tests whether a requested model can execute a simple prompt successfully; failure indicates the model may be unavailable or not registered.
+version: 1.0.0
+tags: ["debug", "diagnostics"]
+trigger:
+  type: manual
+inputs:
+  modelName:
+    type: string
+    description: The model name to test, such as gpt-5.4.
+    required: true
+steps:
+  - name: test-model
+    type: Prompt
+    model: "{{param.modelName}}"
+    systemPrompt: |
+      You are a model access probe for Orchestra.
+      Respond with a short confirmation that includes the model name you were asked to use.
+    userPrompt: |
+      Test model access for "{{param.modelName}}".
+
+      If you can answer, respond exactly as:
+      MODEL_OK: {{param.modelName}}

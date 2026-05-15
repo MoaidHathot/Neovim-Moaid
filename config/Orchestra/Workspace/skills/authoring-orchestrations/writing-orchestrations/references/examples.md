@@ -633,6 +633,64 @@ Content-Type: application/json
 { "choice": "approve", "respondedBy": "alice" }
 ```
 
+### CLI walkthrough — interactive
+
+Running this orchestration with `orchestra run` opens a live SSE stream and prompts inline whenever the run pauses:
+
+```text
+$ orchestra run hitl-approval-deploy --param service=foo --param env=staging --by alice
+
+Run started: hitl-approval-deploy / 2025-05-09T12-34-56_abcd
+
+> build      started
+\u2713 build      completed
+
+\u25cf review-deploy  awaiting input
+
+  Approve deploy of foo to staging?
+
+  Build output:
+  ...
+
+  ? Choose: (Use arrow keys)
+  > approve
+    reject
+
+  ? Add a comment? (optional, blank to skip): looks fine
+
+\u2192 review-deploy  response accepted by alice: choice=approve reply=looks fine
+\u2713 review-deploy  completed
+> announce   started
+\u2713 announce   completed
+
+Run finished: Succeeded
+```
+
+**Non-interactive (CI / piped):** when stdin is redirected, `orchestra run` prints actionable instructions instead of prompting and exits with code 2 so the caller can detect the pause:
+
+```text
+\u25cf review-deploy  awaiting input
+
+Awaiting input \u2014 stdin is not interactive.
+Run continues on the server. To respond:
+
+  orchestra respond hitl-approval-deploy 2025-05-09T12-34-56_abcd review-deploy --choice <approve|reject>
+```
+
+**Re-attaching after Ctrl+C:** the run continues server-side; reconnect with:
+
+```bash
+orchestra attach hitl-approval-deploy 2025-05-09T12-34-56_abcd
+```
+
+Useful flags on `run` and `attach`: `--quiet` (HITL + summary only), `--verbose` (firehose all SSE events), `--no-interactive` (force the print-and-exit fallback), `--by <name>` (audit identifier on any HITL responses).
+
+### Portal walkthrough
+
+The Portal surfaces every paused run on the **Waiting for Input** sidebar button (bottom of the left pane) with a live count badge. Click the button to open a modal listing each pending wait; select a row to reveal its prompt, then pick a choice (and/or write a reply) and submit. The form posts to the same `POST /respond` endpoint used by `orchestra respond`, so audit trails stay consistent regardless of how the human answered. The Portal remembers your name in `localStorage` (key `orchestra.portal.respondedBy`) after the first submission so subsequent responses don't re-prompt.
+
+Updates are pushed live via the dashboard SSE stream (`/api/events`): when a run pauses anywhere, the badge increments instantly; when anyone (CLI, MCP, another Portal tab) responds, the row disappears in real time. Running orchestration cards also surface a "Waiting" chip while their step is paused so you can spot pending work without opening the modal.
+
 ---
 
 ## Human-in-the-Loop: LLM-Decided Pause via Engine Tool
@@ -667,6 +725,32 @@ Differences from the declarative `Approval` step:
 - The agent decides whether to pause; existing pipelines without `enableTools` are unaffected.
 - During the wait the step status remains `Running` (the agent session is held in memory). It does **not** transition to `AwaitingInput`.
 - The engine-tool wait does **not** survive a host restart. If the host bounces during the wait, the run is marked `Failed` with cause `HostShutdownDuringWait`; the previous step's checkpoint stays intact for retry. For long-lived gates that must endure restarts, use the declarative `Approval` step.
+
+### CLI walkthrough \u2014 free-form reply
+
+When the agent calls `orchestra_request_user_input` without a `choices` array, `orchestra run` shows the LLM-authored prompt and asks for a free-form reply:
+
+```text
+$ orchestra run hitl-engine-tool-clarify --param topic="cellular automata"
+
+Run started: hitl-engine-tool-clarify / 2025-05-09T12-40-00_efgh
+
+> writer  started
+
+\u25cf writer  awaiting input
+
+  Should I focus on the mathematical theory, real-world applications,
+  or the artistic/visual side?
+
+  ? Reply: focus on real-world applications, ~200 words
+
+\u2192 writer  response accepted: reply=focus on real-world applications, ~200 words
+\u2713 writer  completed
+
+Run finished: Succeeded
+```
+
+The Portal handles this case identically — engine-tool prompts appear in the same **Waiting for Input** modal, but the response form shows only a free-form reply textarea (no radio group when `choices` is absent).
 
 ---
 
