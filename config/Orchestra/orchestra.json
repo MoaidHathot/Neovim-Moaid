@@ -2,7 +2,7 @@
 	"dataPath": null,
 	"urls": "http://127.0.0.1:5100",
 	"hostBaseUrl": "http://localhost:5100",
-	"defaultModel": "gpt-5.4",
+	"defaultModel": "gpt-5.5",
 	"agentPool": {
 		"minInstances": 1,
 		"maxInstances": 70,
@@ -33,7 +33,9 @@
 		"controlPlaneEnabled": false,
 		"controlPlaneRoute": "/mcp/control",
 		"maxNestingDepth": 5,
-		"defaultOrchestraInvokeTimeoutSeconds": 86400
+		"defaultOrchestraInvokeTimeoutSeconds": 86400,
+		"defaultMcpToolCallTimeoutSeconds": 86400,
+		"defaultInvokeOrchestrationSyncTimeoutSeconds": 86400
 	},
 	"sse": {
 		"maxAccumulatedEvents": 500000,

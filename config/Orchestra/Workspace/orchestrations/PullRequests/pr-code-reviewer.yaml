@@ -34,8 +34,8 @@ defaultRetryPolicy:
   backoffMultiplier: 2.0
   retryOnTimeout: true
 
-defaultStepTimeoutSeconds: 1000
-timeoutSeconds: 15000
+defaultStepTimeoutSeconds: 18000
+timeoutSeconds: 85000
 
 mcps:
   - name: zakira
@@ -903,7 +903,7 @@ steps:
 
       Output confirmation of what was saved.
     mcps: [zakira]
-    timeoutSeconds: 120
+    timeoutSeconds: 420
 
   - name: fetch-action-view-schema
     type: Command
