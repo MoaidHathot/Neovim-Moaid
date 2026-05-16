@@ -30,110 +30,282 @@ mcps:
     endpoint: "http://localhost:5100/mcp/data"
 steps:
   - name: discover-ci-runs
-    type: Prompt
-    mcps: [azdo]
-    systemPrompt: |
-      You discover recent Azure DevOps pipeline runs for a single build definition.
-
-      Use the azdo MCP to inspect recent runs for the specified organization, project, and definition.
-      Gather only recent runs that are useful for downstream tracking. Do NOT decide relevance here;
-      the downstream dispatcher orchestration will do that.
-
-      For each run, produce a JSON object with these fields when available:
-      - pipelineType: "ci"
-      - definitionId
-      - definitionName
-      - runId
-      - buildNumber
-      - status
-      - result
-      - queueTime
-      - startTime
-      - finishTime
-      - requestedFor
-      - requestedBy
-      - reason
-      - sourceBranch
-      - sourceVersion
-      - triggeredByBuild
-      - triggeredByRelease
-      - pullRequests
-      - commits
-      - webUrl
-      - rawEvidence
-
-      If PRs exist, include author/display names and PR identifiers.
-      If commits exist, include commit ids, author/display names, and commit messages.
-
-      Return strict JSON only with this shape:
-      {
-        "pipelineType": "ci",
-        "definitionId": <number>,
-        "definitionName": "<string>",
-        "runs": [ ... ]
+    type: Script
+    shell: pwsh
+    script: |
+      # Deterministic discovery via az CLI (replaces the prior azdo MCP prompt).
+      # Emits the same JSON contract the downstream `enumerate-runs` step expects:
+      #   { "pipelineType":"ci", "definitionId":<num>, "definitionName":"<string>", "runs":[ ... ] }
+      # NOTE: assemble every hash value into a local variable first to avoid the
+      # PowerShell 7.6.1 codegen quirk documented in `enumerate-runs`.
+      $ErrorActionPreference = 'Stop'
+      try { Get-Command az -ErrorAction Stop | Out-Null } catch {
+        throw "az CLI is not available on PATH; cannot discover CI pipeline runs."
       }
-    userPrompt: |
-      Discover recent runs for:
-      - organization: {{vars.organization}}
-      - project: {{vars.project}}
-      - definitionId: {{vars.ciDefinitionId}}
-      - definitionName: {{vars.ciDefinitionName}}
 
-      Focus on the most recent runs likely to still matter for automated tracking.
-      Return strict JSON only.
+      function ConvertTo-IsoUtcString {
+        param($value)
+        if ($null -eq $value) { return "" }
+        if ($value -is [datetime]) { return ([datetime]$value).ToUniversalTime().ToString("o") }
+        if ($value -is [datetimeoffset]) { return ([datetimeoffset]$value).UtcDateTime.ToString("o") }
+        return [string]$value
+      }
+
+      $organization = '{{vars.organization}}'
+      $project = '{{vars.project}}'
+      $definitionIdRaw = '{{vars.ciDefinitionId}}'
+      $definitionName = '{{vars.ciDefinitionName}}'
+      $orgUrl = "https://dev.azure.com/$organization"
+      $definitionIdInt = [int]$definitionIdRaw
+
+      $raw = & az pipelines runs list `
+        --org $orgUrl `
+        --project $project `
+        --pipeline-ids $definitionIdRaw `
+        --top 25 `
+        --query-order QueueTimeDesc `
+        -o json 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        $errText = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
+        throw "az pipelines runs list (CI def $definitionIdRaw) failed with exit $LASTEXITCODE`: $errText"
+      }
+      $jsonString = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
+      $list = $jsonString | ConvertFrom-Json -Depth 100
+
+      $runs = New-Object System.Collections.Generic.List[object]
+      foreach ($b in @($list)) {
+        if ($null -eq $b) { continue }
+
+        $resolvedDefId = $definitionIdInt
+        if ($null -ne $b.definition -and $null -ne $b.definition.id) {
+          $resolvedDefId = [int]$b.definition.id
+        }
+        $resolvedDefName = $definitionName
+        if ($null -ne $b.definition -and $b.definition.name) {
+          $resolvedDefName = [string]$b.definition.name
+        }
+
+        $requestedForObj = $null
+        if ($null -ne $b.requestedFor) {
+          $requestedForObj = [ordered]@{
+            displayName = [string]$b.requestedFor.displayName
+            uniqueName = [string]$b.requestedFor.uniqueName
+            id = [string]$b.requestedFor.id
+          }
+        }
+        $requestedByObj = $null
+        if ($null -ne $b.requestedBy) {
+          $requestedByObj = [ordered]@{
+            displayName = [string]$b.requestedBy.displayName
+            uniqueName = [string]$b.requestedBy.uniqueName
+            id = [string]$b.requestedBy.id
+          }
+        }
+
+        $pullRequests = @()
+        $triggerInfo = $b.triggerInfo
+        if ($null -ne $triggerInfo) {
+          $prNumber = $null
+          try { $prNumber = $triggerInfo.'pr.number' } catch { $prNumber = $null }
+          if (-not $prNumber) {
+            try { $prNumber = $triggerInfo.'pr.id' } catch { $prNumber = $null }
+          }
+          if ($prNumber) {
+            $prAuthor = [ordered]@{
+              displayName = [string]$triggerInfo.'pr.senderName'
+              uniqueName = [string]$triggerInfo.'pr.senderEmail'
+            }
+            $prEntry = [ordered]@{
+              id = [string]$prNumber
+              title = [string]$triggerInfo.'pr.title'
+              sourceBranch = [string]$triggerInfo.'pr.sourceBranch'
+              targetBranch = [string]$triggerInfo.'pr.targetBranch'
+              draft = [string]$triggerInfo.'pr.draft'
+              providerName = [string]$triggerInfo.'pr.providerName'
+              author = $prAuthor
+            }
+            $pullRequests = @($prEntry)
+          }
+        }
+
+        $webUrl = "https://dev.azure.com/$organization/$project/_build/results?buildId=$($b.id)"
+        $queueTimeIso = ConvertTo-IsoUtcString $b.queueTime
+        $finishTimeIso = ConvertTo-IsoUtcString $b.finishTime
+        $rawEvidence = "build $($b.id) $($b.status)/$($b.result) queued=$queueTimeIso finished=$finishTimeIso reason=$($b.reason)"
+
+        $entry = [ordered]@{
+          pipelineType = 'ci'
+          definitionId = $resolvedDefId
+          definitionName = $resolvedDefName
+          runId = [string]$b.id
+          buildNumber = [string]$b.buildNumber
+          status = [string]$b.status
+          result = [string]$b.result
+          queueTime = ConvertTo-IsoUtcString $b.queueTime
+          startTime = ConvertTo-IsoUtcString $b.startTime
+          finishTime = ConvertTo-IsoUtcString $b.finishTime
+          requestedFor = $requestedForObj
+          requestedBy = $requestedByObj
+          reason = [string]$b.reason
+          sourceBranch = [string]$b.sourceBranch
+          sourceVersion = [string]$b.sourceVersion
+          triggeredByBuild = $null
+          triggeredByRelease = $null
+          pullRequests = $pullRequests
+          commits = @()
+          webUrl = $webUrl
+          rawEvidence = $rawEvidence
+        }
+        [void]$runs.Add($entry)
+      }
+
+      $runsArr = $runs.ToArray()
+
+      [ordered]@{
+        pipelineType = 'ci'
+        definitionId = $definitionIdInt
+        definitionName = $definitionName
+        runs = $runsArr
+      } | ConvertTo-Json -Depth 100 -Compress
 
   - name: discover-cd-runs
-    type: Prompt
-    mcps: [azdo]
-    systemPrompt: |
-      You discover recent Azure DevOps release or deployment pipeline runs for a single definition.
-
-      Use the azdo MCP to inspect recent runs for the specified organization, project, and definition.
-      Gather only recent runs that are useful for downstream tracking. Do NOT decide relevance here;
-      the downstream dispatcher orchestration will do that.
-
-      For each run, produce a JSON object with these fields when available:
-      - pipelineType: "cd"
-      - definitionId
-      - definitionName
-      - runId
-      - buildNumber
-      - status
-      - result
-      - queueTime
-      - startTime
-      - finishTime
-      - requestedFor
-      - requestedBy
-      - reason
-      - sourceBranch
-      - sourceVersion
-      - triggeredByBuild
-      - triggeredByRelease
-      - pullRequests
-      - commits
-      - webUrl
-      - rawEvidence
-
-      If PRs exist, include author/display names and PR identifiers.
-      If commits exist, include commit ids, author/display names, and commit messages.
-
-      Return strict JSON only with this shape:
-      {
-        "pipelineType": "cd",
-        "definitionId": <number>,
-        "definitionName": "<string>",
-        "runs": [ ... ]
+    type: Script
+    shell: pwsh
+    script: |
+      # Deterministic discovery via az CLI (replaces the prior azdo MCP prompt).
+      # Emits the same JSON contract the downstream `enumerate-runs` step expects:
+      #   { "pipelineType":"cd", "definitionId":<num>, "definitionName":"<string>", "runs":[ ... ] }
+      # cdDefinitionId is a YAML/build-style pipeline (Build REST API). Classic Release
+      # Management URLs are intentionally out of scope today.
+      $ErrorActionPreference = 'Stop'
+      try { Get-Command az -ErrorAction Stop | Out-Null } catch {
+        throw "az CLI is not available on PATH; cannot discover CD pipeline runs."
       }
-    userPrompt: |
-      Discover recent runs for:
-      - organization: {{vars.organization}}
-      - project: {{vars.project}}
-      - definitionId: {{vars.cdDefinitionId}}
-      - definitionName: {{vars.cdDefinitionName}}
 
-      Focus on the most recent runs likely to still matter for automated tracking.
-      Return strict JSON only.
+      function ConvertTo-IsoUtcString {
+        param($value)
+        if ($null -eq $value) { return "" }
+        if ($value -is [datetime]) { return ([datetime]$value).ToUniversalTime().ToString("o") }
+        if ($value -is [datetimeoffset]) { return ([datetimeoffset]$value).UtcDateTime.ToString("o") }
+        return [string]$value
+      }
+
+      $organization = '{{vars.organization}}'
+      $project = '{{vars.project}}'
+      $definitionIdRaw = '{{vars.cdDefinitionId}}'
+      $definitionName = '{{vars.cdDefinitionName}}'
+      $orgUrl = "https://dev.azure.com/$organization"
+      $definitionIdInt = [int]$definitionIdRaw
+
+      $raw = & az pipelines runs list `
+        --org $orgUrl `
+        --project $project `
+        --pipeline-ids $definitionIdRaw `
+        --top 25 `
+        --query-order QueueTimeDesc `
+        -o json 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        $errText = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
+        throw "az pipelines runs list (CD def $definitionIdRaw) failed with exit $LASTEXITCODE`: $errText"
+      }
+      $jsonString = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
+      $list = $jsonString | ConvertFrom-Json -Depth 100
+
+      $runs = New-Object System.Collections.Generic.List[object]
+      foreach ($b in @($list)) {
+        if ($null -eq $b) { continue }
+
+        $resolvedDefId = $definitionIdInt
+        if ($null -ne $b.definition -and $null -ne $b.definition.id) {
+          $resolvedDefId = [int]$b.definition.id
+        }
+        $resolvedDefName = $definitionName
+        if ($null -ne $b.definition -and $b.definition.name) {
+          $resolvedDefName = [string]$b.definition.name
+        }
+
+        $requestedForObj = $null
+        if ($null -ne $b.requestedFor) {
+          $requestedForObj = [ordered]@{
+            displayName = [string]$b.requestedFor.displayName
+            uniqueName = [string]$b.requestedFor.uniqueName
+            id = [string]$b.requestedFor.id
+          }
+        }
+        $requestedByObj = $null
+        if ($null -ne $b.requestedBy) {
+          $requestedByObj = [ordered]@{
+            displayName = [string]$b.requestedBy.displayName
+            uniqueName = [string]$b.requestedBy.uniqueName
+            id = [string]$b.requestedBy.id
+          }
+        }
+
+        $pullRequests = @()
+        $triggerInfo = $b.triggerInfo
+        if ($null -ne $triggerInfo) {
+          $prNumber = $null
+          try { $prNumber = $triggerInfo.'pr.number' } catch { $prNumber = $null }
+          if (-not $prNumber) {
+            try { $prNumber = $triggerInfo.'pr.id' } catch { $prNumber = $null }
+          }
+          if ($prNumber) {
+            $prAuthor = [ordered]@{
+              displayName = [string]$triggerInfo.'pr.senderName'
+              uniqueName = [string]$triggerInfo.'pr.senderEmail'
+            }
+            $prEntry = [ordered]@{
+              id = [string]$prNumber
+              title = [string]$triggerInfo.'pr.title'
+              sourceBranch = [string]$triggerInfo.'pr.sourceBranch'
+              targetBranch = [string]$triggerInfo.'pr.targetBranch'
+              draft = [string]$triggerInfo.'pr.draft'
+              providerName = [string]$triggerInfo.'pr.providerName'
+              author = $prAuthor
+            }
+            $pullRequests = @($prEntry)
+          }
+        }
+
+        $webUrl = "https://dev.azure.com/$organization/$project/_build/results?buildId=$($b.id)"
+        $queueTimeIso = ConvertTo-IsoUtcString $b.queueTime
+        $finishTimeIso = ConvertTo-IsoUtcString $b.finishTime
+        $rawEvidence = "build $($b.id) $($b.status)/$($b.result) queued=$queueTimeIso finished=$finishTimeIso reason=$($b.reason)"
+
+        $entry = [ordered]@{
+          pipelineType = 'cd'
+          definitionId = $resolvedDefId
+          definitionName = $resolvedDefName
+          runId = [string]$b.id
+          buildNumber = [string]$b.buildNumber
+          status = [string]$b.status
+          result = [string]$b.result
+          queueTime = ConvertTo-IsoUtcString $b.queueTime
+          startTime = ConvertTo-IsoUtcString $b.startTime
+          finishTime = ConvertTo-IsoUtcString $b.finishTime
+          requestedFor = $requestedForObj
+          requestedBy = $requestedByObj
+          reason = [string]$b.reason
+          sourceBranch = [string]$b.sourceBranch
+          sourceVersion = [string]$b.sourceVersion
+          triggeredByBuild = $null
+          triggeredByRelease = $null
+          pullRequests = $pullRequests
+          commits = @()
+          webUrl = $webUrl
+          rawEvidence = $rawEvidence
+        }
+        [void]$runs.Add($entry)
+      }
+
+      $runsArr = $runs.ToArray()
+
+      [ordered]@{
+        pipelineType = 'cd'
+        definitionId = $definitionIdInt
+        definitionName = $definitionName
+        runs = $runsArr
+      } | ConvertTo-Json -Depth 100 -Compress
 
   - name: enumerate-runs
     type: Script
@@ -209,43 +381,127 @@ steps:
       sole authority on relevance and deduplication, so you do not filter or
       decide here.
 
-      Process each entry in `enumerated.runs` SEQUENTIALLY (one at a time) so
-      that AzDO is not hammered with simultaneous invocations:
-        1. Invoke the child orchestration `zts-official-pipeline-dispatcher`
-           through the Orchestra MCP with parameters:
+      FIRE-AND-FORGET semantics. You MUST NOT wait for the child orchestration
+      to finish. Use the Orchestra MCP's async / fire-and-forget invocation
+      tool (or pass the equivalent async / non-blocking mode parameter to the
+      invocation tool). As soon as the invocation is accepted, immediately
+      move on to the next run.
+
+      For each entry in `enumerated.runs`:
+        1. Invoke `zts-official-pipeline-dispatcher` via the Orchestra MCP in
+           fire-and-forget / async mode with parameters:
              - trackedRunJson: the run object serialized as a JSON string
              - source: "auto"
              - forceTrack: "false"
-        2. Wait for the child orchestration to finish.
-        3. The child may complete with status "no_action" when the run is not
-           relevant to the user or is already tracked. Treat that as a
-           successful skip (NOT an error) and continue to the next run.
-        4. Record the outcome on the run object.
+        2. Capture whatever handle the tool returns (e.g. executionId,
+           jobId, runId) into the per-run output when available. If the tool
+           returns no handle, leave executionId as an empty string.
+        3. Record `dispatched: true` when the async invocation was accepted
+           by Orchestra. Record `dispatched: false` only if the tool itself
+           rejected the call before submission.
+        4. Do NOT wait for the child to complete. Do NOT report `result`,
+           `succeeded`, `no_action`, or `failed` — you have no way to know
+           those outcomes here.
 
       If `enumerated.runs` is empty, return immediately with empty arrays.
 
       Return strict JSON only with this shape:
       {
         "dispatched": [
-          { "pipelineType": "ci|cd", "runId": "<string>", "executionId": "<string>", "result": "succeeded|no_action|failed" }
+          {
+            "pipelineType": "ci|cd",
+            "runId": "<string>",
+            "executionId": "<string-or-empty>",
+            "dispatched": true
+          }
         ],
         "counts": {
           "totalRuns": <number>,
           "dispatched": <number>,
-          "noAction": <number>,
-          "failed": <number>
+          "rejected": <number>
         }
       }
       No prose or markdown.
     userPrompt: |
-      Dispatch each discovered run through the dispatcher.
+      Dispatch each discovered run through the dispatcher (fire-and-forget).
 
       enumerated:
       {{enumerate-runs.output}}
+    timeoutSeconds: 900
 
   - name: output-summary
-    type: Transform
-    dependsOn: [dispatch-runs]
-    contentType: application/json
-    template: |
+    type: Script
+    dependsOn: [enumerate-runs, dispatch-runs]
+    shell: pwsh
+    script: |
+      # Render a human-friendly markdown summary listing the run IDs that were
+      # fire-and-forget dispatched to `zts-official-pipeline-dispatcher`.
+      # Reads dispatch-runs.output for the dispatched list and joins against
+      # enumerate-runs.output to enrich with definitionName / buildNumber /
+      # webUrl / status fields that the dispatch-runs prompt deliberately does
+      # not echo back.
+      $dispatchPayload = @'
       {{dispatch-runs.output}}
+      '@ | ConvertFrom-Json -Depth 100
+
+      $enumerated = @'
+      {{enumerate-runs.output}}
+      '@ | ConvertFrom-Json -Depth 100
+
+      $runsByRunId = @{}
+      if ($null -ne $enumerated -and $null -ne $enumerated.runs) {
+        foreach ($r in @($enumerated.runs)) {
+          if ($null -eq $r) { continue }
+          $key = [string]$r.runId
+          if (-not [string]::IsNullOrWhiteSpace($key)) { $runsByRunId[$key] = $r }
+        }
+      }
+
+      $dispatchedItems = @()
+      if ($null -ne $dispatchPayload -and $null -ne $dispatchPayload.dispatched) {
+        $dispatchedItems = @($dispatchPayload.dispatched)
+      }
+
+      $totalRuns = 0
+      $dispatchedCount = 0
+      $rejectedCount = 0
+      if ($null -ne $dispatchPayload -and $null -ne $dispatchPayload.counts) {
+        if ($null -ne $dispatchPayload.counts.totalRuns)  { $totalRuns       = [int]$dispatchPayload.counts.totalRuns }
+        if ($null -ne $dispatchPayload.counts.dispatched) { $dispatchedCount = [int]$dispatchPayload.counts.dispatched }
+        if ($null -ne $dispatchPayload.counts.rejected)   { $rejectedCount   = [int]$dispatchPayload.counts.rejected }
+      }
+      if ($totalRuns -le 0) { $totalRuns = $dispatchedItems.Count }
+      if ($dispatchedCount -le 0 -and $rejectedCount -le 0) {
+        $dispatchedCount = ($dispatchedItems | Where-Object { $_.dispatched -eq $true } | Measure-Object).Count
+        $rejectedCount   = $dispatchedItems.Count - $dispatchedCount
+      }
+
+      $lines = New-Object System.Collections.Generic.List[string]
+      [void]$lines.Add("# ZTS-Official Pipeline Auto-Discoverer Summary")
+      [void]$lines.Add("")
+      [void]$lines.Add("Fire-and-forget dispatched **$dispatchedCount** of **$totalRuns** discovered run(s) to ``zts-official-pipeline-dispatcher`` (rejected: **$rejectedCount**).")
+      [void]$lines.Add("")
+
+      if ($dispatchedItems.Count -gt 0) {
+        [void]$lines.Add("| Kind | Definition | Run ID | Build Number | Dispatched | Execution ID |")
+        [void]$lines.Add("| --- | --- | --- | --- | --- | --- |")
+        foreach ($d in $dispatchedItems) {
+          if ($null -eq $d) { continue }
+          $kind = [string]$d.pipelineType
+          $runId = [string]$d.runId
+          $execId = [string]$d.executionId
+          $dispatched = if ($d.dispatched -eq $true) { 'yes' } else { 'no' }
+          $defName = ''
+          $buildNumber = ''
+          if ($runsByRunId.ContainsKey($runId)) {
+            $src = $runsByRunId[$runId]
+            $defName = [string]$src.definitionName
+            $buildNumber = [string]$src.buildNumber
+          }
+          [void]$lines.Add("| $kind | $defName | $runId | $buildNumber | $dispatched | $execId |")
+        }
+      } else {
+        [void]$lines.Add("_No runs were dispatched._")
+      }
+
+      $lines -join "`n"

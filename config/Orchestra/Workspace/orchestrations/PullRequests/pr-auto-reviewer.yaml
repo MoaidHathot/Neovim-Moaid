@@ -10,6 +10,7 @@ variables:
   project: One
   repository: ZTS
   reviewerName: Moaid Hathot
+  reviewerUniqueName: MoaidHathot@microsoft.com
 
 defaultRetryPolicy:
   maxRetries: 2
@@ -27,33 +28,130 @@ mcps:
 
 steps:
   - name: fetch-assigned-prs
-    type: Prompt
-    systemPrompt: |
-      You are an Azure DevOps assistant. Query for active pull requests using the Azure DevOps MCP tools. Return structured data only -- no commentary.
-    userPrompt: |
-      Using the Azure DevOps tools, list all active (open) pull requests in project '{{vars.project}}' repository '{{vars.repository}}' that have '{{vars.reviewerName}}' as a reviewer. For each PR, return: id, title, createdBy (author display name), creationDate, sourceRefName, targetRefName, reviewers (array of display names), url (full Azure DevOps PR URL), and the latest iteration id (if available).
+    type: Script
+    shell: pwsh
+    script: |
+      # Deterministic PR enumeration via az CLI (replaces the prior azdo MCP prompt).
+      # Lists active PRs in `{{vars.project}}/{{vars.repository}}` where the user
+      # identified by `{{vars.reviewerUniqueName}}` is a reviewer. Emits a JSON
+      # array — the same contract the downstream `filter-prs` step consumes.
+      # Note: the `--reviewer` argument requires a resolvable identity (email or
+      # descriptor). The display name (`vars.reviewerName`) cannot be used here
+      # because Azure DevOps may have multiple identities with the same display
+      # name and az CLI fails fast with "multiple identities found".
+      $ErrorActionPreference = 'Stop'
+      try { Get-Command az -ErrorAction Stop | Out-Null } catch {
+        throw "az CLI is not available on PATH; cannot fetch assigned PRs."
+      }
 
-      Return ONLY a JSON array. If no PRs found, return [].
-    outputHandlerPrompt: |
-      Ensure the output is a valid JSON array. Strip any markdown fences. If empty, return []. Escape every literal backslash inside JSON string values.
-    mcps: [azdo]
-    timeoutSeconds: 600
-    retry:
-      maxRetries: 3
-      backoffSeconds: 10
-      backoffMultiplier: 2.0
-      retryOnTimeout: true
+      function ConvertTo-IsoUtcString {
+        param($value)
+        if ($null -eq $value) { return "" }
+        if ($value -is [datetime]) { return ([datetime]$value).ToUniversalTime().ToString("o") }
+        if ($value -is [datetimeoffset]) { return ([datetimeoffset]$value).UtcDateTime.ToString("o") }
+        return [string]$value
+      }
+
+      $organization = '{{vars.organization}}'
+      $project = '{{vars.project}}'
+      $repository = '{{vars.repository}}'
+      $reviewerUnique = '{{vars.reviewerUniqueName}}'
+      $orgUrl = "https://dev.azure.com/$organization"
+
+      $raw = & az repos pr list `
+        --org $orgUrl `
+        --project $project `
+        --repository $repository `
+        --reviewer $reviewerUnique `
+        --status active `
+        --top 100 `
+        -o json 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        $errText = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
+        throw "az repos pr list failed (exit $LASTEXITCODE): $errText"
+      }
+      $jsonString = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
+      $list = $jsonString | ConvertFrom-Json -Depth 100
+
+      $prs = New-Object System.Collections.Generic.List[object]
+      foreach ($p in @($list)) {
+        if ($null -eq $p) { continue }
+
+        $reviewerNames = @()
+        if ($null -ne $p.reviewers) {
+          $reviewerNames = @(@($p.reviewers) | ForEach-Object { [string]$_.displayName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        }
+
+        $createdByName = ""
+        $createdByUnique = ""
+        if ($null -ne $p.createdBy) {
+          $createdByName = [string]$p.createdBy.displayName
+          $createdByUnique = [string]$p.createdBy.uniqueName
+        }
+
+        $prId = [int]$p.pullRequestId
+        $webUrl = "https://dev.azure.com/$organization/$project/_git/$repository/pullrequest/$prId"
+
+        $lastCommit = ""
+        if ($null -ne $p.lastMergeSourceCommit -and $p.lastMergeSourceCommit.commitId) {
+          $lastCommit = [string]$p.lastMergeSourceCommit.commitId
+        }
+
+        $isDraftVal = $false
+        if ($null -ne $p.isDraft) { $isDraftVal = [bool]$p.isDraft }
+
+        $entry = [ordered]@{
+          id = $prId
+          title = [string]$p.title
+          status = [string]$p.status
+          isDraft = $isDraftVal
+          createdBy = $createdByName
+          createdByUniqueName = $createdByUnique
+          creationDate = ConvertTo-IsoUtcString $p.creationDate
+          sourceRefName = [string]$p.sourceRefName
+          targetRefName = [string]$p.targetRefName
+          reviewers = $reviewerNames
+          url = $webUrl
+          apiUrl = [string]$p.url
+          lastMergeSourceCommitId = $lastCommit
+        }
+        [void]$prs.Add($entry)
+      }
+
+      $prsArr = $prs.ToArray()
+      $prsArr | ConvertTo-Json -Depth 100 -Compress -AsArray
 
   - name: filter-prs
-    type: Transform
+    type: Script
     dependsOn: [fetch-assigned-prs]
-    template: |
-      The following is the list of open PRs assigned to {{vars.reviewerName}} as a reviewer:
+    shell: pwsh
+    script: |
+      # Deterministic filter (replaces the prior text-template that asked the
+      # LLM to keep PRs created by anyone other than the reviewer).
+      # Drops PRs whose createdBy display name matches `{{vars.reviewerName}}`
+      # (case-insensitive). Emits the same JSON-array shape downstream consumers
+      # (`dispatch-candidates`, `create-action-view-entry`, `generate-summary`)
+      # expect.
+      $ErrorActionPreference = 'Stop'
 
+      $reviewerDisplayName = '{{vars.reviewerName}}'
+
+      $all = @'
       {{fetch-assigned-prs.output}}
+      '@ | ConvertFrom-Json -Depth 100
 
-      INSTRUCTION: From the list above, only keep PRs where 'createdBy' is NOT '{{vars.reviewerName}}'. These are PRs created by others awaiting review. Pass the filtered list as-is.
-    contentType: text/plain
+      $filtered = New-Object System.Collections.Generic.List[object]
+      foreach ($pr in @($all)) {
+        if ($null -eq $pr) { continue }
+        $createdBy = [string]$pr.createdBy
+        if ([string]::Equals($createdBy, $reviewerDisplayName, [StringComparison]::OrdinalIgnoreCase)) {
+          continue
+        }
+        [void]$filtered.Add($pr)
+      }
+
+      $filteredArr = $filtered.ToArray()
+      $filteredArr | ConvertTo-Json -Depth 100 -Compress -AsArray
 
   - name: dispatch-candidates
     type: Prompt
@@ -63,8 +161,13 @@ steps:
 
       If there are no filtered PRs, call orchestra_complete with status 'success' and reason 'No active PRs assigned for review after filtering self-authored PRs.'.
     userPrompt: |
-      Dispatch each filtered PR candidate through pr-review-dispatcher:
+      Dispatch each filtered PR candidate through pr-review-dispatcher.
 
+      The input below is a JSON array of PR objects (already filtered to
+      exclude self-authored PRs). If the array is empty, call orchestra_complete
+      as instructed in your system prompt.
+
+      Filtered PRs (JSON array):
       {{filter-prs.output}}
 
       For each PR object in the array:

@@ -7,6 +7,7 @@ defaultModel: gpt-5.4
 timeoutSeconds: 7200
 variables:
   pollIntervalSeconds: "300"
+  organization: msazure
 trigger:
   type: scheduler
   intervalSeconds: 300
@@ -87,42 +88,143 @@ steps:
       {{ensure-tracked-runs-index.output}}
 
   - name: refresh-active-run-statuses
-    type: Prompt
+    type: Script
     dependsOn: [gate-active-runs]
-    mcps: [azdo]
-    systemPrompt: |
-      You refresh Azure DevOps pipeline run state.
+    shell: pwsh
+    script: |
+      # Deterministic refresh via az CLI (replaces the prior azdo MCP prompt).
+      # Inputs come from `ensure-tracked-runs-index.output` and contain both the index
+      # document and the per-run records for currently active runs. For each active
+      # run we call `az pipelines runs show` and classify terminal state by the same
+      # rules previously encoded in the prompt:
+      #   completed+succeeded                                 => "success"
+      #   completed+(failed|canceled|partiallySucceeded)      => "failure"
+      #   any other status                                    => "active"
+      # The output JSON contract matches what `shape-run-updates` expects.
+      $ErrorActionPreference = 'Stop'
+      try { Get-Command az -ErrorAction Stop | Out-Null } catch {
+        throw "az CLI is not available on PATH; cannot refresh tracked pipeline runs."
+      }
 
-      Requirements:
-      - Use Azure DevOps MCP tools only.
-      - For each active tracked run from the input, fetch its current pipeline/build/run state from Azure DevOps.
-      - Preserve the caller's runKey, recordKey, and groupId in your output.
-      - Normalize each item to:
-        {
-          "runKey": "<string>",
-          "recordKey": "<string>",
-          "groupId": "<string>",
-          "project": "<string>",
-          "definitionId": "<string>",
-          "runId": "<string>",
-          "previousStatus": "<string>",
-          "previousResult": "<string>",
-          "currentStatus": "<string>",
-          "currentResult": "<string>",
-          "terminalState": "success" | "failure" | "active",
-          "checkedAt": "<iso8601>",
-          "summary": "<single-line status summary>"
-        }
-      - Treat completed+succeeded as success.
-      - Treat completed+failed, completed+canceled, completed+partiallySucceeded, and any equivalent failure outcome as failure.
-      - Treat all other states as active.
-      - Return JSON only:
-        { "runs": [ ... ] }
-      - No markdown or prose.
-    userPrompt: |
-      Refresh the current Azure DevOps status for these tracked runs and classify each one.
+      function ConvertTo-IsoUtcString {
+        param($value)
+        if ($null -eq $value) { return "" }
+        if ($value -is [datetime]) { return ([datetime]$value).ToUniversalTime().ToString("o") }
+        if ($value -is [datetimeoffset]) { return ([datetimeoffset]$value).UtcDateTime.ToString("o") }
+        return [string]$value
+      }
 
+      $organization = '{{vars.organization}}'
+      $orgUrl = "https://dev.azure.com/$organization"
+
+      $state = @'
       {{ensure-tracked-runs-index.output}}
+      '@ | ConvertFrom-Json -Depth 100
+
+      $indexRuns = @()
+      if ($null -ne $state.index -and $null -ne $state.index.runs) {
+        $indexRuns = @(@($state.index.runs) | Where-Object { $_.isActive -eq $true })
+      }
+
+      $activeRecords = @()
+      if ($null -ne $state.activeRuns) { $activeRecords = @($state.activeRuns) }
+
+      $out = New-Object System.Collections.Generic.List[object]
+      foreach ($indexEntry in $indexRuns) {
+        if ($null -eq $indexEntry) { continue }
+
+        $runKey = [string]$indexEntry.runKey
+        $project = [string]$indexEntry.project
+        $definitionId = [string]$indexEntry.definitionId
+        $runId = [string]$indexEntry.runId
+        $previousStatus = [string]$indexEntry.status
+        $previousResult = [string]$indexEntry.result
+        $recordKey = [string]$indexEntry.recordKey
+        $groupId = [string]$indexEntry.groupId
+
+        $matchingRecord = $null
+        if ($activeRecords.Count -gt 0) {
+          $matchingRecord = $activeRecords | Where-Object { [string]$_.runKey -eq $runKey } | Select-Object -First 1
+        }
+        if ($null -ne $matchingRecord) {
+          if ([string]::IsNullOrWhiteSpace($recordKey) -and $matchingRecord.recordKey) { $recordKey = [string]$matchingRecord.recordKey }
+          if ([string]::IsNullOrWhiteSpace($groupId) -and $matchingRecord.groupId) { $groupId = [string]$matchingRecord.groupId }
+          if ([string]::IsNullOrWhiteSpace($previousStatus) -and $matchingRecord.currentStatus) { $previousStatus = [string]$matchingRecord.currentStatus }
+          if ([string]::IsNullOrWhiteSpace($previousResult) -and $matchingRecord.currentResult) { $previousResult = [string]$matchingRecord.currentResult }
+          if ([string]::IsNullOrWhiteSpace($project) -and $matchingRecord.project) { $project = [string]$matchingRecord.project }
+          if ([string]::IsNullOrWhiteSpace($definitionId) -and $matchingRecord.definitionId) { $definitionId = [string]$matchingRecord.definitionId }
+          if ([string]::IsNullOrWhiteSpace($runId) -and $matchingRecord.runId) { $runId = [string]$matchingRecord.runId }
+        }
+
+        $currentStatus = ""
+        $currentResult = ""
+        $terminalState = "active"
+        $summary = ""
+        $finishTime = ""
+        $checkedAt = (Get-Date).ToUniversalTime().ToString("o")
+
+        if ([string]::IsNullOrWhiteSpace($runId)) {
+          $terminalState = "failure"
+          $currentResult = "unavailable"
+          $summary = "Tracked run missing runId; cannot resolve via az CLI."
+        } elseif ([string]::IsNullOrWhiteSpace($project)) {
+          $terminalState = "failure"
+          $currentResult = "unavailable"
+          $summary = "Tracked run missing project; cannot resolve via az CLI."
+        } else {
+          $azArgs = @(
+            'pipelines','runs','show',
+            '--org', $orgUrl,
+            '--project', $project,
+            '--id', $runId,
+            '-o','json'
+          )
+          $raw = & az @azArgs 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            $errText = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
+            $terminalState = "failure"
+            $currentResult = "unavailable"
+            $summary = "az pipelines runs show failed for $project run $runId (exit $LASTEXITCODE): $errText"
+          } else {
+            $jsonString = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
+            $build = $jsonString | ConvertFrom-Json -Depth 100
+            $currentStatus = [string]$build.status
+            $currentResult = [string]$build.result
+            $finishTime = ConvertTo-IsoUtcString $build.finishTime
+            if ($currentStatus -eq "completed") {
+              switch -Regex ($currentResult) {
+                '^succeeded$'              { $terminalState = "success"; break }
+                '^(failed|canceled|partiallySucceeded)$' { $terminalState = "failure"; break }
+                default                    { $terminalState = "failure" }
+              }
+            } else {
+              $terminalState = "active"
+            }
+            $summary = "Build $runId $currentStatus/$currentResult finished=$finishTime"
+          }
+        }
+
+        $entry = [ordered]@{
+          runKey         = $runKey
+          recordKey      = $recordKey
+          groupId        = $groupId
+          project        = $project
+          definitionId   = $definitionId
+          runId          = $runId
+          previousStatus = $previousStatus
+          previousResult = $previousResult
+          currentStatus  = $currentStatus
+          currentResult  = $currentResult
+          terminalState  = $terminalState
+          checkedAt      = $checkedAt
+          summary        = $summary
+        }
+        [void]$out.Add($entry)
+      }
+
+      [ordered]@{
+        runs = $out.ToArray()
+      } | ConvertTo-Json -Depth 100 -Compress
 
   - name: shape-run-updates
     type: Script
@@ -145,29 +247,57 @@ steps:
       $failed = New-Object System.Collections.Generic.List[object]
 
       foreach ($run in $refreshRuns) {
+        # Compute every value into a local variable first to avoid the
+        # PowerShell 7.6.1 codegen path that throws "Argument types do not
+        # match" when a hash literal contains `if`-as-value entries together
+        # with `@($listOfObject)` references. See the matching note in
+        # `enumerate-runs` above.
         $indexEntry = $null
         if ($index -and $index.runs) {
           $indexEntry = @($index.runs) | Where-Object { $_.runKey -eq $run.runKey } | Select-Object -First 1
         }
 
-        $existingRecord = @($state.activeRuns) | Where-Object { $_.runKey -eq $run.runKey } | Select-Object -First 1
-        $groupId = if ($run.groupId) { [string]$run.groupId } elseif ($existingRecord.groupId) { [string]$existingRecord.groupId } else { "zts-official-pipeline-tracker:$($run.project):$($run.definitionId):$($run.runId)" }
+        $existingRecord = $null
+        if ($null -ne $state.activeRuns) {
+          $existingRecord = @($state.activeRuns) | Where-Object { $_.runKey -eq $run.runKey } | Select-Object -First 1
+        }
+
+        $groupId = if ($run.groupId) { [string]$run.groupId } elseif ($existingRecord -and $existingRecord.groupId) { [string]$existingRecord.groupId } else { "zts-official-pipeline-tracker:$($run.project):$($run.definitionId):$($run.runId)" }
+
+        $recordKey = if ($run.recordKey) { [string]$run.recordKey } elseif ($existingRecord -and $existingRecord.recordKey) { [string]$existingRecord.recordKey } else { "tracked-run-$($run.runKey)" }
+
+        $actionViewSubmittedAt = ""
+        if ($null -ne $existingRecord -and $existingRecord.actionViewSubmittedAt) {
+          $actionViewSubmittedAt = [string]$existingRecord.actionViewSubmittedAt
+        }
+
+        $runKey = [string]$run.runKey
+        $project = [string]$run.project
+        $definitionId = [string]$run.definitionId
+        $runId = [string]$run.runId
+        $previousStatus = [string]$run.previousStatus
+        $previousResult = [string]$run.previousResult
+        $currentStatus = [string]$run.currentStatus
+        $currentResult = [string]$run.currentResult
+        $terminalState = [string]$run.terminalState
+        $checkedAt = [string]$run.checkedAt
+        $summary = [string]$run.summary
 
         $normalized = [ordered]@{
-          runKey = [string]$run.runKey
-          recordKey = [string]$(if ($run.recordKey) { $run.recordKey } elseif ($existingRecord.recordKey) { $existingRecord.recordKey } else { "tracked-run-$($run.runKey)" })
+          runKey = $runKey
+          recordKey = $recordKey
           groupId = $groupId
-          project = [string]$run.project
-          definitionId = [string]$run.definitionId
-          runId = [string]$run.runId
-          previousStatus = [string]$run.previousStatus
-          previousResult = [string]$run.previousResult
-          currentStatus = [string]$run.currentStatus
-          currentResult = [string]$run.currentResult
-          terminalState = [string]$run.terminalState
-          checkedAt = [string]$run.checkedAt
-          summary = [string]$run.summary
-          actionViewSubmittedAt = if ($existingRecord.actionViewSubmittedAt) { [string]$existingRecord.actionViewSubmittedAt } else { "" }
+          project = $project
+          definitionId = $definitionId
+          runId = $runId
+          previousStatus = $previousStatus
+          previousResult = $previousResult
+          currentStatus = $currentStatus
+          currentResult = $currentResult
+          terminalState = $terminalState
+          checkedAt = $checkedAt
+          summary = $summary
+          actionViewSubmittedAt = $actionViewSubmittedAt
           indexEntry = $indexEntry
           existingRecord = $existingRecord
         }
@@ -179,11 +309,16 @@ steps:
         }
       }
 
+      $checkedRunsCount = [int]$refreshRuns.Count
+      $activeArr = $active.ToArray()
+      $succeededArr = $succeeded.ToArray()
+      $failedArr = $failed.ToArray()
+
       [ordered]@{
-        checkedRuns = $refreshRuns.Count
-        active = @($active)
-        succeeded = @($succeeded)
-        failed = @($failed)
+        checkedRuns = $checkedRunsCount
+        active = $activeArr
+        succeeded = $succeededArr
+        failed = $failedArr
       } | ConvertTo-Json -Depth 100 -Compress
 
   - name: persist-nonterminal-runs
