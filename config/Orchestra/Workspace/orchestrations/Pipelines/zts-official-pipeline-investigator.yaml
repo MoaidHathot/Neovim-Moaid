@@ -35,6 +35,8 @@ mcps:
       - Zakira.Exchange
       - --yes
       - --
+      - --db
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
       - mcp
       - --category
       - zts-official-pipeline-tracker

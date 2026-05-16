@@ -39,6 +39,8 @@ mcps:
       - Zakira.Exchange
       - "--yes"
       - "--"
+      - "--db"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
       - mcp
       - "--category"
       - "{{vars.zakiraCategory}}"

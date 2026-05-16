@@ -38,7 +38,7 @@ variables:
   cdDefinitionName: ZTS-Official-Release
   targetUserUniqueName: moaidhathot@microsoft.com
   targetUserDisplayName: Moaid Hathot
-  zakiraDb: 'P:\Github\Orchestra\playground\Hosting\Orchestra.Playground.Copilot.Portal\zakira.db'
+  zakiraDb: "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
   zakiraCategory: zts-official-pipeline-tracker
   claimsKey: auto-discovered-claims
   claimLeaseSeconds: "14400"

@@ -310,6 +310,17 @@ append-only history logs scoped to an orchestration.
 **Do not use for:** live data fetch — it's a memory store, not a query
 layer.
 
+**Shared database path:** every orchestration must point Zakira at
+`{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db` via the `--db` flag so
+that state is shared across all orchestrations on the host. Without
+`--db`, Zakira falls back to a path relative to the host process cwd
+(which is unpredictable and won't be shared with other orchestrations).
+
+PowerShell Script steps that shell out to `dnx zakira.exchange` must use
+the same path: declare it once as an orchestration variable (e.g.
+`vars.zakiraDb: "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"`) and
+pass it as `--db <path>` to the CLI.
+
 **Top-level definition:**
 
 ```yaml
@@ -320,6 +331,12 @@ mcps:
     arguments:
       - Zakira.Exchange
       - "--yes"
+      - "--"
+      - "--db"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - mcp
+      - "--category"
+      - "{{vars.zakiraCategory}}"
 ```
 
 ---

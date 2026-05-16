@@ -52,6 +52,14 @@ config/nushell
 config/k9s
 config/Orchestra/.orchestra.pids.json
 config/Orchestra/workspace/.runtime/
+# Zakira.Exchange SQLite DB (shared state across orchestrations). Path
+# is set in YAML/PowerShell as {{env.XDG_CONFIG_HOME}}/orchestra/zakira.db
+# which resolves to this location on disk. Includes -wal/-shm sidecars.
+config/Orchestra/zakira.db
+config/Orchestra/zakira.db-wal
+config/Orchestra/zakira.db-shm
+config/Orchestra/zakira.db-journal
+*.db
 # Ephermal orchestrations are generated on demand by the run-ephermal
 # orchestration and reaped by cleanup-ephermal. Never commit them.
 config/Orchestra/workspace/orchestrations/Ephermal/*
