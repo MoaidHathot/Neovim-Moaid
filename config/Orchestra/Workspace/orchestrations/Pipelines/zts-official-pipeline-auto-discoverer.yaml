@@ -3,13 +3,25 @@ name: zts-official-pipeline-auto-discoverer
 description: |
   Scheduled discovery of recent ZTS official pipeline runs. Fetches the most
   recent runs from the CI and CD definitions, flattens them into a single
-  list, and hands each run to `zts-official-pipeline-dispatcher`. The
-  dispatcher is the sole authority on relevance, deduplication, and Zakira
-  persistence; this orchestration neither writes Zakira state nor submits
-  ActionView entries. ActionView entries are emitted only by the
-  scheduled tracker on terminal transition (success) or by the investigator
-  (failure).
-version: 2.0.1
+  list, deterministically filters them for relevance and state, then hands
+  each survivor to `zts-official-pipeline-dispatcher` (fire-and-forget).
+
+  Relevance filter: a run is kept only if either the requester
+  (`requestedFor.uniqueName`/`displayName`) is the configured target user OR
+  the triggering pull request's author (`triggerInfo.pr.senderEmail`) is the
+  target user. No commit-author signal is used to avoid flagging unrelated
+  auto-CI builds that happen to include the user's commits.
+
+  State filter: writes its own `auto-discovered-claims` document in Zakira
+  (category `zts-official-pipeline-tracker`) so subsequent ticks can skip
+  runs already claimed in-flight. Claims expire after `claimLeaseSeconds`
+  (default 4h); stale entries are reclaimable. Entries older than
+  `claimsPruneDays` (default 7) are pruned on every tick. The dispatcher's
+  own `tracked-runs-index` is read but not mutated by this orchestration.
+
+  ActionView entries are emitted only by the scheduled tracker on terminal
+  transition (success) or by the investigator (failure).
+version: 2.1.0
 tags: ["ZTS", "pipelines", "MSFT", "Azure-DevOps", "Pipeline", "auto-discovery", "auto"]
 defaultModel: gpt-5.4
 timeoutSeconds: 7200
@@ -24,6 +36,13 @@ variables:
   ciDefinitionName: ZTS-Official
   cdDefinitionId: "388576"
   cdDefinitionName: ZTS-Official-Release
+  targetUserUniqueName: moaidhathot@microsoft.com
+  targetUserDisplayName: Moaid Hathot
+  zakiraDb: 'P:\Github\Orchestra\playground\Hosting\Orchestra.Playground.Copilot.Portal\zakira.db'
+  zakiraCategory: zts-official-pipeline-tracker
+  claimsKey: auto-discovered-claims
+  claimLeaseSeconds: "14400"
+  claimsPruneDays: "7"
 mcps:
   - name: orchestra
     type: remote
@@ -347,16 +366,333 @@ steps:
         runs = $runsArr
       } | ConvertTo-Json -Depth 100 -Compress
 
+  - name: pre-filter-runs
+    type: Script
+    dependsOn: [enumerate-runs]
+    shell: pwsh
+    script: |
+      # Deterministic relevance + state pre-filter for the auto-discoverer.
+      # Combines two cuts before fan-out:
+      #   1. Relevance: keep a run only when the requester is the configured
+      #      target user (by uniqueName OR displayName, case-insensitive) OR
+      #      the triggering PR's author is the target user (by uniqueName).
+      #   2. State (Zakira via dnx CLI):
+      #      - Drop runs whose recordKey already lives in `tracked-runs-index`
+      #        (the dispatcher/tracker already owns them).
+      #      - Drop runs whose recordKey lives in `auto-discovered-claims`
+      #        with `claimedAt` younger than vars.claimLeaseSeconds (4h).
+      #      - Otherwise keep the run, write/upgrade its claim entry.
+      # Claims older than vars.claimsPruneDays are dropped from the claims
+      # doc on every tick to keep it bounded.
+      # Output JSON matches the shape `enumerate-runs.output` produced
+      # (ciCount/cdCount/totalCount/runs) so downstream steps don't change,
+      # plus a `filterStats` block that `output-summary` surfaces.
+      $ErrorActionPreference = 'Stop'
+      # Force PS 7+ "Standard" native-command argument passing so JSON payloads
+      # containing `"` survive the trip to native CLIs (`dnx zakira.exchange`).
+      # PS 7.6.1 with the default 'Windows' mode silently strips inner quotes,
+      # turning `{"k":"v"}` into `{k:v}` by the time the CLI parses argv.
+      $PSNativeCommandArgumentPassing = 'Standard'
+      try { Get-Command az  -ErrorAction Stop | Out-Null } catch {
+        throw "az CLI is not available on PATH; cannot run pre-filter."
+      }
+      try { Get-Command dnx -ErrorAction Stop | Out-Null } catch {
+        throw "dnx is not available on PATH; cannot reach Zakira.Exchange CLI."
+      }
+
+      function ConvertTo-IsoUtcString {
+        param($value)
+        if ($null -eq $value) { return "" }
+        if ($value -is [datetime]) { return ([datetime]$value).ToUniversalTime().ToString("o") }
+        if ($value -is [datetimeoffset]) { return ([datetimeoffset]$value).UtcDateTime.ToString("o") }
+        return [string]$value
+      }
+
+      function ConvertTo-UtcDateTime {
+        # ConvertFrom-Json auto-converts ISO strings to System.DateTime with
+        # Kind=Local. A subsequent `[string]` cast loses sub-second precision
+        # and timezone, so [datetimeoffset]::Parse reinterprets the value as
+        # local time and yields the wrong UTC instant. This helper accepts
+        # whatever ConvertFrom-Json (or our own code) produced and returns a
+        # UTC System.DateTime suitable for direct comparison against $now.
+        param($value)
+        if ($null -eq $value) { return $null }
+        if ($value -is [datetime]) {
+          $dt = [datetime]$value
+          if ($dt.Kind -eq [System.DateTimeKind]::Utc) { return $dt }
+          return $dt.ToUniversalTime()
+        }
+        if ($value -is [datetimeoffset]) { return ([datetimeoffset]$value).UtcDateTime }
+        $text = [string]$value
+        if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+        try { return [datetimeoffset]::Parse($text, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal).UtcDateTime } catch { return $null }
+      }
+
+      function Invoke-ZakiraCli {
+        param(
+          [Parameter(Mandatory)][string]$Database,
+          [Parameter(Mandatory)][string[]]$Arguments,
+          [switch]$AllowExit1
+        )
+        $stdout = & dnx zakira.exchange --yes -- --db $Database @Arguments 2>&1
+        $code = $LASTEXITCODE
+        $text = if ($stdout -is [array]) { ($stdout | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$stdout }
+        if ($code -ne 0 -and -not ($AllowExit1 -and $code -eq 1)) {
+          throw "Zakira CLI failed (exit $code) for args [$($Arguments -join ' ')]: $text"
+        }
+        return [pscustomobject]@{ ExitCode = $code; Text = $text }
+      }
+
+      function Get-ZakiraDataJson {
+        # Extracts the JSON payload from the `get` command's formatted text
+        # output. The Zakira CLI prints the entry as a series of `Header: value`
+        # lines; the `Data:` line is followed by the JSON payload. Subsequent
+        # lines until the next header (Author/Reason/Tags/Custom/Created/
+        # Last Modified) belong to the data block, which lets this parser also
+        # handle pretty-printed JSON should it ever be written that way.
+        param([string]$Text)
+        if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+        $lines = $Text -split "`r?`n"
+        $builder = New-Object System.Text.StringBuilder
+        $inData = $false
+        $first = $true
+        foreach ($line in $lines) {
+          if (-not $inData) {
+            if ($line -match '^\s*Data:\s*(.*)$') {
+              $inData = $true
+              [void]$builder.Append($Matches[1])
+              $first = $false
+            }
+            continue
+          }
+          if ($line -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s') { break }
+          if (-not $first) { [void]$builder.Append("`n") }
+          [void]$builder.Append($line)
+          $first = $false
+        }
+        $jsonText = $builder.ToString().Trim()
+        if ([string]::IsNullOrWhiteSpace($jsonText)) { return $null }
+        try { return $jsonText | ConvertFrom-Json -Depth 100 } catch { return $null }
+      }
+
+      $db = '{{vars.zakiraDb}}'
+      $category = '{{vars.zakiraCategory}}'
+      $claimsKey = '{{vars.claimsKey}}'
+      $targetUniqueLower = ('{{vars.targetUserUniqueName}}').ToLowerInvariant()
+      $targetDisplay = '{{vars.targetUserDisplayName}}'
+      $leaseSeconds = [int]'{{vars.claimLeaseSeconds}}'
+      $pruneDays = [int]'{{vars.claimsPruneDays}}'
+      $orchestrationRunId = '{{orchestration.runId}}'
+
+      $now = (Get-Date).ToUniversalTime()
+      $nowIso = $now.ToString("o")
+      $leaseCutoff = $now.AddSeconds(-$leaseSeconds)
+      $pruneCutoff = $now.AddDays(-$pruneDays)
+
+      $enumerated = @'
+      {{enumerate-runs.output}}
+      '@ | ConvertFrom-Json -Depth 100
+
+      $allRuns = @()
+      if ($null -ne $enumerated -and $null -ne $enumerated.runs) {
+        $allRuns = @($enumerated.runs)
+      }
+      $discoveredCount = $allRuns.Count
+
+      # ---- 1. Relevance filter -------------------------------------------------
+      $relevant = New-Object System.Collections.Generic.List[object]
+      $droppedRelevance = 0
+      foreach ($run in $allRuns) {
+        if ($null -eq $run) { continue }
+
+        $reqUnique = ""
+        $reqDisplay = ""
+        if ($null -ne $run.requestedFor) {
+          $reqUnique = [string]$run.requestedFor.uniqueName
+          $reqDisplay = [string]$run.requestedFor.displayName
+        }
+        $reqUniqueLower = if ($reqUnique) { $reqUnique.ToLowerInvariant() } else { "" }
+        $matchByRequesterUnique = (-not [string]::IsNullOrWhiteSpace($reqUniqueLower) -and $reqUniqueLower -eq $targetUniqueLower)
+        $matchByRequesterDisplay = (-not [string]::IsNullOrWhiteSpace($reqDisplay) -and [string]::Equals($reqDisplay, $targetDisplay, [System.StringComparison]::OrdinalIgnoreCase))
+
+        $prUnique = ""
+        if ($null -ne $run.pullRequests -and @($run.pullRequests).Count -gt 0) {
+          $firstPr = @($run.pullRequests)[0]
+          if ($null -ne $firstPr -and $null -ne $firstPr.author) {
+            $prUnique = [string]$firstPr.author.uniqueName
+          }
+        }
+        $prUniqueLower = if ($prUnique) { $prUnique.ToLowerInvariant() } else { "" }
+        $matchByPr = (-not [string]::IsNullOrWhiteSpace($prUniqueLower) -and $prUniqueLower -eq $targetUniqueLower)
+
+        if ($matchByRequesterUnique -or $matchByRequesterDisplay -or $matchByPr) {
+          [void]$relevant.Add($run)
+        } else {
+          $droppedRelevance++
+        }
+      }
+
+      # ---- 2. Load Zakira state ------------------------------------------------
+      $trackedResp = Invoke-ZakiraCli -Database $db -Arguments @('get', $category, 'tracked-runs-index') -AllowExit1
+      $trackedIndex = $null
+      if ($trackedResp.ExitCode -eq 0) { $trackedIndex = Get-ZakiraDataJson -Text $trackedResp.Text }
+      $trackedRecordKeys = New-Object System.Collections.Generic.HashSet[string]
+      if ($null -ne $trackedIndex -and $null -ne $trackedIndex.runs) {
+        foreach ($r in @($trackedIndex.runs)) {
+          if ($null -eq $r) { continue }
+          $rk = [string]$r.recordKey
+          if (-not [string]::IsNullOrWhiteSpace($rk)) { [void]$trackedRecordKeys.Add($rk) }
+        }
+      }
+
+      $claimsResp = Invoke-ZakiraCli -Database $db -Arguments @('get', $category, $claimsKey) -AllowExit1
+      $claimsDocExists = ($claimsResp.ExitCode -eq 0)
+      $claimsDoc = $null
+      if ($claimsDocExists) { $claimsDoc = Get-ZakiraDataJson -Text $claimsResp.Text }
+
+      $claimsList = New-Object System.Collections.Generic.List[object]
+      if ($null -ne $claimsDoc -and $null -ne $claimsDoc.claims) {
+        foreach ($c in @($claimsDoc.claims)) {
+          if ($null -eq $c) { continue }
+          [void]$claimsList.Add($c)
+        }
+      }
+
+      # ---- 2a. Prune stale claims ---------------------------------------------
+      $prunedCount = 0
+      $keptClaims = New-Object System.Collections.Generic.List[object]
+      foreach ($c in $claimsList) {
+        $claimedAt = ConvertTo-UtcDateTime $c.claimedAt
+        if ($null -ne $claimedAt -and $claimedAt -lt $pruneCutoff) {
+          $prunedCount++
+          continue
+        }
+        [void]$keptClaims.Add($c)
+      }
+      $claimsList = $keptClaims
+
+      $claimByKey = @{}
+      foreach ($c in $claimsList) {
+        $rk = [string]$c.recordKey
+        if (-not [string]::IsNullOrWhiteSpace($rk)) { $claimByKey[$rk] = $c }
+      }
+
+      # ---- 3. State filter -----------------------------------------------------
+      $survivors = New-Object System.Collections.Generic.List[object]
+      $droppedAlreadyTracked = 0
+      $droppedInFlight = 0
+      $reclaimedStale = 0
+      foreach ($run in $relevant) {
+        $kind = [string]$run.pipelineType
+        $runIdStr = [string]$run.runId
+        $recordKey = "$($kind):$($runIdStr)"
+
+        if ($trackedRecordKeys.Contains($recordKey)) {
+          $droppedAlreadyTracked++
+          continue
+        }
+
+        $existing = $null
+        if ($claimByKey.ContainsKey($recordKey)) { $existing = $claimByKey[$recordKey] }
+        if ($null -ne $existing) {
+          $claimedAt = ConvertTo-UtcDateTime $existing.claimedAt
+          if ($null -ne $claimedAt -and $claimedAt -ge $leaseCutoff) {
+            $droppedInFlight++
+            continue
+          }
+          $reclaimedStale++
+        }
+
+        [void]$survivors.Add($run)
+      }
+
+      # ---- 4. Write claims for survivors --------------------------------------
+      $claimsWritten = 0
+      foreach ($run in $survivors) {
+        $kind = [string]$run.pipelineType
+        $runIdStr = [string]$run.runId
+        $recordKey = "$($kind):$($runIdStr)"
+        $definitionId = ""
+        if ($null -ne $run.definitionId) { $definitionId = [string]$run.definitionId }
+
+        $newClaim = [ordered]@{
+          recordKey = $recordKey
+          kind = $kind
+          runId = $runIdStr
+          definitionId = $definitionId
+          claimedAt = $nowIso
+          claimedBy = $orchestrationRunId
+        }
+        $claimByKey[$recordKey] = $newClaim
+        $claimsWritten++
+      }
+
+      $finalClaims = New-Object System.Collections.Generic.List[object]
+      foreach ($key in $claimByKey.Keys) { [void]$finalClaims.Add($claimByKey[$key]) }
+      $finalClaimsArr = $finalClaims.ToArray()
+
+      $newDoc = [ordered]@{
+        key = $claimsKey
+        updatedAt = $nowIso
+        claims = $finalClaimsArr
+      }
+      $newDocJson = $newDoc | ConvertTo-Json -Depth 100 -Compress
+
+      if ($claimsDocExists) {
+        $null = Invoke-ZakiraCli -Database $db -Arguments @(
+          'edit', $category, $claimsKey,
+          '--data', $newDocJson,
+          '--reason', "auto-discoverer pre-filter tick at $nowIso"
+        )
+      } else {
+        $null = Invoke-ZakiraCli -Database $db -Arguments @(
+          'create', $category, $claimsKey,
+          '--data', $newDocJson,
+          '--reason', "auto-discoverer initial claims doc at $nowIso",
+          '--tags', 'auto-discoverer,claims,pipeline',
+          '--author', 'zts-official-pipeline-auto-discoverer'
+        )
+      }
+
+      # ---- 5. Emit JSON in the shape downstream steps expect ------------------
+      $survivorArr = $survivors.ToArray()
+      $survivorCiCount = 0
+      $survivorCdCount = 0
+      foreach ($s in $survivorArr) {
+        if ([string]$s.pipelineType -eq 'ci') { $survivorCiCount++ }
+        elseif ([string]$s.pipelineType -eq 'cd') { $survivorCdCount++ }
+      }
+      $survivorTotal = $survivorArr.Count
+
+      $stats = [ordered]@{
+        discoveredCount = $discoveredCount
+        droppedRelevance = $droppedRelevance
+        droppedAlreadyTracked = $droppedAlreadyTracked
+        droppedInFlight = $droppedInFlight
+        reclaimedStale = $reclaimedStale
+        claimsWritten = $claimsWritten
+        claimsPruned = $prunedCount
+        totalSurvivors = $survivorTotal
+      }
+
+      [ordered]@{
+        ciCount = $survivorCiCount
+        cdCount = $survivorCdCount
+        totalCount = $survivorTotal
+        runs = $survivorArr
+        filterStats = $stats
+      } | ConvertTo-Json -Depth 100 -Compress
+
   - name: gate-discovery
     type: Prompt
-    dependsOn: [enumerate-runs]
+    dependsOn: [pre-filter-runs]
     systemPrompt: |
       You are a deterministic DAG gate. You receive a JSON object with a
       `totalCount` field. Apply the mechanical rule below.
 
       If totalCount is zero:
         - Call orchestra_set_status with status "no_action" and reason
-          "No recent pipeline runs discovered."
+          "No recent pipeline runs survived relevance + state pre-filter."
         - Return strict JSON: {"proceed": false}
 
       Otherwise:
@@ -366,14 +702,14 @@ steps:
     userPrompt: |
       Decide whether discovery should proceed.
 
-      {{enumerate-runs.output}}
+      {{pre-filter-runs.output}}
     outputHandlerPrompt: |
       Ensure the output is a single JSON object with the required keys.
     timeoutSeconds: 120
 
   - name: dispatch-runs
     type: Prompt
-    dependsOn: [gate-discovery, enumerate-runs]
+    dependsOn: [gate-discovery, pre-filter-runs]
     mcps: [orchestra]
     systemPrompt: |
       You dispatch discovered Azure DevOps runs to the child orchestration
@@ -426,22 +762,27 @@ steps:
       Dispatch each discovered run through the dispatcher (fire-and-forget).
 
       enumerated:
-      {{enumerate-runs.output}}
+      {{pre-filter-runs.output}}
     timeoutSeconds: 900
 
   - name: output-summary
     type: Script
-    dependsOn: [enumerate-runs, dispatch-runs]
+    dependsOn: [enumerate-runs, pre-filter-runs, dispatch-runs]
     shell: pwsh
     script: |
       # Render a human-friendly markdown summary listing the run IDs that were
       # fire-and-forget dispatched to `zts-official-pipeline-dispatcher`.
       # Reads dispatch-runs.output for the dispatched list and joins against
-      # enumerate-runs.output to enrich with definitionName / buildNumber /
-      # webUrl / status fields that the dispatch-runs prompt deliberately does
-      # not echo back.
+      # pre-filter-runs.output (or enumerate-runs.output as fallback) to enrich
+      # with definitionName / buildNumber / webUrl / status fields. Surfaces
+      # the filter counters from pre-filter-runs so it's clear why N of M
+      # discovered runs were not dispatched.
       $dispatchPayload = @'
       {{dispatch-runs.output}}
+      '@ | ConvertFrom-Json -Depth 100
+
+      $preFilter = @'
+      {{pre-filter-runs.output}}
       '@ | ConvertFrom-Json -Depth 100
 
       $enumerated = @'
@@ -449,11 +790,13 @@ steps:
       '@ | ConvertFrom-Json -Depth 100
 
       $runsByRunId = @{}
-      if ($null -ne $enumerated -and $null -ne $enumerated.runs) {
-        foreach ($r in @($enumerated.runs)) {
+      foreach ($source in @($preFilter, $enumerated)) {
+        if ($null -eq $source -or $null -eq $source.runs) { continue }
+        foreach ($r in @($source.runs)) {
           if ($null -eq $r) { continue }
           $key = [string]$r.runId
-          if (-not [string]::IsNullOrWhiteSpace($key)) { $runsByRunId[$key] = $r }
+          if ([string]::IsNullOrWhiteSpace($key)) { continue }
+          if (-not $runsByRunId.ContainsKey($key)) { $runsByRunId[$key] = $r }
         }
       }
 
@@ -476,10 +819,30 @@ steps:
         $rejectedCount   = $dispatchedItems.Count - $dispatchedCount
       }
 
+      $stats = $null
+      if ($null -ne $preFilter -and $null -ne $preFilter.filterStats) { $stats = $preFilter.filterStats }
+
+      $discoveredCount       = if ($stats -and $null -ne $stats.discoveredCount)       { [int]$stats.discoveredCount }       else { 0 }
+      $droppedRelevance      = if ($stats -and $null -ne $stats.droppedRelevance)      { [int]$stats.droppedRelevance }      else { 0 }
+      $droppedAlreadyTracked = if ($stats -and $null -ne $stats.droppedAlreadyTracked) { [int]$stats.droppedAlreadyTracked } else { 0 }
+      $droppedInFlight       = if ($stats -and $null -ne $stats.droppedInFlight)       { [int]$stats.droppedInFlight }       else { 0 }
+      $reclaimedStale        = if ($stats -and $null -ne $stats.reclaimedStale)        { [int]$stats.reclaimedStale }        else { 0 }
+      $claimsWritten         = if ($stats -and $null -ne $stats.claimsWritten)         { [int]$stats.claimsWritten }         else { 0 }
+      $claimsPruned          = if ($stats -and $null -ne $stats.claimsPruned)          { [int]$stats.claimsPruned }          else { 0 }
+      $totalSurvivors        = if ($stats -and $null -ne $stats.totalSurvivors)        { [int]$stats.totalSurvivors }        else { $totalRuns }
+
       $lines = New-Object System.Collections.Generic.List[string]
       [void]$lines.Add("# ZTS-Official Pipeline Auto-Discoverer Summary")
       [void]$lines.Add("")
-      [void]$lines.Add("Fire-and-forget dispatched **$dispatchedCount** of **$totalRuns** discovered run(s) to ``zts-official-pipeline-dispatcher`` (rejected: **$rejectedCount**).")
+      [void]$lines.Add("Discovered **$discoveredCount** run(s) from az CLI; **$totalSurvivors** survived pre-filter; fire-and-forget dispatched **$dispatchedCount** (rejected: **$rejectedCount**).")
+      [void]$lines.Add("")
+      [void]$lines.Add("Filter breakdown:")
+      [void]$lines.Add("- Dropped (not relevant to me): **$droppedRelevance**")
+      [void]$lines.Add("- Dropped (already in ``tracked-runs-index``): **$droppedAlreadyTracked**")
+      [void]$lines.Add("- Dropped (in-flight claim not stale): **$droppedInFlight**")
+      [void]$lines.Add("- Reclaimed stale claims: **$reclaimedStale**")
+      [void]$lines.Add("- New claims written: **$claimsWritten**")
+      [void]$lines.Add("- Pruned claims older than ``vars.claimsPruneDays``: **$claimsPruned**")
       [void]$lines.Add("")
 
       if ($dispatchedItems.Count -gt 0) {
