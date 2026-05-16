@@ -10,6 +10,7 @@ variables:
   project: One
   repository: ZTS
   authorName: Moaid Hathot
+  authorUniqueName: MoaidHathot@microsoft.com
 
 defaultRetryPolicy:
   maxRetries: 3
@@ -27,23 +28,98 @@ mcps:
 
 steps:
   - name: fetch-my-prs
-    type: Prompt
-    systemPrompt: |
-      You are an Azure DevOps assistant. Query for active pull requests created by a specific author. Return structured data only -- no commentary.
-    userPrompt: |
-      Using the Azure DevOps tools, list all active (open) pull requests in project '{{vars.project}}' repository '{{vars.repository}}' that were CREATED BY '{{vars.authorName}}'.
+    type: Script
+    shell: pwsh
+    script: |
+      # Deterministic PR enumeration via az CLI (replaces the prior azdo MCP prompt).
+      # Lists active PRs in `{{vars.project}}/{{vars.repository}}` that were CREATED BY
+      # the author identified by `{{vars.authorUniqueName}}`. Emits a JSON array — the
+      # same contract the downstream `gate-no-prs` / `dispatch-candidates` steps consume.
+      # Note: the `--creator` argument requires a resolvable identity (email or
+      # descriptor). The display name (`vars.authorName`) cannot be used here
+      # because Azure DevOps may have multiple identities with the same display
+      # name and az CLI fails fast with "multiple identities found".
+      $ErrorActionPreference = 'Stop'
+      try { Get-Command az -ErrorAction Stop | Out-Null } catch {
+        throw "az CLI is not available on PATH; cannot fetch authored PRs."
+      }
 
-      For each PR, return: id, title, createdBy (author display name), creationDate, sourceRefName, targetRefName, reviewers (array of display names and vote status), url (full Azure DevOps PR URL), and the latest iteration id.
+      function ConvertTo-IsoUtcString {
+        param($value)
+        if ($null -eq $value) { return "" }
+        if ($value -is [datetime]) { return ([datetime]$value).ToUniversalTime().ToString("o") }
+        if ($value -is [datetimeoffset]) { return ([datetimeoffset]$value).UtcDateTime.ToString("o") }
+        return [string]$value
+      }
 
-      Return ONLY a JSON array. If no PRs found, return [].
-    outputHandlerPrompt: |
-      Ensure the output is a valid JSON array. Strip any markdown fences. If empty, return []. Escape every literal backslash inside JSON string values.
-    mcps: [azdo]
-    retry:
-      maxRetries: 3
-      backoffSeconds: 10
-      backoffMultiplier: 2.0
-      retryOnTimeout: true
+      $organization = '{{vars.organization}}'
+      $project = '{{vars.project}}'
+      $repository = '{{vars.repository}}'
+      $authorUnique = '{{vars.authorUniqueName}}'
+      $orgUrl = "https://dev.azure.com/$organization"
+
+      $raw = & az repos pr list `
+        --org $orgUrl `
+        --project $project `
+        --repository $repository `
+        --creator $authorUnique `
+        --status active `
+        --top 100 `
+        -o json 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        $errText = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
+        throw "az repos pr list failed (exit $LASTEXITCODE): $errText"
+      }
+      $jsonString = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
+      $list = $jsonString | ConvertFrom-Json -Depth 100
+
+      $prs = New-Object System.Collections.Generic.List[object]
+      foreach ($p in @($list)) {
+        if ($null -eq $p) { continue }
+
+        $reviewerNames = @()
+        if ($null -ne $p.reviewers) {
+          $reviewerNames = @(@($p.reviewers) | ForEach-Object { [string]$_.displayName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        }
+
+        $createdByName = ""
+        $createdByUnique = ""
+        if ($null -ne $p.createdBy) {
+          $createdByName = [string]$p.createdBy.displayName
+          $createdByUnique = [string]$p.createdBy.uniqueName
+        }
+
+        $prId = [int]$p.pullRequestId
+        $webUrl = "https://dev.azure.com/$organization/$project/_git/$repository/pullrequest/$prId"
+
+        $lastCommit = ""
+        if ($null -ne $p.lastMergeSourceCommit -and $p.lastMergeSourceCommit.commitId) {
+          $lastCommit = [string]$p.lastMergeSourceCommit.commitId
+        }
+
+        $isDraftVal = $false
+        if ($null -ne $p.isDraft) { $isDraftVal = [bool]$p.isDraft }
+
+        $entry = [ordered]@{
+          id = $prId
+          title = [string]$p.title
+          status = [string]$p.status
+          isDraft = $isDraftVal
+          createdBy = $createdByName
+          createdByUniqueName = $createdByUnique
+          creationDate = ConvertTo-IsoUtcString $p.creationDate
+          sourceRefName = [string]$p.sourceRefName
+          targetRefName = [string]$p.targetRefName
+          reviewers = $reviewerNames
+          url = $webUrl
+          apiUrl = [string]$p.url
+          lastMergeSourceCommitId = $lastCommit
+        }
+        [void]$prs.Add($entry)
+      }
+
+      $prsArr = $prs.ToArray()
+      $prsArr | ConvertTo-Json -Depth 100 -Compress -AsArray
 
   - name: gate-no-prs
     type: Prompt
