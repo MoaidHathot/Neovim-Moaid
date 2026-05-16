@@ -9,6 +9,14 @@
 		"maxSessionsPerInstance": 3,
 		"idleTimeoutSeconds": 120
 	},
+	"copilot": {
+		"swap": {
+			"budgetPerStep": 3,
+			"resumeOnSwap": true,
+			"resumeAlreadyInUseWaitSeconds": 5,
+			"resumeAlreadyInUsePollIntervalMs": 500
+		}
+	},
 	"scan": {
 		"directory": "./workspace/",
 		"watch": true,

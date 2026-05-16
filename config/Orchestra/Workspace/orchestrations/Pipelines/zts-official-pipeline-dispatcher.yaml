@@ -4,7 +4,7 @@ description: reusable dispatcher for tracking Azure DevOps CI/CD runs
 version: 1.0.0
 tags: ["ZTS", "pipelines", "MSFT", "Azure-DevOps", "Pipeline", "Tracking", "Dispatcher"]
 defaultModel: gpt-5.4
-timeoutSeconds: 7200
+timeoutSeconds: 9200
 
 trigger:
   type: manual
@@ -42,7 +42,7 @@ defaultRetryPolicy:
   backoffMultiplier: 2.0
   retryOnTimeout: true
 
-defaultStepTimeoutSeconds: 900
+defaultStepTimeoutSeconds: 1300
 
 variables:
   trackedRunsIndexKey: tracked-runs-index
@@ -323,7 +323,7 @@ steps:
       Return only the JSON object. Do not call any orchestra_* tools.
     outputHandlerPrompt: |
       Ensure the result is valid JSON only. Remove markdown fences and normalize booleans, strings, arrays, and objects to valid JSON.
-    timeoutSeconds: 300
+    timeoutSeconds: 900
 
   - name: gate-dispatch
     type: Prompt
@@ -363,7 +363,7 @@ steps:
       {{decide-dispatch.output}}
     outputHandlerPrompt: |
       Ensure the output is a single JSON object with exactly the keys `proceed` (boolean) and `reason` (string).
-    timeoutSeconds: 60
+    timeoutSeconds: 160
 
   - name: persist-tracking-state
     type: Prompt
@@ -410,7 +410,7 @@ steps:
     outputHandlerPrompt: |
       Ensure the output is valid JSON only. Preserve the persisted record and summary entry as JSON objects.
     mcps: [zakira]
-    timeoutSeconds: 300
+    timeoutSeconds: 900
 
   - name: finalize-tracked-record
     type: Prompt
@@ -448,7 +448,7 @@ steps:
     outputHandlerPrompt: |
       Ensure the output is valid JSON only. Preserve the final tracked record as a JSON object.
     mcps: [zakira]
-    timeoutSeconds: 300
+    timeoutSeconds: 900
 
   - name: generate-summary
     type: Prompt
@@ -473,4 +473,4 @@ steps:
       6. Whether the run is already terminal
       7. Confirmation that the tracked state was recorded and queued for the scheduled tracker
       8. A note that ActionView entries are emitted by the tracker on terminal transition (success) or by the investigator (failure)
-    timeoutSeconds: 60
+    timeoutSeconds: 120
