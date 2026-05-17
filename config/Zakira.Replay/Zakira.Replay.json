@@ -6,15 +6,33 @@
   },
   "search": {
     "onnx": {
-      "autoDownload": true,
-      "modelDirectory": "P:\\Playground\\VideoWatcher\\Temp\\models\\all-MiniLM-L6-v2"
+      "autoDownload": true
     }
   },
   "llm": {
     "provider": "local-whisper",
+    "openAi": {
+      "apiKeyEnvironmentVariables": [],
+      "baseUrlEnvironmentVariables": [],
+      "modelEnvironmentVariables": [],
+      "transcriptionModelEnvironmentVariables": []
+    },
+    "azureOpenAi": {
+      "endpointEnvironmentVariables": [],
+      "apiKeyEnvironmentVariables": [],
+      "deploymentEnvironmentVariables": [],
+      "modelEnvironmentVariables": [],
+      "apiVersionEnvironmentVariables": []
+    },
+    "ollama": {
+      "endpointEnvironmentVariables": [],
+      "modelEnvironmentVariables": [],
+      "visionModelEnvironmentVariables": []
+    },
     "localWhisper": {
-      "modelSize": "small",
+      "modelSize": "large-v3-turbo",
       "language": "auto",
+      "runtimeOrder": [],
       "autoDownload": true
     }
   },
@@ -25,12 +43,12 @@
       "autoDownload": true
     }
   },
-  "diarization": {
-    "provider": "sherpa-onnx",
-    "minDurationOnSeconds": 0.3,
-    "minDurationOffSeconds": 0.5,
-    "threads": 1,
-    "autoDownload": true
+  "vision": {
+    "provider": "copilot",
+    "local": {
+      "mode": "clip-caption",
+      "autoDownload": true
+    }
   },
   "captions": {
     "languages": [
@@ -42,6 +60,32 @@
     "hashDistance": 6
   },
   "frames": {
-    "sceneSafetyCap": 2000
+    "sceneSafetyCap": 2000,
+    "perMinute": 12
+  },
+  "crop": {
+    "enabled": false,
+    "profile": "auto"
+  },
+  "capture": {
+    "mode": "ytdlp",
+    "browser": {
+      "videoElementSelector": "video",
+      "seekWaitSeconds": 2.5,
+      "durationProbeTimeoutSeconds": 20,
+      "jpegQuality": 90,
+      "captureCaptions": true,
+      "maxCaptionBytes": 5242880
+    }
+  },
+  "auth": {
+    "staleThresholdMinutes": 60
+  },
+  "diarization": {
+    "provider": "sherpa-onnx",
+    "minDurationOnSeconds": 0.3,
+    "minDurationOffSeconds": 0.5,
+    "threads": 1,
+    "autoDownload": true
   }
 }
