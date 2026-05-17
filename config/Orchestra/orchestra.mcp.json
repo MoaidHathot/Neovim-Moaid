@@ -21,11 +21,6 @@
 			"endpoint": "http://localhost:5113/mcp/me"
 		},
 		{
-			"name": "teams",
-			"type": "Remote",
-			"endpoint": "http://localhost:5113/mcp/teams"
-		},
-		{
 			"name": "icm-full",
 			"type": "local",
 			"command": "dnx",
