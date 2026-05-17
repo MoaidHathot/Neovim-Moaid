@@ -122,7 +122,7 @@ already knows the schema and the MCP catalogue when it writes the YAML.
   mode: sync
   parameters:
     description: "{{compose-spec.output}}"
-    outputPath: "{{orchestration.sourceDirectory}}/../Ephermal/attempt-{{orchestration.runId}}.yaml"
+    outputPath: "{{orchestration.sourceDirectory}}/../Ephemeral/attempt-{{orchestration.runId}}.yaml"
 ```
 
 The Orchestra filesystem watcher will discover the new file under the watched
@@ -139,7 +139,7 @@ Generic controller for "give me a task, I'll write an orchestration for it and
 keep repairing it until it works, or I run out of attempts." For each attempt:
 
 1. Uses `generate-orchestration-fast` to write a per-attempt ephemeral
-   orchestration YAML under the watched `Ephermal/` directory (sibling to the
+   orchestration YAML under the watched `Ephemeral/` directory (sibling to the
    `System/` folder).
 2. Polls `list_orchestrations` (data-plane MCP) until the watcher discovers it.
 3. Invokes the generated orchestration synchronously with the caller-supplied

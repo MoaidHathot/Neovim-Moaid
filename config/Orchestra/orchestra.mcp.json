@@ -21,6 +21,11 @@
 			"endpoint": "http://localhost:5113/mcp/me"
 		},
 		{
+			"name": "teams",
+			"type": "Remote",
+			"endpoint": "http://localhost:5113/mcp/teams"
+		},
+		{
 			"name": "icm-full",
 			"type": "local",
 			"command": "dnx",
@@ -89,6 +94,25 @@
 				"--file",
 				"P:\\Github\\Orchestra\\playground\\mcp\\McpDebug.cs"
 			]
-		}
+		},
+		{
+      "name": "teams",
+			"type": "local",
+      "command": "dnx",
+      "arguments": [
+        "McpProxy.Samples.Teams.Mcp",
+        "--yes",
+        "--",
+        "--auth-mode=user-auth",
+        "--tenant-id=${CORP_TENANT_ID}",
+        "--public-client-id=${VSCODE_CLIENT_ID}",
+        "--token-cache-name=mcp-proxy",
+        "--defer-connection"
+      ],
+      "environment": {
+        "AZURE_SCOPES": "${VSCODE_AUDIENCE}/.default"
+      },
+      "enabled": true
+    }
 	]
 }

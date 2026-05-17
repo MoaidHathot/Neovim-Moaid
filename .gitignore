@@ -60,10 +60,10 @@ config/Orchestra/zakira.db-wal
 config/Orchestra/zakira.db-shm
 config/Orchestra/zakira.db-journal
 *.db
-# Ephermal orchestrations are generated on demand by the run-ephermal
-# orchestration and reaped by cleanup-ephermal. Never commit them.
-config/Orchestra/workspace/orchestrations/Ephermal/*
-!config/Orchestra/workspace/orchestrations/Ephermal/.gitkeep
+# Ephemeral orchestrations are generated on demand by the run-ephemeral
+# orchestration and reaped by cleanup-ephemeral. Never commit them.
+config/Orchestra/workspace/orchestrations/Ephemeral/*
+!config/Orchestra/workspace/orchestrations/Ephemeral/.gitkeep
 config/turbophrase/turbophrase.log
 
 tags

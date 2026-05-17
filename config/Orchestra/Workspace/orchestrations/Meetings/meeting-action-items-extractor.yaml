@@ -1,39 +1,90 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
 name: meeting-action-items-extractor
 description: |
-  Processes recent meetings to extract action items, decisions, follow-ups,
-  and other trackable items. Uses the shared Calendar MCP to discover recent
-  meetings, gathers meeting context from WorkIQ and the shared m365-copilot MCP,
-  analyzes transcripts and other meeting-related evidence, deduplicates
-  against previously extracted items via Zakira.Exchange, and saves results as
-  structured markdown files plus ActionView notifications.
-version: 1.1.0
+  Scheduler + dispatcher for meeting action-items extraction. Every 8 hours
+  it discovers recent meetings in the last 8 hours via the Calendar MCP,
+  filters out ones whose canonical Zakira key already has a 'processed'
+  record, then dispatches one synchronous `meeting-action-items-processor`
+  child per remaining meeting via the Orchestra data-plane MCP. The child
+  owns context gathering, action-items extraction, markdown rendering,
+  disk write, and Zakira state. After all children complete, this parent
+  aggregates counts and transcript availability, posts a single
+  ActionView entry of type `meeting-action-items` (one entry per run)
+  with severity based on failure and "my" high-priority counts, and
+  emits a deterministic markdown summary.
+version: 2.0.0
 tags: ["productivity", "meetings", "action-items", "WorkIQ", "MSFT", "auto", "ZTS"]
 defaultModel: gpt-5.4
 
+metadata:
+  owner: Moaid Hathot
+  ownerAlias: moaid
+  domain: productivity
+  sla: best-effort
+  schedule: "every 8h, 8h look-back"
+  documentation: |
+    Sibling per-meeting child orchestration:
+    `meeting-action-items-processor.yaml`.
+    ActionView template:
+    `config/ActionView/templates/meeting-action-items.json`.
+    Reusable submitter: `ActionView/actionview-submit.yaml`.
+
+inputs:
+  lookBackHours:
+    type: string
+    description: |
+      Look-back window in hours from now. Default matches the scheduler
+      cadence so every recently-finished meeting is seen exactly once.
+    required: false
+    default: "8"
+  meetingFilter:
+    type: string
+    description: |
+      Optional case-insensitive substring filter on the meeting title.
+      When non-empty, only matching meetings are dispatched. Useful for
+      manual reruns scoped to a specific meeting.
+    required: false
+    default: ""
+  forceReprocess:
+    type: boolean
+    description: |
+      When true, bypass the Zakira short-circuit for every dispatched
+      meeting and re-extract action items even if a recent record
+      exists.
+    required: false
+    default: "false"
+  dryRun:
+    type: boolean
+    description: |
+      When true, extract and render reports but skip disk saves, Zakira
+      writes, and the ActionView submission. Useful for verifying the
+      gather+extract logic without producing side effects.
+    required: false
+    default: "false"
+
 variables:
-  lookBackHours: "8"
-  actionItemsDir: '{{env.USERPROFILE}}\OneDrive - Microsoft\Notes\Obsidian\Work\OrcStra\Meeting Action Items'
+  actionItemsDir: "{{env.USERPROFILE}}\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\Meeting Action Items"
   zakiraCategory: meeting-action-items-state
   myName: Moaid Hathot
   myAlias: moaid
+  organization: msazure
+  project: One
+  repository: ZTS
+  actionViewGroupId: "action-items-{{orchestration.runId}}"
 
 defaultRetryPolicy:
   maxRetries: 2
-  backoffSeconds: 5
+  backoffSeconds: 10
   backoffMultiplier: 2.0
   retryOnTimeout: true
 
 defaultStepTimeoutSeconds: 1200
-timeoutSeconds: 10600
+timeoutSeconds: 25200
 
 mcps:
-  - name: workiq
-    type: local
-    command: npx
-    arguments:
-      - "-y"
-      - "@microsoft/workiq"
-      - mcp
+  - name: orchestra
+    type: remote
+    endpoint: "{{server.url}}/mcp/data"
 
   - name: zakira
     type: local
@@ -57,427 +108,516 @@ steps:
   - name: get-timezone
     type: Prompt
     systemPrompt: |
-      You are a timezone resolution agent. Call the Calendar MCP tool
-      GetUserDateAndTimeZoneSettings to resolve the user's current date,
-      time, and IANA timezone. Do not call any other tools.
+      You are a timezone resolution agent. Use the Calendar MCP tool
+      `GetUserDateAndTimeZoneSettings` to resolve the user's current
+      date, time, and configured time zone. Pass the value through
+      verbatim — do not convert it to IANA, do not transform it in any
+      way.
     userPrompt: |
-      Use GetUserDateAndTimeZoneSettings to fetch the user's timezone settings.
+      Use GetUserDateAndTimeZoneSettings to fetch the user's current
+      timezone settings.
 
       Then output ONLY a JSON object with these fields:
       {
-        "currentDateTime": "<ISO-8601 in the user's local timezone>",
-        "windowStartDateTime": "<currentDateTime - {{vars.lookBackHours}} hours, same format>",
-        "timeZone": "<IANA name>"
+        "currentDateTime": "<ISO-8601 timestamp in the user's local timezone>",
+        "windowStartDateTime": "<currentDateTime - {{param.lookBackHours}} hours, same format>",
+        "timeZone": "<exact value of the timezone returned by the MCP (e.g. 'Pacific Standard Time')>"
       }
 
       Do not include any other text. Just the JSON object.
+    outputHandlerPrompt: |
+      Extract one valid JSON object only with the fields currentDateTime,
+      windowStartDateTime, and timeZone. Strip markdown fences, prose,
+      and trailing whitespace. Output only the JSON object.
     mcps: [calendar]
 
   - name: discover-recent-meetings
     type: Prompt
     dependsOn: [get-timezone]
     systemPrompt: |
-      You are a meeting discovery agent. Your job is to find all meetings from
-      the last {{vars.lookBackHours}} hours using the shared Calendar MCP.
+      You are a meeting discovery agent. Use the Calendar MCP to find all
+      meetings from the recent look-back window provided by the previous
+      step.
 
       Rules:
-      1. Call ListCalendarView with the start and end times provided by the
-         previous step (windowStartDateTime and currentDateTime in the user's
-         IANA timezone)
-      2. Include meetings I organized or attended: 1:1s, standups, reviews,
-         design sessions, syncs, interviews, and ad hoc calls
-      3. Exclude: cancelled meetings, focus time blocks, OOF blocks, and
-         placeholder all-day events
-      4. For each meeting, extract as much metadata as available:
-         title, start time, end time, organizer, attendees, body/agenda,
-         meeting link, recurrence info, and event id if available
-      5. If there are ZERO meetings in the window, call orchestra_complete
-         with status 'success' and reason 'No meetings in the last {{vars.lookBackHours}} hours'
-      6. Output a JSON array of meeting objects
+      1. Call `ListCalendarView` with `windowStartDateTime` (start) and
+         `currentDateTime` (end) from the timezone step, expressed in the
+         user's configured timezone (passed through verbatim).
+      2. Include meetings I organized or attended: 1:1s, standups,
+         reviews, design sessions, syncs, interviews, ad-hoc calls.
+      3. Exclude cancelled events, focus-time blocks, OOF blocks, and
+         all-day placeholder events.
+      4. For EVERY meeting, capture all of the following fields. The
+         downstream Script step REQUIRES at least one of (eventId,
+         iCalUId+occurrenceStart, startTime+title) per meeting in order
+         to compute a canonical Zakira key. Capture as many as the API
+         exposes:
+         - `eventId`        : the calendar event id (Graph `id`).
+         - `iCalUId`        : the iCalendar UID (Graph `iCalUId`).
+         - `occurrenceStart`: ISO-8601 start of this instance (use start.dateTime).
+         - `title`          : the event subject.
+         - `startTime`      : ISO-8601 start.
+         - `endTime`        : ISO-8601 end.
+         - `timeZone`       : start.timeZone if exposed, else inherit the user's TZ.
+         - `organizer`      : organizer display name.
+         - `attendees`      : array of attendee display names.
+         - `description`    : bodyPreview or first ~500 chars of body.
+         - `webLink`        : canonical event URL.
+         - `recurrence`     : recurrence object if present, else null.
+      5. Apply the meetingFilter (case-insensitive substring match on
+         title) when non-empty. Otherwise keep every meeting.
+      6. If zero meetings remain after filtering, call
+         orchestra_complete with status 'success' and reason 'No
+         meetings in the last {{param.lookBackHours}} hours' (substitute
+         the filter clause when relevant).
+      7. Output a single JSON array of meeting objects. No prose, no
+         fences.
     userPrompt: |
       Timezone and window:
       {{get-timezone.output}}
 
-      Use ListCalendarView from the shared Calendar MCP to query my calendar
-      for the recent window above. Return each meeting with all available
-      details.
+      Look-back hours: {{param.lookBackHours}}
+      Meeting filter (substring, empty = no filter): "{{param.meetingFilter}}"
 
-      If no meetings are found, call orchestra_complete to end early.
+      Enumerate calendar events in the look-back window with every field
+      listed in your system prompt. Return a JSON array.
+    outputHandlerPrompt: |
+      Extract one valid JSON array only. Strip markdown fences, prose,
+      and trailing whitespace. Preserve every field returned by the
+      calendar MCP. Output only the JSON array.
     mcps: [calendar]
 
-  - name: check-already-processed
-    type: Prompt
+  - name: normalize-meetings-array
+    type: Script
     dependsOn: [discover-recent-meetings]
+    shell: pwsh
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      function Get-OptionalProperty {
+        param($Object, [Parameter(Mandatory)][string]$Name)
+        if ($null -eq $Object) { return $null }
+        $prop = $Object.PSObject.Properties[$Name]
+        if ($null -eq $prop) { return $null }
+        return $prop.Value
+      }
+
+      function Get-JsonCandidate {
+        param([Parameter(Mandatory)][string]$Text)
+        $trimmed = $Text.Trim()
+        if ($trimmed.StartsWith('```')) {
+          $lines = @($trimmed -split "`r?`n")
+          if ($lines.Count -gt 1) {
+            $trimmed = ($lines[1..($lines.Count - 1)] -join "`n").Trim()
+            if ($trimmed.EndsWith('```')) {
+              $trimmed = $trimmed.Substring(0, $trimmed.Length - 3).Trim()
+            }
+          }
+        }
+        $start = -1
+        for ($i = 0; $i -lt $trimmed.Length; $i++) {
+          if ($trimmed[$i] -eq '{' -or $trimmed[$i] -eq '[') { $start = $i; break }
+        }
+        if ($start -lt 0) { throw 'No JSON object or array was found in discover-recent-meetings output.' }
+        return $trimmed.Substring($start)
+      }
+
+      function Get-Slug {
+        param([string]$Value, [int]$MaxLength = 50)
+        if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+        $lower = $Value.ToLowerInvariant()
+        $cleaned = [regex]::Replace($lower, '[^a-z0-9]+', '-').Trim('-')
+        if ($cleaned.Length -gt $MaxLength) {
+          $cleaned = $cleaned.Substring(0, $MaxLength).TrimEnd('-')
+        }
+        return $cleaned
+      }
+
+      function Get-ShortHash {
+        param([Parameter(Mandatory)][string]$Value, [int]$Length = 8)
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+        $sha = [System.Security.Cryptography.SHA1]::Create()
+        try {
+          $hashBytes = $sha.ComputeHash($bytes)
+        } finally {
+          $sha.Dispose()
+        }
+        $hex = ($hashBytes | ForEach-Object { $_.ToString('x2') }) -join ''
+        if ($Length -gt $hex.Length) { return $hex }
+        return $hex.Substring(0, $Length)
+      }
+
+      function ConvertTo-UtcTimestampString {
+        param($Value)
+        if ($null -eq $Value) { return $null }
+        $text = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+        try {
+          $parsed = [datetimeoffset]::Parse($text, [System.Globalization.CultureInfo]::InvariantCulture)
+          return $parsed.UtcDateTime.ToString('yyyyMMddHHmm', [System.Globalization.CultureInfo]::InvariantCulture)
+        } catch {
+          return $null
+        }
+      }
+
+      $raw = $args[0]
+      if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw 'discover-recent-meetings output is empty.'
+      }
+
+      $candidate = Get-JsonCandidate -Text $raw
+      $list = ConvertFrom-Json -InputObject $candidate -NoEnumerate -ErrorAction Stop
+
+      $enriched = New-Object System.Collections.Generic.List[object]
+      foreach ($m in @($list)) {
+        if ($null -eq $m) { continue }
+
+        $eventId         = [string](Get-OptionalProperty $m 'eventId')
+        $iCalUId         = [string](Get-OptionalProperty $m 'iCalUId')
+        $occurrenceStart = Get-OptionalProperty $m 'occurrenceStart'
+        $title           = [string](Get-OptionalProperty $m 'title')
+        $startTime       = Get-OptionalProperty $m 'startTime'
+        $organizer       = [string](Get-OptionalProperty $m 'organizer')
+        $attendeesRaw    = Get-OptionalProperty $m 'attendees'
+
+        $attendees = @()
+        if ($null -ne $attendeesRaw) {
+          $attendees = @(@($attendeesRaw) | ForEach-Object { [string]$_ })
+        }
+
+        $occurrenceStamp = ConvertTo-UtcTimestampString $occurrenceStart
+        if (-not $occurrenceStamp) { $occurrenceStamp = ConvertTo-UtcTimestampString $startTime }
+        $titleSlug = Get-Slug -Value $title -MaxLength 50
+
+        $zakiraKey = $null
+        $zakiraKeyStrategy = $null
+
+        if (-not [string]::IsNullOrWhiteSpace($eventId)) {
+          $zakiraKey = "meeting-$eventId"
+          $zakiraKeyStrategy = 'eventId'
+        } elseif (-not [string]::IsNullOrWhiteSpace($iCalUId) -and $occurrenceStamp) {
+          $zakiraKey = "meeting-icaluid-$iCalUId-$occurrenceStamp"
+          $zakiraKeyStrategy = 'iCalUId+occurrenceStart'
+        } elseif ($occurrenceStamp) {
+          $hashInput = ($title + '|' + $organizer + '|' + ($attendees -join ','))
+          $shortHash = Get-ShortHash -Value $hashInput -Length 8
+          $slugForKey = if ([string]::IsNullOrWhiteSpace($titleSlug)) { 'untitled' } else { $titleSlug }
+          $zakiraKey = "meeting-$occurrenceStamp-$slugForKey-$shortHash"
+          $zakiraKeyStrategy = 'timestamp+slug+hash'
+        } else {
+          # Skip meetings we cannot uniquely key.
+          continue
+        }
+
+        $enrichedObj = [ordered]@{}
+        foreach ($p in $m.PSObject.Properties) {
+          $enrichedObj[$p.Name] = $p.Value
+        }
+        $enrichedObj['zakiraKey'] = $zakiraKey
+        $enrichedObj['zakiraKeyStrategy'] = $zakiraKeyStrategy
+        $enrichedObj['titleSlug'] = $titleSlug
+        [void]$enriched.Add([pscustomobject]$enrichedObj)
+      }
+
+      $arr = $enriched.ToArray()
+      $arr | ConvertTo-Json -Depth 50 -Compress -AsArray
+    arguments:
+      - "{{discover-recent-meetings.output}}"
+    timeoutSeconds: 120
+
+  - name: filter-already-processed
+    type: Prompt
+    dependsOn: [normalize-meetings-array]
     systemPrompt: |
-      You are a deduplication agent. Check which meetings have already been
-      processed using Zakira.Exchange.
+      You are a state checker for meeting action-items extraction. Use
+      Zakira.Exchange to decide which of the enriched meetings still
+      need processing.
 
       Rules:
-      1. For each meeting, generate a key: 'meeting-<date>-<normalized-title>'
-         where date is YYYY-MM-DD-HHmm and normalized-title is lowercase with
-         spaces replaced by hyphens, truncated to 50 chars
-      2. Check Zakira.Exchange using get_memory for each key
-      3. If a record exists with status 'processed', mark the meeting as 'skip'
-      4. If no record exists or status is 'failed', mark as 'needs-processing'
-      5. If ALL meetings are 'skip', call orchestra_complete with status
-         'success' and reason 'All recent meetings already processed'
-      6. Output JSON with: meetingsToProcess and meetingsSkipped arrays
-    userPrompt: |
-      Discovered recent meetings:
-      {{discover-recent-meetings.output}}
-
-      Check Zakira.Exchange to see which meetings have already been processed.
-    mcps: [zakira]
-
-  - name: gather-workiq-meeting-context
-    type: Prompt
-    dependsOn: [check-already-processed]
-    systemPrompt: |
-      You are a meeting context research agent using ONLY the WorkIQ MCP.
-
-      For each meeting that needs processing, gather all useful evidence that
-      can help identify action items or trackable outcomes.
-
-      Search across:
-      1. Meeting transcripts or transcript snippets if available
-      2. Meeting recordings, recaps, or summaries if WorkIQ can surface them
-      3. Follow-up emails related to the meeting
-      4. Teams chats or channel threads related to the meeting
-      5. Meeting notes or documents related to the discussed topic
-      6. Previous occurrences of recurring meetings in the last 30 days
-
-      For each meeting, capture:
-      - transcript availability status: full|partial|none|unknown
-      - transcript or recap content if available
-      - supporting artifacts from email/chat/docs/past meetings
-      - short notes on likely action items, decisions, follow-ups, blockers,
-        or open questions suggested by the evidence
-
-      Output JSON keyed by meeting identifier.
-    userPrompt: |
-      Meetings needing processing:
-      {{check-already-processed.output}}
-
-      I am {{vars.myName}} ({{vars.myAlias}}).
-
-      Use WorkIQ to gather meeting transcripts when available, plus any other
-      meeting-related evidence that can help identify action items or outcomes.
-      Do not limit yourself to transcript-only evidence.
-    mcps: [workiq]
-
-  - name: gather-m365-copilot-meeting-context
-    type: Prompt
-    dependsOn: [check-already-processed]
-    systemPrompt: |
-      You are a meeting context research agent using ONLY the shared
-      m365-copilot MCP.
-
-      For each meeting that needs processing, gather all relevant meeting
-      evidence, not just transcript text.
-
-      Search across:
-      1. Meeting transcript, recording recap, or AI-generated meeting summary
-      2. Emails, Teams chats, documents, and shared files related to the meeting
-      3. Follow-up messages after the meeting
-      4. Previous occurrences or earlier notes for recurring meetings
-
-      Prioritize content containing:
-      - explicit or implicit action items
-      - decisions made
-      - unresolved questions
-      - blockers, risks, or commitments
-
-      Output JSON keyed by meeting identifier, including transcript/recap
-      availability and the most relevant evidence per meeting.
-    userPrompt: |
-      Meetings needing processing:
-      {{check-already-processed.output}}
-
-      Use m365-copilot to gather meeting transcripts/recaps if available and
-      any other relevant context that may contain action items or meeting
-      outcomes. Do not rely on transcript-only evidence.
-    mcps: [m365-copilot]
-
-  - name: merge-meeting-context
-    type: Prompt
-    dependsOn:
-      - check-already-processed
-      - gather-workiq-meeting-context
-      - gather-m365-copilot-meeting-context
-    systemPrompt: |
-      You are a context-merging agent. Merge WorkIQ and m365-copilot meeting
-      evidence into one normalized context object per meeting for downstream
-      extraction.
-
-      Rules:
-      1. For each meeting, merge and deduplicate evidence from both sources
-      2. Prefer richer transcript/recap content when both sources provide the
-         same artifact
-      3. Keep source attribution on every merged item using a sources array
-      4. Organize each meeting into these sections when present:
-         - transcriptOrRecap
-         - followUpEmails
-         - teamsMessages
-         - documentsAndNotes
-         - priorMeetings
-         - contextualSignals
-      5. If the sources disagree materially, add a conflict note
-      6. Output JSON keyed by meeting identifier with one merged object per meeting
-    userPrompt: |
-      Meetings needing processing:
-      {{check-already-processed.output}}
-
-      WorkIQ meeting context:
-      {{gather-workiq-meeting-context.output}}
-
-      m365-copilot meeting context:
-      {{gather-m365-copilot-meeting-context.output}}
-
-      Merge into a single deduplicated meeting context object per meeting.
-
-  - name: extract-action-items
-    type: Prompt
-    dependsOn: [check-already-processed, merge-meeting-context]
-    systemPrompt: |
-      You are an expert meeting analyzer. Your job is to extract ALL
-      actionable items, decisions, follow-ups, and trackable outcomes from the
-      available meeting evidence.
-
-      Important:
-      - Use transcript or recap content when available
-      - Also use related evidence such as follow-up emails, Teams chats,
-        meeting notes, and prior-meeting context
-      - Do NOT restrict the analysis to transcript-only findings
-      - Every extracted item should be grounded in evidence from the provided context
-
-      Extract the following categories:
-
-      1. ACTION ITEMS
-         - owner (name/alias or 'unassigned')
-         - action description
-         - deadline if mentioned
-         - priority: high|medium|low
-         - evidence snippet and source type
-         - flag items assigned to ME ({{vars.myName}}/{{vars.myAlias}})
-
-      2. DECISIONS MADE
-         - decision
-         - context/reasoning
-         - who made or approved it if clear
-         - evidence snippet and source type
-
-      3. FOLLOW-UPS NEEDED
-         - follow-up needed
-         - owner if clear
-         - why it is needed
-         - timeframe if mentioned
-         - evidence snippet and source type
-
-      4. QUESTIONS & OPEN ITEMS
-         - unresolved question or open issue
-         - who raised it if clear
-         - who might answer it if clear
-         - urgency
-         - evidence snippet and source type
-
-      5. RISKS & CONCERNS
-         - risk or concern
-         - who raised it if clear
-         - potential impact
-         - mitigation if mentioned
-         - evidence snippet and source type
-
-      6. INFORMATION SHARED
-         - key fact/update/announcement
-         - relevance
-         - evidence snippet and source type
-
-      Rules:
-      1. Process each meeting independently
-      2. Be thorough -- implicit commitments count when they are grounded in evidence
-      3. Distinguish my items vs others' items clearly
-      4. Prefer exact wording from the evidence when possible
-      5. If transcript content is missing, still extract from other reliable
-         meeting-related context when supported
-      6. For each meeting, save a structured JSON result using orchestra_save_file
-         with extension 'json'
-      7. Output a summary:
+      1. The canonical Zakira key is already computed on each meeting as
+         `zakiraKey`. Use it verbatim — do not invent or transform keys.
+      2. For each meeting, call Zakira.Exchange `get_memory` with the
+         exact `zakiraKey`.
+      3. If `forceReprocess` (passed via the user prompt) is the string
+         'true', mark every meeting as `needs-processing` regardless of
+         stored state.
+      4. Otherwise:
+         - If a memory exists with status 'processed', mark the meeting
+           as `skip` and include the stored processedAt in the result.
+         - Otherwise mark as `needs-processing`.
+      5. If ALL meetings are `skip`, call orchestra_complete with status
+         'success' and reason 'All recent meetings already processed.'
+      6. Output a single JSON object:
          {
-           "meetings": [
-             {
-               "title": "...",
-               "date": "...",
-               "transcriptAvailability": "full|partial|none|unknown",
-               "actionItemsCount": 0,
-               "decisionsCount": 0,
-               "followUpsCount": 0,
-               "questionsCount": 0,
-               "risksCount": 0,
-               "myActionItemsCount": 0
-             }
+           "meetingsToProcess": [ <enriched meeting object>, ... ],
+           "meetingsSkipped": [
+             { "zakiraKey": "...", "title": "...", "startTime": "...", "processedAt": "..." },
+             ...
            ]
          }
+      7. Preserve every original field on each meeting object you pass
+         through into `meetingsToProcess`. The downstream dispatcher
+         needs the full payload.
     userPrompt: |
-      Meetings to process:
-      {{check-already-processed.output}}
+      Enriched meetings (each has a canonical `zakiraKey`):
+      {{normalize-meetings-array.output}}
 
-      Merged meeting context:
-      {{merge-meeting-context.output}}
+      forceReprocess flag: {{param.forceReprocess}}
 
-      I am {{vars.myName}} (alias: {{vars.myAlias}}). Extract all action
-      items, decisions, follow-ups, questions, risks, and key information.
-      Pay special attention to items assigned to me or commitments I made.
-    reasoningLevel: High
-
-  - name: generate-markdown-reports
-    type: Prompt
-    dependsOn: [extract-action-items]
-    systemPrompt: |
-      You are a markdown report generator for meeting action items. Convert
-      the extracted meeting results into well-formatted markdown files.
-
-      For each meeting, generate a markdown file with this structure:
-
-      # Meeting Notes: <Title>
-
-      **Date:** <date/time>
-      **Duration:** <duration if known>
-      **Organizer:** <name if known>
-      **Attendees:** <list if known>
-      **Transcript/Recap Availability:** <full|partial|none|unknown>
-
-      ---
-
-      ## My Action Items
-      <Items assigned to me, sorted by priority>
-      - [ ] **[HIGH]** <description> *(deadline if any)*
-      - [ ] **[MEDIUM]** <description>
-      - [ ] **[LOW]** <description>
-
-      ## All Action Items
-      | Owner | Action | Priority | Deadline | Source |
-      |-------|--------|----------|----------|--------|
-      | ... | ... | ... | ... | ... |
-
-      ## Decisions Made
-      1. **<Decision>** - <context> *(source: <source type>)*
-
-      ## Follow-Ups Needed
-      - [ ] <follow-up> - *<owner>* *(source: <source type>)*
-
-      ## Open Questions
-      - <question> *(source: <source type>)*
-
-      ## Risks & Concerns
-      - **<risk>** - <impact> *(source: <source type>)*
-
-      ## Key Information
-      - <info point> *(source: <source type>)*
-
-      ---
-      *Extracted by meeting-action-items-extractor on <timestamp>*
-
-      Rules:
-      1. Use checkbox syntax (- [ ]) for action items and follow-ups so they're trackable in Obsidian
-      2. Prioritize MY action items at the top, clearly separated
-      3. Save each meeting's markdown file using orchestra_save_file with extension 'md'
-      4. If a meeting had no significant items, still create a minimal file noting 'No action items identified'
-      5. Output the list of saved files and a summary
-    userPrompt: |
-      Extracted action items data:
-      {{extract-action-items.output}}
-
-      Extracted files:
-      {{extract-action-items.files}}
-
-      I am {{vars.myName}}. Generate a markdown report for each meeting. Read
-      the JSON files if needed using orchestra_read_file.
-
-  - name: save-reports-to-disk
-    type: Prompt
-    dependsOn: [generate-markdown-reports]
-    systemPrompt: |
-      You are a file management agent. Copy the generated markdown reports to the designated directory.
-
-      Rules:
-      1. For each markdown file saved by generate-markdown-reports, read it using orchestra_read_file
-      2. Save to the action items directory with filename: YYYY-MM-DD-<meeting-title-slug>.md
-      3. The slug should be lowercase, spaces to hyphens, special chars removed, max 50 chars
-      4. Ensure the target directory exists (create if needed using PowerShell)
-      5. Report all saved file paths
-    userPrompt: |
-      Markdown report files:
-      {{generate-markdown-reports.files}}
-
-      Report summary:
-      {{generate-markdown-reports.output}}
-
-      Action items directory: {{vars.actionItemsDir}}
-
-      Copy each report to the action items directory.
-
-  - name: mark-meetings-processed
-    type: Prompt
-    dependsOn: [extract-action-items]
-    systemPrompt: |
-      You are a state management agent. Mark each processed meeting in
-      Zakira.Exchange so we don't reprocess it.
-
-      Rules:
-      1. For each meeting that was processed, use Zakira.Exchange create_memory
-      2. Key format: 'meeting-<date>-<normalized-title>'
-      3. Data: { status: 'processed', processedAt: '<ISO timestamp>', meetingTitle: '<title>', meetingDate: '<date>', actionItemsCount: <N>, myActionItemsCount: <M>, orchestrationRunId: '{{orchestration.runId}}' }
-      4. Report how many meetings were marked as processed
-    userPrompt: |
-      Extraction summary:
-      {{extract-action-items.output}}
-
-      Meetings processed:
-      {{check-already-processed.output}}
-
-      Mark each processed meeting in Zakira.Exchange.
+      Look up Zakira.Exchange for each `zakiraKey` and produce the
+      split JSON object described above.
+    outputHandlerPrompt: |
+      Extract one valid JSON object only with the keys
+      `meetingsToProcess` and `meetingsSkipped`. Strip markdown fences,
+      prose, and trailing whitespace. Output only the JSON object.
     mcps: [zakira]
+
+  - name: dispatch-processor
+    type: Prompt
+    dependsOn: [filter-already-processed]
+    systemPrompt: |
+      You are an orchestration coordinator. For every meeting that needs
+      processing, invoke the `meeting-action-items-processor` child
+      orchestration synchronously and collect its result. Mirror of the
+      pr-auto-reviewer dispatch pattern: one child run per item, in the
+      same step.
+
+      Rules:
+      1. Read `meetingsToProcess` from the input. If the array is empty,
+         call orchestra_complete with status 'success' and reason 'No
+         meetings to dispatch after the Zakira gate.'
+      2. For each meeting object in the array:
+         a. Use `invoke_orchestration` with `orchestration_name`
+            'meeting-action-items-processor', `mode` 'sync', and
+            `timeoutSeconds` 3000.
+         b. Pass parameters as a JSON object mapping parameter names to
+            STRING values:
+              meetingData     : the meeting object serialised as a single
+                                canonical JSON string. Every literal
+                                backslash inside string values must be
+                                escaped so the child's Script can parse
+                                it via ConvertFrom-Json.
+              actionItemsDir  : the user-prompt-supplied actionItemsDir.
+              forceReprocess  : the user-prompt-supplied forceReprocess
+                                value (string 'true' or 'false').
+              dryRun          : the user-prompt-supplied dryRun value.
+              zakiraCategory  : the user-prompt-supplied zakiraCategory.
+              myName          : the user-prompt-supplied myName.
+              myAlias         : the user-prompt-supplied myAlias.
+              organization    : the user-prompt-supplied organization.
+              project         : the user-prompt-supplied project.
+              repository      : the user-prompt-supplied repository.
+         c. Wait for completion. Capture the child's `executionId`,
+            terminal `status`, and final content (which includes
+            `extracted.counts` and `extracted.transcriptAvailability`).
+      3. Output a single JSON object aggregating per-meeting results and
+         a rollup across all successful children:
+         {
+           "totalDispatched": <int>,
+           "succeeded": <int>,
+           "failed": <int>,
+           "results": [
+             {
+               "title": "...",
+               "startTime": "...",
+               "organizer": "...",
+               "attendeesCount": <int>,
+               "zakiraKey": "...",
+               "executionId": "...",
+               "status": "succeeded|failed",
+               "filePath": "<from child save block when available>" | "",
+               "webLink": "<from input meeting>",
+               "transcriptAvailability": "full|partial|none|unknown",
+               "counts": {
+                 "actionItems": <int>,
+                 "myActionItems": <int>,
+                 "myHighPriority": <int>,
+                 "decisions": <int>,
+                 "followUps": <int>,
+                 "questions": <int>,
+                 "risks": <int>,
+                 "information": <int>
+               },
+               "summary": "<short text>",
+               "error": null | "..."
+             }
+           ],
+           "rollup": {
+             "actionItems": <sum across succeeded>,
+             "myActionItems": <sum>,
+             "myHighPriority": <sum>,
+             "decisions": <sum>,
+             "followUps": <sum>,
+             "questions": <sum>,
+             "risks": <sum>,
+             "information": <sum>
+           },
+           "transcripts": {
+             "full": <count of succeeded meetings with transcriptAvailability == 'full'>,
+             "partial": <count>,
+             "none": <count>,
+             "unknown": <count>
+           }
+         }
+      4. Do not call orchestra_save_file. Output only the JSON object.
+    userPrompt: |
+      Filter result (meetings to process and meetings skipped):
+      {{filter-already-processed.output}}
+
+      Forward these parameters into every child invocation:
+        actionItemsDir  : {{vars.actionItemsDir}}
+        forceReprocess  : {{param.forceReprocess}}
+        dryRun          : {{param.dryRun}}
+        zakiraCategory  : {{vars.zakiraCategory}}
+        myName          : {{vars.myName}}
+        myAlias         : {{vars.myAlias}}
+        organization    : {{vars.organization}}
+        project         : {{vars.project}}
+        repository      : {{vars.repository}}
+
+      Dispatch each meeting through `meeting-action-items-processor` and
+      aggregate the results plus the cross-meeting rollup and
+      transcripts buckets.
+    outputHandlerPrompt: |
+      Extract one valid JSON object only with the keys totalDispatched,
+      succeeded, failed, results, rollup, and transcripts. Strip
+      markdown fences, prose, and trailing whitespace. Preserve every
+      field. Output only the JSON object.
+    mcps: [orchestra]
+    timeoutSeconds: 22000
+    retry:
+      maxRetries: 2
+      backoffSeconds: 10
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: gate-noteworthy-activity
+    type: Prompt
+    dependsOn: [dispatch-processor]
+    systemPrompt: |
+      You are a noise filter for the meeting-action-items run. Decide
+      whether this scheduler tick produced anything worth surfacing to
+      ActionView.
+
+      Read the dispatcher summary JSON. The run is "noteworthy" only if
+      at least one child processor succeeded (`succeeded > 0`) OR at
+      least one child failed (`failed > 0`). Both signal real activity
+      that warrants a notification.
+
+      If the run is NOT noteworthy (every dispatched processor was a
+      no-op or the dispatcher itself early-completed), call
+      orchestra_complete with status 'success' and a reason like 'All
+      <N> dispatched processors reported no actionable activity;
+      skipping ActionView entry.'
+
+      If the run IS noteworthy, output the dispatcher summary JSON
+      verbatim (no prose, no markdown fences) so the downstream entry
+      generator can consume it.
+
+      Do not call any other tools.
+    userPrompt: |
+      Decide whether this meeting-action-items run is noteworthy enough
+      to surface in ActionView.
+
+      Dispatcher summary:
+      {{dispatch-processor.output}}
+    outputHandlerPrompt: |
+      When continuing, output the dispatcher summary JSON object
+      verbatim with no prose or fences. Otherwise (early-completion
+      path), preserve the orchestra_complete reason text. Output only
+      the relevant content.
 
   - name: create-actionview-entry
     type: Prompt
-    dependsOn: [extract-action-items, save-reports-to-disk]
+    dependsOn: [gate-noteworthy-activity, filter-already-processed, discover-recent-meetings]
     systemPrompt: |
-      You are an ActionView entry generator. Create an ActionView entry
-      summarizing the action items extracted from recent meetings.
+      You generate ActionView entries for the meeting-action-items
+      orchestration. The actionview skill (`skills/actionview`) has been
+      loaded — consult it for the entry schema and content-block
+      reference. The entry `type` must be exactly `meeting-action-items`
+      so the ActionView template with the same name normalises it;
+      `source` must be `{{orchestration.name}}`.
 
-      Entry requirements:
-      - type: 'meeting-action-items'
-      - source: 'meeting-action-items-extractor'
-      - title: '<N> action items from <M> meetings' (focus on MY items count)
-      - subtitle: 'You have <X> action items assigned to you'
-      - severity: 'high' if I have high-priority action items, 'medium' otherwise
-      - icon: 'list-checks'
+      Required entry shape (the `meeting-action-items` template
+      documents the expected content blocks):
+
+      - type: `meeting-action-items`
+      - source: `{{orchestration.name}}`
+      - title: `<succeeded> meeting(s), <rollup.myActionItems> action item(s) for me`
+      - subtitle: `<rollup.actionItems> total / <rollup.decisions> decisions / <rollup.followUps> follow-ups`
+      - severity: 'high' if `failed > 0` OR `rollup.myHighPriority > 0`; otherwise 'medium'
+      - icon: `list-checks`
       - tags: ['meetings', 'action-items', 'productivity']
-      - pinned: true if I have high-priority action items
-      - content:
-        - An alert block (level: 'warning') listing my high-priority action items if any
-        - A keyValue block: Total Meetings Processed, Total Action Items, My Action Items, Decisions Made, Open Questions
-        - For each meeting, a section (type: 'section') with:
-          - Meeting title as section title
-          - A table of action items (Owner, Action, Priority, Source)
-          - A markdown block with key decisions (if any)
-        - A markdown block listing all follow-ups needed
-      - groupId: Use current date YYYY-MM-DD
-      - actions: Include a CLI action to open the action items directory
+      - pinned: true when `rollup.myHighPriority > 0`
+      - content (ordered):
+        1. Optional `alert` block (level 'warning') labelled
+           'My High-Priority Items' when `rollup.myHighPriority > 0`,
+           listing those items.
+        2. `keyValue` block labelled 'Run Overview' with keys: Window
+           (e.g. '8h'), Discovered (count from discover step), Processed
+           (succeeded), Skipped (from filter step), Failed (failed
+           count), Transcripts (e.g. '3 full / 1 partial / 2 none / 0
+           unknown').
+        3. `keyValue` block labelled 'Action Items Rollup' with keys:
+           Total Action Items, My Action Items, Decisions, Follow-Ups,
+           Open Questions.
+        4. `table` block labelled 'Meetings' with columns: Time, Title,
+           Organizer, My Items, Action Items, Decisions, Transcript,
+           Report File. One row per succeeded meeting.
+        5. A `section` titled 'Per-Meeting Details' containing one
+           nested section per succeeded meeting:
+             - `keyValue` 'Meeting' with Time, Organizer, Attendees
+               (count), Transcript (availability).
+             - `markdown` 'My Action Items' with up to 3 bulleted points
+               (priority + action + deadline) when the meeting has my
+               items; omit otherwise.
+             - `table` 'All Action Items' with columns Owner, Action,
+               Priority, Deadline, Source — only when the meeting has
+               action items.
+             - `markdown` 'Decisions' / 'Follow-Ups' / 'Open Questions'
+               when present (omit empty ones).
+             - `link` 'Open Report' to `filePath` (use a `file://` URL).
+             - `link` 'Meeting Link' to the meeting's `webLink` when
+               present.
+        6. A `section` titled 'Failed Dispatches' when `failed > 0`,
+           listing failed meetings with their error messages.
+        7. Optional `markdown` 'Run Notes' summarising anything else
+           (e.g. transcripts missing on most meetings).
+      - actions: leave empty (the template documents 'Open Action Items
+        Folder' and 'Dismiss' as expected actions; commands are not
+        required for those at submission time).
 
-      Save the entry JSON using orchestra_save_file with extension 'json'.
+      Rules:
+      1. Save the complete entry JSON using orchestra_save_file with
+         extension 'json'. The downstream Script reads that file.
+      2. Output only the JSON entry (no prose, no fences). The saved
+         file content and the step output must match.
+      3. Use canonical URLs from the dispatcher results. Do not invent
+         URLs. If a report file path is empty (dry-run), omit the
+         'Open Report' link for that meeting.
     userPrompt: |
-      Extraction summary:
-      {{extract-action-items.output}}
+      Dispatcher summary (post-gate, includes rollup and transcripts):
+      {{gate-noteworthy-activity.output}}
 
-      Extraction files:
-      {{extract-action-items.files}}
+      Filter summary (for skipped counts):
+      {{filter-already-processed.output}}
 
-      Saved report paths:
-      {{save-reports-to-disk.output}}
+      Discovery output (total discovered count):
+      {{discover-recent-meetings.output}}
 
-      I am {{vars.myName}}. Create the ActionView entry. Highlight MY action
-      items prominently. Save as JSON.
+      Run parameters:
+        Window          : {{param.lookBackHours}} hours
+        forceReprocess  : {{param.forceReprocess}}
+        dryRun          : {{param.dryRun}}
+
+      Build the ActionView entry per your system prompt and save it via
+      orchestra_save_file.
+    outputHandlerPrompt: |
+      Output one valid JSON object only — the ActionView entry. Strip
+      markdown fences, prose, and trailing whitespace. The output must
+      match the file you saved via orchestra_save_file.
+    skillDirectories:
+      - "{{orchestration.sourceDirectory}}/../../skills/actionview"
 
   - name: read-actionview-entry-file
     type: Script
@@ -487,50 +627,56 @@ steps:
       Get-Content -LiteralPath '{{create-actionview-entry.files[0]}}' -Raw
     timeoutSeconds: 60
 
-  # First-class Orchestration step: launches actionview-submit in-process via the engine's
-  # IChildOrchestrationLauncher. No MCP transport is involved, so the 3-minute MCP request
-  # timeout does not apply. The step blocks until the child reaches a terminal state and
-  # propagates failures as native step failures.
+  # First-class Orchestration step: launches actionview-submit in-process
+  # via the engine's IChildOrchestrationLauncher. No MCP transport is
+  # involved, so the 3-minute MCP request timeout does not apply. The
+  # step blocks until the child reaches a terminal state and propagates
+  # failures as native step failures.
   - name: submit-actionview-entry
     type: Orchestration
     dependsOn: [read-actionview-entry-file]
     orchestration: actionview-submit
     parameters:
       entryJson: "{{read-actionview-entry-file.output}}"
+      template: meeting-action-items
+      groupId: "{{vars.actionViewGroupId}}"
     mode: sync
     timeoutSeconds: 600
 
   - name: generate-summary
-    type: Prompt
-    dependsOn: [discover-recent-meetings, check-already-processed, extract-action-items, save-reports-to-disk, mark-meetings-processed, submit-actionview-entry]
-    systemPrompt: |
-      You are a summary generator. Create a concise markdown summary of this extraction run.
+    type: Transform
+    dependsOn:
+      - discover-recent-meetings
+      - filter-already-processed
+      - dispatch-processor
+      - submit-actionview-entry
+    template: |
+      # Meeting Action Items Run Summary
 
-      Include:
-      1. How many meetings were discovered vs processed vs skipped
-      2. Total action items extracted (total and mine)
-      3. Total decisions, follow-ups, open questions found
-      4. Whether transcripts/recaps were available broadly or extraction relied on other evidence
-      5. File paths where reports were saved
-      6. ActionView submission status
-      7. Highlight my most important/urgent action items at the end
-    userPrompt: |
-      Meetings discovered:
+      **Run ID:** {{orchestration.runId}}
+      **Started:** {{orchestration.startedAt}}
+      **Window:** {{param.lookBackHours}}h look-back
+      **Filter:** "{{param.meetingFilter}}"
+      **forceReprocess:** {{param.forceReprocess}}
+      **dryRun:** {{param.dryRun}}
+
+      ## Discovery
+      ```json
       {{discover-recent-meetings.output}}
+      ```
 
-      Meetings to process / skip:
-      {{check-already-processed.output}}
+      ## Filter (already-processed gate)
+      ```json
+      {{filter-already-processed.output}}
+      ```
 
-      Extraction summary:
-      {{extract-action-items.output}}
+      ## Dispatch Results
+      ```json
+      {{dispatch-processor.output}}
+      ```
 
-      Saved reports:
-      {{save-reports-to-disk.output}}
-
-      Zakira state:
-      {{mark-meetings-processed.output}}
-
-      ActionView:
+      ## ActionView Submission
+      ```text
       {{submit-actionview-entry.output}}
-
-      Generate a concise run summary. Emphasize what I need to act on.
+      ```
+    contentType: text/markdown

@@ -15,7 +15,7 @@ description: |
       so artifacts like `---` + "Context from previous steps:" cannot leak
       into the saved YAML).
 
-  Use this for ephermal/throwaway orchestrations where iteration speed
+  Use this for ephemeral/throwaway orchestrations where iteration speed
   matters more than rigorous review. Use the slow generator for
   production-quality long-lived orchestrations.
 version: 1.0.0

@@ -1,25 +1,25 @@
 # yaml-language-server: $schema=../schemas/orchestration.schema.json
-name: run-ephermal
+name: run-ephemeral
 description: |
-  Given a natural-language task, generates a one-off ("ephermal") orchestration
+  Given a natural-language task, generates a one-off ("ephemeral") orchestration
   via the meta `generate-orchestration` orchestration, saves it to the
-  workspace `Ephermal/` folder, and immediately executes it as a child
+  workspace `Ephemeral/` folder, and immediately executes it as a child
   Orchestration step.
 
   Generated orchestrations are unregistered (relying on the workspace
-  filesystem watcher for discovery) and tagged ["ephermal", "temp"] so a
+  filesystem watcher for discovery) and tagged ["ephemeral", "temp"] so a
   separate cleanup process can purge them later.
 version: 1.0.0
-tags: ["meta", "ephermal", "system", "manual", "favorite"]
+tags: ["meta", "ephemeral", "system", "manual", "favorite"]
 defaultModel: gpt-5.4
 
 variables:
-  ephermalDir: "{{orchestration.sourceDirectory}}/../Ephermal"
-  # Deterministic, unique name for the ephermal orchestration. Used both as
+  ephemeralDir: "{{orchestration.sourceDirectory}}/../Ephemeral"
+  # Deterministic, unique name for the ephemeral orchestration. Used both as
   # the YAML `name:` field inside the generated file AND as the lookup key
   # for the subsequent Orchestration step.
-  ephermalName: "ephermal-{{orchestration.runId}}"
-  ephermalFile: "{{vars.ephermalDir}}/{{vars.ephermalName}}.yaml"
+  ephemeralName: "ephemeral-{{orchestration.runId}}"
+  ephemeralFile: "{{vars.ephemeralDir}}/{{vars.ephemeralName}}.yaml"
 
 defaultStepTimeoutSeconds: 1800
 
@@ -28,7 +28,7 @@ inputs:
     type: string
     description: |
       Natural-language description of the task to perform. The runner will
-      generate a tailored ephermal orchestration that fulfills this task and
+      generate a tailored ephemeral orchestration that fulfills this task and
       then execute it. Be specific about steps, tools/MCPs, inputs, and
       expected outputs — the description is forwarded verbatim to the
       meta-generator.
@@ -36,18 +36,18 @@ inputs:
     multiline: true
 
 steps:
-  # ── Step 1: Generate the ephermal orchestration ────────────────────────
+  # ── Step 1: Generate the ephemeral orchestration ────────────────────────
   # Delegates to the system `generate-orchestration-fast` meta-orchestration
   # (the fast variant — single LLM call, deterministic pwsh sanitize+save).
   # We forward the user's task verbatim and append a strict requirements
   # block that pins the generated orchestration's `name` and `tags` so the
   # next step can locate and launch it.
-  - name: generate-ephermal
+  - name: generate-ephemeral
     type: Orchestration
     orchestration: generate-orchestration-fast
     parameters:
       description: |
-        Generate an ephermal (one-off) orchestration that fulfills the
+        Generate an ephemeral (one-off) orchestration that fulfills the
         following user task:
 
         ----- BEGIN TASK -----
@@ -58,19 +58,19 @@ steps:
         by the task description above and must always be honored):
 
         1. The top-level `name:` field MUST be exactly:
-             {{vars.ephermalName}}
+             {{vars.ephemeralName}}
         2. The top-level `tags:` field MUST be exactly:
-             ["ephermal", "temp"]
+             ["ephemeral", "temp"]
         3. The top-level `metadata:` field MUST be present and MUST include
            AT LEAST these two keys (additional keys are allowed if useful):
              metadata:
-               ephermal: true
+               ephemeral: true
                createdAt: "{{orchestration.startedAt}}"
            Use the `createdAt` value verbatim as shown above and keep it
            wrapped in double quotes so YAML preserves it as a string rather
-           than coercing it to a native date node. The `ephermal` key MUST
+           than coercing it to a native date node. The `ephemeral` key MUST
            be the literal boolean `true` (not the string "true"). This
-           metadata is consumed by the ephermal-cleanup tooling to identify
+           metadata is consumed by the ephemeral-cleanup tooling to identify
            and age out generated orchestrations.
         4. The orchestration must be self-contained — do NOT depend on other
            orchestrations or workspace files unless explicitly required by
@@ -78,18 +78,18 @@ steps:
         5. Do NOT add any scheduler/webhook/loop triggers — this
            orchestration is launched once, on demand, by a parent runner.
         6. Orchestration can be long-running, if not specified, use a 45 minutes orchestration-level timeout. Don't add step-timeouts.
-      outputPath: "{{vars.ephermalFile}}"
+      outputPath: "{{vars.ephemeralFile}}"
     mode: sync
     timeoutSeconds: 1800
 
-  # ── Step 2: Execute the freshly-generated ephermal orchestration ───────
+  # ── Step 2: Execute the freshly-generated ephemeral orchestration ───────
   # The workspace filesystem watcher (orchestra.json -> scan.watch:true)
   # picks up the new YAML file and registers the orchestration in-engine.
   # We retry a few times to absorb watcher debounce latency.
-  - name: execute-ephermal
+  - name: execute-ephemeral
     type: Orchestration
-    dependsOn: [generate-ephermal]
-    orchestration: "{{vars.ephermalName}}"
+    dependsOn: [generate-ephemeral]
+    orchestration: "{{vars.ephemeralName}}"
     mode: sync
     timeoutSeconds: 7200
     retry:
@@ -101,21 +101,21 @@ steps:
   # ── Step 3: Format the final user-facing summary ───────────────────────
   - name: format-output
     type: Transform
-    dependsOn: [execute-ephermal, generate-ephermal]
+    dependsOn: [execute-ephemeral, generate-ephemeral]
     template: |
-      # Ephermal Task Run — Summary
+      # Ephemeral Task Run — Summary
 
       **Parent run ID:**         {{orchestration.runId}}
-      **Ephermal orchestration:** {{vars.ephermalName}}
-      **Generated file:**        {{vars.ephermalFile}}
-      **Tags:**                  ["ephermal", "temp"]
+      **Ephemeral orchestration:** {{vars.ephemeralName}}
+      **Generated file:**        {{vars.ephemeralFile}}
+      **Tags:**                  ["ephemeral", "temp"]
       **Registered:**            false (filesystem-watcher discovery)
 
       ## Original Task
       {{param.task}}
 
       ## Generator Output
-      {{generate-ephermal.output}}
+      {{generate-ephemeral.output}}
 
-      ## Ephermal Orchestration Output
-      {{execute-ephermal.output}}
+      ## Ephemeral Orchestration Output
+      {{execute-ephemeral.output}}

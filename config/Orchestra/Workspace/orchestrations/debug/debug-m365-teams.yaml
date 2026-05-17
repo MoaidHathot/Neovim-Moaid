@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: debug-m365-teams
+description: |
+  Debug/diagnostic orchestration for the Microsoft 365 Teams MCP (exposed
+  through the shared m365 proxy at /mcp/teams). Accepts a free-form prompt
+  parameter and forwards it to a single Prompt step that is restricted to
+  the Teams MCP so authors can exercise Teams tools (channels, chats,
+  meetings, etc.) and verify connectivity end to end.
+version: 1.0.0
+tags: ["debug", "diagnostics", "m365", "teams"]
+defaultModel: gpt-5.4
+defaultStepTimeoutSeconds: 380
+
+inputs:
+  prompt:
+    type: string
+    description: The prompt to send to the Teams MCP agent.
+    required: true
+    multiline: true
+
+steps:
+  - name: invoke-teams
+    type: Prompt
+    systemPrompt: |
+      You are a diagnostics assistant for the Microsoft 365 Teams MCP.
+      Use ONLY the Teams MCP tools to fulfill the user's request. Do not
+      call any other tools or MCPs.
+
+      Be precise and structured. When tools return data, surface the raw
+      tool results so the operator can verify them, and then provide a
+      short summary at the end describing which Teams tools you called
+      and what each one returned.
+    userPrompt: |
+      User prompt:
+      {{param.prompt}}
+
+      Use the Teams MCP to fulfill this request.
+    mcps: [teams]
+
+  - name: report
+    type: Transform
+    dependsOn: [invoke-teams]
+    template: |
+      # Teams MCP Debug Run
+
+      ## Prompt
+      {{param.prompt}}
+
+      ## Teams MCP result
+      {{invoke-teams.output}}

@@ -1,0 +1,909 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: meeting-action-items-processor
+description: |
+  Per-meeting child orchestration for meeting-action-items-extractor. Takes a
+  single meeting (eventId/iCalUId + metadata), gathers context in parallel from
+  WorkIQ, Microsoft 365 Copilot, Outlook mail, the calendar history, and Azure
+  DevOps, deduplicates the context, extracts action items / decisions /
+  follow-ups / questions / risks / information, renders a markdown report,
+  writes the report deterministically to the action items directory, and
+  records 'processed' state in Zakira.Exchange under a stable per-meeting key.
+  Designed to be dispatched once per meeting by meeting-action-items-extractor
+  and to be the unit of failure isolation: a failed extraction for one meeting
+  does not contaminate sibling meetings or the parent's Zakira state.
+version: 2.0.0
+tags: ["productivity", "meetings", "action-items", "WorkIQ", "MSFT", "ZTS", "child", "auto"]
+defaultModel: gpt-5.4
+
+metadata:
+  owner: Moaid Hathot
+  ownerAlias: moaid
+  domain: productivity
+  sla: best-effort
+  schedule: child-of-meeting-action-items-extractor
+  documentation: |
+    See sibling parent orchestration `meeting-action-items-extractor.yaml`
+    for the discovery + dispatch flow. This child is responsible for
+    everything scoped to a single meeting: gather, extract, render, save,
+    mark.
+
+inputs:
+  meetingData:
+    type: string
+    description: |
+      Canonical meeting JSON for a single meeting, serialized as a string.
+      Required fields the normalize step understands: eventId, iCalUId,
+      occurrenceStart, title, startTime, endTime, organizer, attendees,
+      description, webLink, timeZone. At least one of eventId,
+      iCalUId+occurrenceStart, or startTime+title must be present so a
+      canonical Zakira key can be computed.
+    required: true
+    multiline: true
+  actionItemsDir:
+    type: string
+    description: |
+      Output directory for the generated markdown report.
+    required: false
+    default: "{{env.USERPROFILE}}\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\Meeting Action Items"
+  forceReprocess:
+    type: boolean
+    description: |
+      When true, bypass the Zakira short-circuit and re-extract action
+      items even if a recent record exists.
+    required: false
+    default: "false"
+  dryRun:
+    type: boolean
+    description: |
+      When true, run the extraction and rendering but skip disk write and
+      Zakira 'processed' marking. The orchestration output still contains
+      the structured extraction and the rendered markdown so callers can
+      inspect them.
+    required: false
+    default: "false"
+  zakiraCategory:
+    type: string
+    description: |
+      Zakira.Exchange category for processed state. Override only for
+      testing isolation; in production this must match the parent.
+    required: false
+    default: "meeting-action-items-state"
+  myName:
+    type: string
+    description: |
+      Display name of the user whose action items should be highlighted.
+    required: false
+    default: "Moaid Hathot"
+  myAlias:
+    type: string
+    description: |
+      Short alias or username used to detect "me" mentions in transcripts
+      and emails (e.g. assignment targets).
+    required: false
+    default: "moaid"
+  organization:
+    type: string
+    description: Azure DevOps organization name (used by the AzDO gather step).
+    required: false
+    default: "msazure"
+  project:
+    type: string
+    description: Azure DevOps project name.
+    required: false
+    default: "One"
+  repository:
+    type: string
+    description: Azure DevOps repository name.
+    required: false
+    default: "ZTS"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 10
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 1200
+timeoutSeconds: 3000
+
+mcps:
+  - name: workiq
+    type: local
+    command: npx
+    arguments:
+      - "-y"
+      - "@microsoft/workiq"
+      - mcp
+
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - "--yes"
+      - "--"
+      - "--db"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - mcp
+      - "--category"
+      - "{{param.zakiraCategory}}"
+
+steps:
+  - name: normalize-meeting
+    type: Script
+    shell: pwsh
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      function Get-OptionalProperty {
+        param($Object, [Parameter(Mandatory)][string]$Name)
+        if ($null -eq $Object) { return $null }
+        $prop = $Object.PSObject.Properties[$Name]
+        if ($null -eq $prop) { return $null }
+        return $prop.Value
+      }
+
+      function Get-JsonCandidate {
+        param([Parameter(Mandatory)][string]$Text)
+        $trimmed = $Text.Trim()
+        if ($trimmed.StartsWith('```')) {
+          $lines = @($trimmed -split "`r?`n")
+          if ($lines.Count -gt 1) {
+            $trimmed = ($lines[1..($lines.Count - 1)] -join "`n").Trim()
+            if ($trimmed.EndsWith('```')) {
+              $trimmed = $trimmed.Substring(0, $trimmed.Length - 3).Trim()
+            }
+          }
+        }
+        $start = -1
+        for ($i = 0; $i -lt $trimmed.Length; $i++) {
+          if ($trimmed[$i] -eq '{' -or $trimmed[$i] -eq '[') { $start = $i; break }
+        }
+        if ($start -lt 0) { throw 'No JSON object or array was found in meetingData.' }
+        return $trimmed.Substring($start)
+      }
+
+      function Get-Slug {
+        param([string]$Value, [int]$MaxLength = 50)
+        if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+        $lower = $Value.ToLowerInvariant()
+        $cleaned = [regex]::Replace($lower, '[^a-z0-9]+', '-').Trim('-')
+        if ($cleaned.Length -gt $MaxLength) {
+          $cleaned = $cleaned.Substring(0, $MaxLength).TrimEnd('-')
+        }
+        return $cleaned
+      }
+
+      function Get-ShortHash {
+        param([Parameter(Mandatory)][string]$Value, [int]$Length = 8)
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+        $sha = [System.Security.Cryptography.SHA1]::Create()
+        try {
+          $hashBytes = $sha.ComputeHash($bytes)
+        } finally {
+          $sha.Dispose()
+        }
+        $hex = ($hashBytes | ForEach-Object { $_.ToString('x2') }) -join ''
+        if ($Length -gt $hex.Length) { return $hex }
+        return $hex.Substring(0, $Length)
+      }
+
+      function ConvertTo-UtcTimestampString {
+        param($Value)
+        if ($null -eq $Value) { return $null }
+        $text = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+        try {
+          $parsed = [datetimeoffset]::Parse($text, [System.Globalization.CultureInfo]::InvariantCulture)
+          return $parsed.UtcDateTime.ToString('yyyyMMddHHmm', [System.Globalization.CultureInfo]::InvariantCulture)
+        } catch {
+          return $null
+        }
+      }
+
+      $meetingDataRaw = $args[0]
+      if ([string]::IsNullOrWhiteSpace($meetingDataRaw)) {
+        throw 'meetingData input is required.'
+      }
+
+      $candidate = Get-JsonCandidate -Text $meetingDataRaw
+      $meeting = ConvertFrom-Json -InputObject $candidate -NoEnumerate -ErrorAction Stop
+
+      $eventId          = [string](Get-OptionalProperty $meeting 'eventId')
+      $iCalUId          = [string](Get-OptionalProperty $meeting 'iCalUId')
+      $occurrenceStart  = Get-OptionalProperty $meeting 'occurrenceStart'
+      $title            = [string](Get-OptionalProperty $meeting 'title')
+      $startTime        = Get-OptionalProperty $meeting 'startTime'
+      $endTime          = Get-OptionalProperty $meeting 'endTime'
+      $organizer        = [string](Get-OptionalProperty $meeting 'organizer')
+      $attendeesRaw     = Get-OptionalProperty $meeting 'attendees'
+      $description      = [string](Get-OptionalProperty $meeting 'description')
+      $webLink          = [string](Get-OptionalProperty $meeting 'webLink')
+      $timeZone         = [string](Get-OptionalProperty $meeting 'timeZone')
+      $recurrence       = Get-OptionalProperty $meeting 'recurrence'
+
+      $attendees = @()
+      if ($null -ne $attendeesRaw) {
+        $attendees = @(@($attendeesRaw) | ForEach-Object { [string]$_ })
+      }
+
+      $occurrenceStamp = ConvertTo-UtcTimestampString $occurrenceStart
+      if (-not $occurrenceStamp) { $occurrenceStamp = ConvertTo-UtcTimestampString $startTime }
+      $titleSlug = Get-Slug -Value $title -MaxLength 50
+
+      $zakiraKey = $null
+      $zakiraKeyStrategy = $null
+
+      if (-not [string]::IsNullOrWhiteSpace($eventId)) {
+        $zakiraKey = "meeting-$eventId"
+        $zakiraKeyStrategy = 'eventId'
+      } elseif (-not [string]::IsNullOrWhiteSpace($iCalUId) -and $occurrenceStamp) {
+        $zakiraKey = "meeting-icaluid-$iCalUId-$occurrenceStamp"
+        $zakiraKeyStrategy = 'iCalUId+occurrenceStart'
+      } elseif ($occurrenceStamp) {
+        $hashInput = ($title + '|' + $organizer + '|' + ($attendees -join ','))
+        $shortHash = Get-ShortHash -Value $hashInput -Length 8
+        $slugForKey = if ([string]::IsNullOrWhiteSpace($titleSlug)) { 'untitled' } else { $titleSlug }
+        $zakiraKey = "meeting-$occurrenceStamp-$slugForKey-$shortHash"
+        $zakiraKeyStrategy = 'timestamp+slug+hash'
+      } else {
+        throw 'meetingData must contain at least one of: eventId, iCalUId+occurrenceStart, or startTime+title (to compute a stable Zakira key).'
+      }
+
+      [pscustomobject]@{
+        eventId           = $eventId
+        iCalUId           = $iCalUId
+        occurrenceStart   = $occurrenceStart
+        title             = $title
+        titleSlug         = $titleSlug
+        startTime         = $startTime
+        endTime           = $endTime
+        organizer         = $organizer
+        attendees         = $attendees
+        description       = $description
+        webLink           = $webLink
+        timeZone          = $timeZone
+        recurrence        = $recurrence
+        zakiraKey         = $zakiraKey
+        zakiraKeyStrategy = $zakiraKeyStrategy
+      } | ConvertTo-Json -Compress -Depth 20
+    arguments:
+      - "{{param.meetingData}}"
+    timeoutSeconds: 120
+
+  - name: check-already-processed
+    type: Prompt
+    dependsOn: [normalize-meeting]
+    systemPrompt: |
+      You are a state checker for meeting action-items extraction. You
+      decide whether this single meeting needs to be re-processed, using
+      Zakira.Exchange as the source of truth.
+
+      Rules:
+      1. The canonical Zakira key is in the normalized meeting payload as
+         `zakiraKey`. Do not invent a key, do not modify it.
+      2. Call Zakira.Exchange `get_memory` with that exact key.
+      3. If `forceReprocess` is the string 'true', emit decision
+         'needs-processing' regardless of stored state, and do NOT call
+         orchestra_complete.
+      4. If a memory exists with status 'processed' AND `processedAt` is
+         present, the meeting has already been processed: call
+         `orchestra_complete` with status 'success' and reason
+         'Meeting already processed.'
+      5. Otherwise (no memory, expired memory, or status != 'processed'),
+         emit a single-line JSON object:
+         {"decision":"needs-processing","zakiraKey":"<key>","priorState":<stored memory JSON or null>}
+      6. Do not call any other tools. Output ONLY the JSON object when
+         continuing; do not include prose, fences, or comments.
+    userPrompt: |
+      Normalized meeting payload:
+      {{normalize-meeting.output}}
+
+      forceReprocess flag: {{param.forceReprocess}}
+
+      Check Zakira.Exchange and decide.
+    outputHandlerPrompt: |
+      If the content is the short-circuit message (orchestra_complete was
+      invoked), preserve it verbatim. Otherwise, extract exactly one valid
+      JSON object with the fields `decision`, `zakiraKey`, and
+      `priorState`. Strip markdown fences, prose, and trailing whitespace.
+      Output only the JSON object.
+    mcps: [zakira]
+
+  - name: gather-workiq-context
+    type: Prompt
+    dependsOn: [check-already-processed]
+    systemPrompt: |
+      You are a meeting research agent using ONLY the WorkIQ MCP, focused
+      on action-items extraction for this single meeting.
+
+      Goal: gather all evidence that helps identify action items,
+      decisions, follow-ups, questions, risks, or shared information.
+
+      Rules:
+      1. Search the last 14 days and the last 30 days for recurring/prior
+         occurrences. Form queries from the meeting title, organizer,
+         attendees, and project/feature keywords from the description.
+      2. Prioritize transcript / recap content above all other evidence
+         when available.
+      3. ALSO capture, with canonical URLs required on every item:
+         - follow-up emails (Outlook URLs)
+         - Teams chats and channel threads (Teams deep links)
+         - meeting notes and documents (SharePoint URLs)
+         - prior occurrences of recurring meetings (calendar webLinks)
+      4. Items without a URL must be dropped (except for transcript-text
+         excerpts, which are captured as inline content with a
+         `transcriptExcerpt: true` flag instead of a URL).
+      5. Cap at 10 items total. Tag each item with `category` from:
+         transcriptOrRecap | followUpEmail | teamsMessage | documentOrNote
+         | priorMeeting | other.
+      6. You MUST surface a `transcriptAvailability` field at the top
+         level of your output with one of: 'full' | 'partial' | 'none' |
+         'unknown'. This is critical for downstream extraction.
+      7. Output a single JSON object: {transcriptAvailability, items: [...], notes?: "..."}.
+    userPrompt: |
+      Meeting:
+      {{normalize-meeting.output}}
+
+      I am {{param.myName}} (alias: {{param.myAlias}}). Use WorkIQ only.
+      Gather transcript content and any related evidence that could
+      surface action items, decisions, or follow-ups.
+    outputHandlerPrompt: |
+      Extract the gathered context as one valid JSON object only with
+      the top-level fields `transcriptAvailability`, `items`, and
+      optional `notes`. Remove markdown fences, prose, and trailing
+      whitespace. Output only the JSON object.
+    mcps: [workiq]
+    retry:
+      maxRetries: 3
+      backoffSeconds: 15
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: gather-m365-copilot-context
+    type: Prompt
+    dependsOn: [check-already-processed]
+    systemPrompt: |
+      You are a meeting research agent using ONLY the m365-copilot MCP,
+      focused on action-items extraction for this single meeting.
+
+      Goal: cross-source semantic search to surface action items,
+      decisions, blockers, and unresolved questions. Complements the
+      WorkIQ pass; do not duplicate it.
+
+      Rules:
+      1. Search the last 14 days and 30 days for recurring/prior
+         occurrences. Use meeting title, organizer, attendees, project
+         keywords.
+      2. Prioritize content containing explicit or implicit commitments,
+         decisions, blockers, risks, status updates, unresolved questions.
+      3. For EVERY item, a canonical URL is required (except inline
+         transcript excerpts, which set `transcriptExcerpt: true`).
+      4. Cap at 8 items. Tag each item with its underlying source:
+         transcriptOrRecap | email | teams | document | meetingNote | other.
+      5. You MUST surface a `transcriptAvailability` field at the top
+         level: 'full' | 'partial' | 'none' | 'unknown'.
+      6. Output a single JSON object: {transcriptAvailability, items: [...], notes?: "..."}.
+    userPrompt: |
+      Meeting:
+      {{normalize-meeting.output}}
+
+      I am {{param.myName}} (alias: {{param.myAlias}}). Use m365-copilot
+      only.
+    outputHandlerPrompt: |
+      Extract the gathered context as one valid JSON object only with
+      the top-level fields `transcriptAvailability`, `items`, and
+      optional `notes`. Remove markdown fences, prose, and trailing
+      whitespace. Output only the JSON object.
+    mcps: [m365-copilot]
+    retry:
+      maxRetries: 3
+      backoffSeconds: 15
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: gather-mail-focused
+    type: Prompt
+    dependsOn: [check-already-processed]
+    systemPrompt: |
+      You are a focused Outlook mail research agent using ONLY the mail
+      MCP. Goal: find follow-up email threads that contain action items,
+      decisions, or commitments related to this single meeting.
+
+      Rules:
+      1. Search the last 14 days. Form queries from the meeting title,
+         organizer, top 3 attendees, project/feature keywords.
+      2. For each result, capture: subject, sender, date, threadId,
+         webLink (must be a canonical Outlook URL), and a short summary
+         that highlights any commitments / action items / decisions.
+      3. Items without a webLink must be dropped.
+      4. Prioritize threads that came AFTER the meeting's startTime (true
+         follow-ups). Cap at 6 threads.
+      5. Output a single JSON object: {threads: [{subject, sender, date,
+         threadId, webLink, summary, postMeeting: true|false}], notes?: "..."}.
+    userPrompt: |
+      Meeting:
+      {{normalize-meeting.output}}
+
+      I am {{param.myName}}. Use the focused mail MCP only; do not query
+      WorkIQ or m365-copilot.
+    outputHandlerPrompt: |
+      Extract the gathered mail context as one valid JSON object only.
+      Remove markdown fences, prose, and trailing whitespace. Output only
+      the JSON object.
+    mcps: [mail]
+    retry:
+      maxRetries: 3
+      backoffSeconds: 15
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: gather-calendar-history
+    type: Prompt
+    dependsOn: [check-already-processed]
+    systemPrompt: |
+      You are a calendar history research agent using ONLY the calendar
+      MCP. Goal: find prior occurrences of this meeting so the extractor
+      can tie open items to specific past instances.
+
+      Rules:
+      1. Search the last 30 days for events with matching title or
+         strong organizer/attendee overlap.
+      2. For each occurrence, capture: title, startTime, endTime,
+         organizer, webLink (canonical calendar URL required), and a
+         short note about likely carry-over topics or unresolved items
+         from that occurrence.
+      3. Items without a webLink must be dropped.
+      4. Cap at 6 occurrences.
+      5. Output a single JSON object: {occurrences: [{title, startTime,
+         endTime, organizer, webLink, note}], notes?: "..."}.
+    userPrompt: |
+      Meeting:
+      {{normalize-meeting.output}}
+
+      Use the focused calendar MCP only.
+    outputHandlerPrompt: |
+      Extract the calendar history as one valid JSON object only. Remove
+      markdown fences, prose, and trailing whitespace. Output only the
+      JSON object.
+    mcps: [calendar]
+    retry:
+      maxRetries: 3
+      backoffSeconds: 15
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: gather-azdo-context
+    type: Prompt
+    dependsOn: [check-already-processed]
+    systemPrompt: |
+      You are a development activity research agent using ONLY the azdo
+      MCP. Goal: find PRs and work items that are likely to be referenced
+      as action items, blockers, or status updates in this meeting.
+
+      Rules:
+      1. Search the last 14 days. Look for:
+         - PRs authored by meeting attendees that {{param.myName}} is
+           reviewing or has reviewed.
+         - PRs and work items whose title/description matches the meeting
+           topic or organizer.
+         - Active work items assigned to attendees.
+      2. For each PR: capture id, title, author, status, iteration count,
+         a canonical PR URL. Items without a URL must be dropped.
+      3. For each work item: capture id, title, state, assignedTo, type,
+         and a canonical work-item URL. Items without a URL must be
+         dropped.
+      4. Cap at 6 PRs and 6 work items.
+      5. Output a single JSON object: {pullRequests: [...], workItems: [...]}.
+    userPrompt: |
+      Meeting:
+      {{normalize-meeting.output}}
+
+      My name is {{param.myName}}. Azure DevOps organization:
+      {{param.organization}}, project: {{param.project}}, repository:
+      {{param.repository}}. Gather only AzDO context.
+    outputHandlerPrompt: |
+      Extract the AzDO context as one valid JSON object only. Remove
+      markdown fences, prose, and trailing whitespace. Output only the
+      JSON object.
+    mcps: [azdo]
+    retry:
+      maxRetries: 3
+      backoffSeconds: 15
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: merge-context
+    type: Prompt
+    dependsOn:
+      - check-already-processed
+      - gather-workiq-context
+      - gather-m365-copilot-context
+      - gather-mail-focused
+      - gather-calendar-history
+      - gather-azdo-context
+    systemPrompt: |
+      You are a context-merging agent for action-items extraction. You
+      receive five parallel context payloads for a single meeting from
+      WorkIQ, m365-copilot, the mail proxy, the calendar proxy, and
+      Azure DevOps. Merge them into one normalized, deduplicated context
+      object for downstream extraction.
+
+      Rules:
+      1. Categorize merged items into: transcriptOrRecap, followUpEmails,
+         teamsMessages, documentsAndNotes, priorMeetings, pullRequests,
+         workItems, contextualSignals.
+      2. Deduplicate items that clearly refer to the same artifact (same
+         email threadId, same Teams thread, same calendar event id, same
+         PR id, same work item id). Prefer the richer description; record
+         all source tags (e.g. ['workiq', 'm365-copilot', 'mail']) in a
+         `sources` array on each merged item.
+      3. EVERY non-transcript item MUST keep its canonical URL. Drop any
+         such item without a URL.
+      4. Compute a unified `transcriptAvailability` value:
+         - If either workiq or m365-copilot reported 'full', use 'full'.
+         - Else if either reported 'partial', use 'partial'.
+         - Else if both reported 'none', use 'none'.
+         - Else 'unknown'.
+      5. Surface materially-conflicting facts via a `conflict` field on
+         the affected merged item.
+      6. Output a single JSON object with the categories above, a
+         top-level `transcriptAvailability`, and a top-level
+         `mergedItemCount` integer.
+    userPrompt: |
+      Meeting:
+      {{normalize-meeting.output}}
+
+      WorkIQ context:
+      {{gather-workiq-context.output}}
+
+      m365-copilot context:
+      {{gather-m365-copilot-context.output}}
+
+      Mail focused context:
+      {{gather-mail-focused.output}}
+
+      Calendar history context:
+      {{gather-calendar-history.output}}
+
+      AzDO context:
+      {{gather-azdo-context.output}}
+
+      Merge into one deduplicated context object for this meeting.
+    outputHandlerPrompt: |
+      Extract the merged context as one valid JSON object only with the
+      top-level keys including `transcriptAvailability`. Remove markdown
+      fences, prose, and trailing whitespace. Output only the JSON
+      object.
+
+  - name: extract-action-items
+    type: Prompt
+    dependsOn: [merge-context]
+    systemPrompt: |
+      You are an expert meeting analyzer. Extract ALL actionable items,
+      decisions, follow-ups, questions, risks, and shared information
+      from the merged context.
+
+      Important:
+      - Use transcript or recap content when available.
+      - Also use related evidence (follow-up emails, Teams chats, prior
+        meetings, related PRs/work items) as supporting context.
+      - Do NOT restrict the analysis to transcript-only findings.
+      - Every extracted item must be grounded in evidence from the
+        provided merged context.
+
+      Extract the following categories. Each item must include
+      `evidence: { source, snippet?, url? }` so the downstream report can
+      cite it.
+
+      1. ACTION ITEMS
+         - owner (name/alias or 'unassigned')
+         - action (description)
+         - deadline (ISO-8601 if available, else null)
+         - priority: 'high' | 'medium' | 'low'
+         - isMine: true if assigned to {{param.myName}} or alias
+           {{param.myAlias}}, else false
+         - evidence
+
+      2. DECISIONS MADE
+         - decision
+         - reasoning (short)
+         - decidedBy (name or null)
+         - evidence
+
+      3. FOLLOW-UPS NEEDED
+         - followUp
+         - owner (or null)
+         - reason
+         - timeframe (or null)
+         - evidence
+
+      4. QUESTIONS & OPEN ITEMS
+         - question
+         - raisedBy (or null)
+         - candidateAnswerer (or null)
+         - urgency: 'high' | 'medium' | 'low'
+         - evidence
+
+      5. RISKS & CONCERNS
+         - risk
+         - raisedBy (or null)
+         - impact
+         - mitigation (or null)
+         - evidence
+
+      6. INFORMATION SHARED
+         - info
+         - relevance
+         - evidence
+
+      Rules:
+      1. Do NOT call orchestra_save_file. Do NOT emit markdown. Output a
+         single JSON object only — the downstream step renders the
+         markdown.
+      2. Be thorough; implicit commitments count when grounded in
+         evidence.
+      3. Distinguish my items via `isMine` flag; do not duplicate them in
+         a separate "my" array.
+      4. Prefer exact wording from the evidence when feasible.
+      5. Required top-level shape:
+         {
+           "title": "<meeting title>",
+           "startTime": "<startTime>",
+           "endTime": "<endTime>",
+           "organizer": "<name>",
+           "attendees": ["<name>", ...],
+           "timeZone": "<as provided>",
+           "webLink": "<calendar webLink or empty string>",
+           "transcriptAvailability": "full|partial|none|unknown",
+           "actionItems": [...],
+           "decisions": [...],
+           "followUps": [...],
+           "questions": [...],
+           "risks": [...],
+           "information": [...],
+           "counts": {
+             "actionItems": <int>,
+             "myActionItems": <int>,
+             "myHighPriority": <int>,
+             "decisions": <int>,
+             "followUps": <int>,
+             "questions": <int>,
+             "risks": <int>,
+             "information": <int>
+           }
+         }
+    userPrompt: |
+      Meeting:
+      {{normalize-meeting.output}}
+
+      Merged context:
+      {{merge-context.output}}
+
+      I am {{param.myName}} (alias: {{param.myAlias}}). Extract all
+      actionable items. Pay special attention to items assigned to me
+      or commitments I made.
+    outputHandlerPrompt: |
+      Extract the extraction result as one valid JSON object only with
+      the fields specified in the system prompt. Strip markdown fences,
+      prose, logs, and trailing whitespace. Output only the JSON object.
+    reasoningLevel: High
+
+  - name: generate-markdown-report
+    type: Prompt
+    dependsOn: [extract-action-items]
+    systemPrompt: |
+      You are a markdown report generator for meeting action items.
+      You receive a structured JSON extraction and render it as a single
+      JSON manifest containing a slug and a markdown body. Do NOT call
+      orchestra_save_file. The downstream Script writes the file from
+      your manifest.
+
+      Required manifest shape:
+      {
+        "slug": "<filename slug: YYYY-MM-DD-<title-slug>, lowercase, hyphens, special chars stripped, max 60 chars overall>",
+        "markdown": "<full markdown report body as a JSON-escaped string>",
+        "hasMyHighPriority": true|false
+      }
+
+      Markdown body structure (verbatim from the `markdown` field):
+
+      # Meeting Notes: <Title>
+
+      **Date:** <startTime> - <endTime> (<timeZone>)
+      **Organizer:** <name if known>
+      **Attendees:** <comma-separated list if known>
+      **Transcript/Recap Availability:** <full|partial|none|unknown>
+
+      ---
+
+      ## My Action Items
+      <Items where isMine == true, sorted by priority. Use checkbox syntax.>
+      - [ ] **[HIGH]** <action> *(deadline if any)* — *source: <evidence.source>*
+      - [ ] **[MEDIUM]** <action>
+      - [ ] **[LOW]** <action>
+
+      (If none: "No action items assigned to me.")
+
+      ## All Action Items
+      | Owner | Action | Priority | Deadline | Source |
+      |-------|--------|----------|----------|--------|
+      | ... | ... | ... | ... | ... |
+
+      ## Decisions Made
+      1. **<Decision>** - <reasoning> *(by <decidedBy>; source: <evidence.source>)*
+
+      ## Follow-Ups Needed
+      - [ ] <followUp> - *<owner>* *(reason: <reason>; source: <evidence.source>)*
+
+      ## Open Questions
+      - <question> — raised by *<raisedBy>*; urgency: <urgency> *(source: <evidence.source>)*
+
+      ## Risks & Concerns
+      - **<risk>** - <impact>; mitigation: <mitigation> *(source: <evidence.source>)*
+
+      ## Key Information
+      - <info> — <relevance> *(source: <evidence.source>)*
+
+      ---
+      *Extracted by meeting-action-items-processor on <current ISO timestamp>*
+
+      Rules:
+      1. Use checkbox syntax (`- [ ]`) for action items and follow-ups so
+         they're trackable in Obsidian.
+      2. Put My Action Items at the top.
+      3. If a section has no items, render exactly "None identified."
+         under the heading.
+      4. `slug` must be collision-resistant: prefix with the meeting date
+         in YYYY-MM-DD form (from startTime, UTC ok), then the title
+         slugified to <=50 chars, lowercased, with `[^a-z0-9]+` collapsed
+         to `-` and trimmed.
+      5. `hasMyHighPriority` is true iff at least one action item with
+         `isMine == true && priority == 'high'` exists.
+      6. The orchestration output of this step MUST be the JSON manifest
+         only.
+    userPrompt: |
+      Structured extraction:
+      {{extract-action-items.output}}
+
+      Render the markdown manifest.
+    outputHandlerPrompt: |
+      Extract the markdown manifest as one valid JSON object only with
+      the fields `slug`, `markdown`, and `hasMyHighPriority`. Strip
+      markdown fences, prose, logs, and trailing whitespace. The
+      `markdown` field must contain the rendered report as a single
+      JSON-escaped string. Output only the JSON object.
+
+  - name: save-report-to-disk
+    type: Script
+    dependsOn: [generate-markdown-report]
+    shell: pwsh
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      $dryRun         = $args[0]
+      $actionItemsDir = $args[1]
+      $manifestJson   = $args[2]
+
+      if ($dryRun -eq 'true') {
+        [pscustomobject]@{
+          status   = 'dry-run-skipped'
+          filePath = $null
+          slug     = $null
+        } | ConvertTo-Json -Compress
+        return
+      }
+
+      if ([string]::IsNullOrWhiteSpace($manifestJson)) {
+        throw 'generate-markdown-report output (manifest) is empty; cannot save report.'
+      }
+
+      $manifest = ConvertFrom-Json -InputObject $manifestJson -NoEnumerate -ErrorAction Stop
+
+      $slug = [string]$manifest.slug
+      $markdown = [string]$manifest.markdown
+
+      if ([string]::IsNullOrWhiteSpace($slug)) {
+        throw 'Report manifest is missing required field: slug.'
+      }
+      if ([string]::IsNullOrWhiteSpace($markdown)) {
+        throw 'Report manifest is missing required field: markdown.'
+      }
+
+      # Defensive slug sanitisation in case the model returned a slightly
+      # off-spec slug (extension, slashes, spaces).
+      $slug = $slug.Trim().Trim('.', '-', '/', '\')
+      $slug = [regex]::Replace($slug.ToLowerInvariant(), '[^a-z0-9-]+', '-')
+      $slug = [regex]::Replace($slug, '-+', '-').Trim('-')
+      if ($slug.Length -gt 80) { $slug = $slug.Substring(0, 80).TrimEnd('-') }
+      if ([string]::IsNullOrWhiteSpace($slug)) { $slug = 'meeting-action-items-' + [guid]::NewGuid().ToString('N').Substring(0, 8) }
+
+      if (-not (Test-Path -LiteralPath $actionItemsDir)) {
+        New-Item -ItemType Directory -Path $actionItemsDir -Force | Out-Null
+      }
+
+      $filePath = Join-Path -Path $actionItemsDir -ChildPath ($slug + '.md')
+      Set-Content -LiteralPath $filePath -Value $markdown -Encoding utf8NoBOM
+
+      [pscustomobject]@{
+        status   = 'saved'
+        filePath = $filePath
+        slug     = $slug
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{param.dryRun}}"
+      - "{{param.actionItemsDir}}"
+      - "{{generate-markdown-report.output}}"
+    timeoutSeconds: 180
+
+  - name: mark-processed
+    type: Prompt
+    dependsOn: [save-report-to-disk]
+    systemPrompt: |
+      You are a state management agent. Record the 'processed' state for
+      this meeting in Zakira.Exchange so the parent orchestration's next
+      run does not re-extract.
+
+      Rules:
+      1. If `dryRun` is the string 'true', do NOT write to Zakira. Output
+         exactly: {"status":"dry-run-skipped"}
+      2. Otherwise, use the canonical Zakira key from the normalized
+         meeting payload (`zakiraKey`). Use Zakira.Exchange create_memory
+         (or edit_memory if a record already exists) with that exact key.
+      3. Data payload (JSON object):
+         {
+           "status": "processed",
+           "processedAt": "<current ISO-8601 timestamp>",
+           "fileName": "<filePath from save result>",
+           "slug": "<slug from save result>",
+           "meetingTitle": "<title>",
+           "meetingDate": "<startTime>",
+           "eventId": "<eventId or empty string>",
+           "iCalUId": "<iCalUId or empty string>",
+           "occurrenceStart": "<occurrenceStart or empty string>",
+           "actionItemsCount": <counts.actionItems>,
+           "myActionItemsCount": <counts.myActionItems>,
+           "myHighPriorityCount": <counts.myHighPriority>,
+           "decisionsCount": <counts.decisions>,
+           "followUpsCount": <counts.followUps>,
+           "questionsCount": <counts.questions>,
+           "risksCount": <counts.risks>,
+           "transcriptAvailability": "<full|partial|none|unknown>",
+           "orchestrationRunId": "{{orchestration.runId}}"
+         }
+      4. Output a single JSON object summarising the write:
+         {"status":"marked","zakiraKey":"<key>","processedAt":"<timestamp>"}
+      5. Do not call any other tools. Do not output prose.
+    userPrompt: |
+      dryRun flag: {{param.dryRun}}
+
+      Normalized meeting (canonical Zakira key inside):
+      {{normalize-meeting.output}}
+
+      Extraction (provides counts and transcriptAvailability):
+      {{extract-action-items.output}}
+
+      Save result from disk write:
+      {{save-report-to-disk.output}}
+    outputHandlerPrompt: |
+      Extract one valid JSON object only with the fields appropriate to
+      the branch (status, zakiraKey?, processedAt?). Strip markdown
+      fences, prose, and trailing whitespace. Output only the JSON
+      object.
+    mcps: [zakira]
+
+  - name: emit-child-result
+    type: Transform
+    dependsOn: [extract-action-items, generate-markdown-report, save-report-to-disk, mark-processed]
+    template: |
+      {
+        "status": "processed",
+        "dryRun": "{{param.dryRun}}",
+        "runId": "{{orchestration.runId}}",
+        "meeting": {{normalize-meeting.output}},
+        "extracted": {{extract-action-items.output}},
+        "report": {{generate-markdown-report.output}},
+        "save": {{save-report-to-disk.output}},
+        "zakira": {{mark-processed.output}}
+      }
+    contentType: application/json
