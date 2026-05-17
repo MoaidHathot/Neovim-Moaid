@@ -1,0 +1,115 @@
+{
+  "type": "meeting-prep",
+  "description": "Meeting preparation briefs from the meeting-prep-brief orchestration. Aggregates the upcoming meetings in a look-ahead window with per-meeting key metadata, top talking points, open items carried over from prior occurrences, and a quick-reference set of links to related PRs, work items, email threads, and Teams conversations. Each scheduler run produces one ActionView entry of this type grouped via groupId.",
+  "defaults": {
+    "icon": "calendar-check",
+    "severity": "medium",
+    "tags": ["meetings", "prep", "productivity"]
+  },
+  "contentTemplate": [
+    {
+      "type": "alert",
+      "label": "Status",
+      "required": false,
+      "description": "Optional alert. Use level 'warning' when any dispatched briefer failed, 'info' when there were open items requiring attention, 'success' for clean runs."
+    },
+    {
+      "type": "keyValue",
+      "label": "Run Overview",
+      "required": true,
+      "requiredKeys": ["Window", "Discovered", "Briefed", "Skipped"],
+      "keyAliases": {
+        "lookAhead": "Window",
+        "windowHours": "Window",
+        "found": "Discovered",
+        "totalDiscovered": "Discovered",
+        "newlyBriefed": "Briefed",
+        "succeeded": "Briefed",
+        "alreadyBriefed": "Skipped",
+        "skipped": "Skipped",
+        "failedCount": "Failed",
+        "failed": "Failed"
+      }
+    },
+    {
+      "type": "table",
+      "label": "Meetings",
+      "required": true,
+      "description": "One row per dispatched meeting. Expected columns: Time, Title, Organizer, Attendees, Open Items, Brief File."
+    },
+    {
+      "type": "section",
+      "title": "Per-Meeting Briefs",
+      "titleAliases": ["Briefs", "Meeting Briefs", "Meeting Details"],
+      "required": true,
+      "description": "One nested section per meeting that produced a brief.",
+      "nestedSections": {
+        "repeatable": true,
+        "contentTemplate": [
+          {
+            "type": "keyValue",
+            "label": "Meeting",
+            "required": true,
+            "requiredKeys": ["Time", "Organizer", "Attendees"],
+            "keyAliases": {
+              "startTime": "Time",
+              "start": "Time",
+              "host": "Organizer",
+              "attendeeCount": "Attendees"
+            }
+          },
+          {
+            "type": "markdown",
+            "label": "Top Talking Points",
+            "titleAliases": ["Talking Points", "Suggested Topics"],
+            "required": false,
+            "description": "Top 3 suggested talking points pulled from the meeting brief."
+          },
+          {
+            "type": "alert",
+            "label": "Open Items from Last Time",
+            "required": false,
+            "description": "Use level 'info' when prior-occurrence open items exist; omit otherwise."
+          },
+          {
+            "type": "link",
+            "label": "Open Brief",
+            "required": false,
+            "description": "Link to the markdown brief saved on disk."
+          },
+          {
+            "type": "link",
+            "label": "Meeting Link",
+            "required": false,
+            "description": "Calendar event webLink so the user can jump straight to the meeting."
+          }
+        ]
+      }
+    },
+    {
+      "type": "section",
+      "title": "Failed Dispatches",
+      "titleAliases": ["Errors", "Briefer Failures"],
+      "required": false,
+      "description": "Optional section listing meetings whose briefer child orchestrations failed."
+    },
+    {
+      "type": "markdown",
+      "label": "Run Notes",
+      "required": false,
+      "description": "Free-form notes from the orchestration run (e.g. why a meeting was skipped, warnings, transient retries)."
+    }
+  ],
+  "expectedActions": [
+    {
+      "label": "Open Briefs Folder",
+      "style": "primary",
+      "description": "Open the local Meeting Briefs folder. CLI / shell open of the configured briefingsDir."
+    },
+    {
+      "label": "Dismiss",
+      "style": "default",
+      "description": "Archive this run summary without further action."
+    }
+  ]
+}
