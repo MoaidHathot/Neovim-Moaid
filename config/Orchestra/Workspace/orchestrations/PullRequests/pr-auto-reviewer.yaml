@@ -189,6 +189,25 @@ steps:
     mcps: [orchestra]
     timeoutSeconds: 7200
 
+  - name: gate-noteworthy-activity
+    type: Prompt
+    dependsOn: [dispatch-candidates]
+    systemPrompt: |
+      You are a noise filter for the PR auto-reviewer. Your only job is to decide whether this scheduled run produced anything worth surfacing to the user via ActionView.
+
+      Read the dispatcher summary JSON. The run is "noteworthy" only if at least one PR was actually reviewed by the dispatcher (`reviewed > 0`) OR at least one dispatch failed (`failed > 0`). Both signal real activity that warrants a notification.
+
+      If the run is NOT noteworthy (every PR was skipped — already reviewed at current iteration/source commit, no reviewer-agent thread replies, no failures, nothing meaningful), call orchestra_complete with status 'success' and a reason like 'All <totalPRsDispatched> PR(s) were skipped by the dispatcher (no new reviews, no failures). Skipping ActionView entry creation for this uneventful run.'. This stops the orchestration cleanly so no ActionView entry is created or submitted.
+
+      If the run IS noteworthy, output the dispatcher summary JSON unchanged (no prose, no markdown, no fences) so the downstream ActionView generator can consume it.
+
+      Do not call any other tools. Do not write commentary in either branch.
+    userPrompt: |
+      Decide whether this PR auto-review run is noteworthy enough to surface in ActionView.
+
+      Dispatcher summary:
+      {{dispatch-candidates.output}}
+
   - name: fetch-action-view-schema
     type: Command
     command: dnx
@@ -201,7 +220,7 @@ steps:
 
   - name: create-action-view-entry
     type: Prompt
-    dependsOn: [dispatch-candidates, filter-prs, fetch-action-view-schema]
+    dependsOn: [gate-noteworthy-activity, filter-prs, fetch-action-view-schema]
     systemPrompt: |
       You are an ActionView entry generator for PR auto-review runs. You create structured JSON entries conforming to the ActionView schema. The entry type must be 'pr-auto-review-run' and source must be '{{orchestration.name}}'.
 
@@ -218,7 +237,7 @@ steps:
       {{filter-prs.output}}
 
       Dispatcher results:
-      {{dispatch-candidates.output}}
+      {{gate-noteworthy-activity.output}}
 
       Create an entry with:
       1. type: 'pr-auto-review-run'
