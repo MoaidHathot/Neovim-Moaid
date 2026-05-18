@@ -10,7 +10,7 @@ variables:
   organization: msazure
 trigger:
   type: scheduler
-  intervalSeconds: 300
+  intervalSeconds: 1200
 mcps:
   - name: zakira
     type: local
