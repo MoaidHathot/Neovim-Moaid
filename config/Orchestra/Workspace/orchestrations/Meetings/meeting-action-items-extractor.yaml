@@ -373,127 +373,167 @@ steps:
     mcps: [zakira]
 
   - name: dispatch-processor
-    type: Prompt
+    type: Orchestration
     dependsOn: [filter-already-processed]
-    systemPrompt: |
-      You are an orchestration coordinator. For every meeting that needs
-      processing, invoke the `meeting-action-items-processor` child
-      orchestration synchronously and collect its result. Mirror of the
-      pr-auto-reviewer dispatch pattern: one child run per item, in the
-      same step.
+    orchestration: meeting-action-items-processor
+    forEach: "{{filter-already-processed.output}}"
+    forEachPath: meetingsToProcess
+    itemParameter: meetingData
+    parameters:
+      actionItemsDir: "{{vars.actionItemsDir}}"
+      forceReprocess: "{{param.forceReprocess}}"
+      dryRun: "{{param.dryRun}}"
+      zakiraCategory: "{{vars.zakiraCategory}}"
+      myName: "{{vars.myName}}"
+      myAlias: "{{vars.myAlias}}"
+      organization: "{{vars.organization}}"
+      project: "{{vars.project}}"
+      repository: "{{vars.repository}}"
+    mode: sync
+    maxConcurrency: 4
+    continueOnItemFailure: true
+    timeoutSeconds: 3000
 
-      Rules:
-      1. Read `meetingsToProcess` from the input. If the array is empty,
-         call orchestra_complete with status 'success' and reason 'No
-         meetings to dispatch after the Zakira gate.'
-      2. For each meeting object in the array:
-         a. Use `invoke_orchestration` with `orchestration_name`
-            'meeting-action-items-processor', `mode` 'sync', and
-            `timeoutSeconds` 3000.
-         b. Pass parameters as a JSON object mapping parameter names to
-            STRING values:
-              meetingData     : the meeting object serialised as a single
-                                canonical JSON string. Every literal
-                                backslash inside string values must be
-                                escaped so the child's Script can parse
-                                it via ConvertFrom-Json.
-              actionItemsDir  : the user-prompt-supplied actionItemsDir.
-              forceReprocess  : the user-prompt-supplied forceReprocess
-                                value (string 'true' or 'false').
-              dryRun          : the user-prompt-supplied dryRun value.
-              zakiraCategory  : the user-prompt-supplied zakiraCategory.
-              myName          : the user-prompt-supplied myName.
-              myAlias         : the user-prompt-supplied myAlias.
-              organization    : the user-prompt-supplied organization.
-              project         : the user-prompt-supplied project.
-              repository      : the user-prompt-supplied repository.
-         c. Wait for completion. Capture the child's `executionId`,
-            terminal `status`, and final content (which includes
-            `extracted.counts` and `extracted.transcriptAvailability`).
-      3. Output a single JSON object aggregating per-meeting results and
-         a rollup across all successful children:
-         {
-           "totalDispatched": <int>,
-           "succeeded": <int>,
-           "failed": <int>,
-           "results": [
-             {
-               "title": "...",
-               "startTime": "...",
-               "organizer": "...",
-               "attendeesCount": <int>,
-               "zakiraKey": "...",
-               "executionId": "...",
-               "status": "succeeded|failed",
-               "filePath": "<from child save block when available>" | "",
-               "webLink": "<from input meeting>",
-               "transcriptAvailability": "full|partial|none|unknown",
-               "counts": {
-                 "actionItems": <int>,
-                 "myActionItems": <int>,
-                 "myHighPriority": <int>,
-                 "decisions": <int>,
-                 "followUps": <int>,
-                 "questions": <int>,
-                 "risks": <int>,
-                 "information": <int>
-               },
-               "summary": "<short text>",
-               "error": null | "..."
-             }
-           ],
-           "rollup": {
-             "actionItems": <sum across succeeded>,
-             "myActionItems": <sum>,
-             "myHighPriority": <sum>,
-             "decisions": <sum>,
-             "followUps": <sum>,
-             "questions": <sum>,
-             "risks": <sum>,
-             "information": <sum>
-           },
-           "transcripts": {
-             "full": <count of succeeded meetings with transcriptAvailability == 'full'>,
-             "partial": <count>,
-             "none": <count>,
-             "unknown": <count>
-           }
-         }
-      4. Do not call orchestra_save_file. Output only the JSON object.
-    userPrompt: |
-      Filter result (meetings to process and meetings skipped):
-      {{filter-already-processed.output}}
+  - name: aggregate-dispatch
+    type: Script
+    dependsOn: [dispatch-processor]
+    shell: pwsh
+    script: |
+      # Deterministic aggregator over the engine forEach rollup. The engine emits
+      # {totalDispatched, succeeded, failed, results:[{index, executionId, status,
+      # errorMessage, finalContent, input, ...}]}. Each successful child's
+      # finalContent is the JSON object emitted by the child's emit-child-result
+      # Transform step (status, dryRun, runId, meeting, extracted, report, save, zakira).
+      # We aggregate counts and surface transcript buckets so downstream steps stay
+      # off the LLM path.
+      $ErrorActionPreference = 'Stop'
 
-      Forward these parameters into every child invocation:
-        actionItemsDir  : {{vars.actionItemsDir}}
-        forceReprocess  : {{param.forceReprocess}}
-        dryRun          : {{param.dryRun}}
-        zakiraCategory  : {{vars.zakiraCategory}}
-        myName          : {{vars.myName}}
-        myAlias         : {{vars.myAlias}}
-        organization    : {{vars.organization}}
-        project         : {{vars.project}}
-        repository      : {{vars.repository}}
+      $raw = $args[0]
+      if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw 'dispatch-processor output is empty.'
+      }
+      $rollup = ConvertFrom-Json -InputObject $raw -Depth 100 -ErrorAction Stop
 
-      Dispatch each meeting through `meeting-action-items-processor` and
-      aggregate the results plus the cross-meeting rollup and
-      transcripts buckets.
-    outputHandlerPrompt: |
-      Extract one valid JSON object only with the keys totalDispatched,
-      succeeded, failed, results, rollup, and transcripts. Strip
-      markdown fences, prose, and trailing whitespace. Preserve every
-      field. Output only the JSON object.
-    mcps: [orchestra]
-    timeoutSeconds: 22000
-    retry:
-      maxRetries: 2
-      backoffSeconds: 10
-      backoffMultiplier: 2.0
-      retryOnTimeout: true
+      $results = @()
+      $transcripts = @{ full = 0; partial = 0; none = 0; unknown = 0 }
+      $counts = [ordered]@{
+        actionItems = 0; myActionItems = 0; myHighPriority = 0;
+        decisions = 0; followUps = 0; questions = 0; risks = 0; information = 0;
+      }
+      # Snapshot the canonical key list once so per-iteration enumeration cannot
+      # collapse to a scalar string (which previously caused
+      # `Keys.ToArray()` to be invoked on a System.String).
+      $countKeys = @('actionItems','myActionItems','myHighPriority','decisions','followUps','questions','risks','information')
+
+      foreach ($r in @($rollup.results)) {
+        $title = $null; $startTime = $null; $organizer = $null; $attendeesCount = 0
+        $filePath = ''; $webLink = ''; $transcriptAvailability = 'unknown'
+        $itemCounts = [ordered]@{
+          actionItems = 0; myActionItems = 0; myHighPriority = 0;
+          decisions = 0; followUps = 0; questions = 0; risks = 0; information = 0;
+        }
+        $summary = ''
+        $errorMsg = $r.errorMessage
+
+        # Decode the per-item input (the meeting object the parent passed in).
+        if ($r.input) {
+          try {
+            $inputObj = if ($r.input -is [string]) { ConvertFrom-Json -InputObject $r.input -Depth 50 } else { $r.input }
+            $title = $inputObj.title
+            $startTime = $inputObj.startTime
+            $organizer = $inputObj.organizer
+            if ($inputObj.attendees) { $attendeesCount = @($inputObj.attendees).Count }
+            if ($inputObj.webLink) { $webLink = $inputObj.webLink }
+          } catch { }
+        }
+
+        # Decode the child's finalContent. The launcher wraps each terminal step
+        # as `[<stepName>]\n<content>` joined by `\n---\n` (historical shape). We
+        # strip that wrapper for the `emit-child-result` segment before parsing.
+        if ($r.status -eq 'succeeded' -and $r.finalContent) {
+          try {
+            $rawFc = [string]$r.finalContent
+            $segments = $rawFc -split "`n---`n"
+            $emitJson = $null
+            foreach ($seg in $segments) {
+              if ($seg.StartsWith('[emit-child-result]')) {
+                $nl = $seg.IndexOf("`n")
+                if ($nl -ge 0) { $emitJson = $seg.Substring($nl + 1) }
+                break
+              }
+            }
+            if (-not $emitJson) {
+              # Fallback: try to parse the whole finalContent verbatim, then the
+              # first segment. Some callers may have already stripped the wrapper.
+              if ($rawFc.TrimStart().StartsWith('{')) { $emitJson = $rawFc }
+              elseif ($segments.Count -gt 0) {
+                $first = $segments[0]
+                $nl = $first.IndexOf("`n")
+                if ($nl -ge 0 -and $first.StartsWith('[')) { $emitJson = $first.Substring($nl + 1) }
+                else { $emitJson = $first }
+              }
+            }
+
+            $childObj = ConvertFrom-Json -InputObject $emitJson -Depth 100 -ErrorAction Stop
+            if ($childObj.extracted) {
+              $extracted = $childObj.extracted
+              if ($extracted.transcriptAvailability) { $transcriptAvailability = [string]$extracted.transcriptAvailability }
+              if ($extracted.counts) {
+                foreach ($k in $countKeys) {
+                  $v = $extracted.counts.$k
+                  if ($null -ne $v) { $itemCounts[$k] = [int]$v }
+                }
+              }
+            }
+            if ($childObj.save -and $childObj.save.filePath) { $filePath = [string]$childObj.save.filePath }
+          } catch {
+            $errorMsg = "Failed to parse child finalContent: $_"
+          }
+        }
+
+        # Roll up totals only for successful children — failed ones get zero counts
+        # so the parent's downstream summary is not skewed by partial extractions.
+        if ($r.status -eq 'succeeded') {
+          foreach ($k in $countKeys) { $counts[$k] += [int]$itemCounts[$k] }
+          switch ($transcriptAvailability) {
+            'full'    { $transcripts['full']    += 1 }
+            'partial' { $transcripts['partial'] += 1 }
+            'none'    { $transcripts['none']    += 1 }
+            default   { $transcripts['unknown'] += 1 }
+          }
+        }
+
+        $results += [pscustomobject]@{
+          title                  = $title
+          startTime              = $startTime
+          organizer              = $organizer
+          attendeesCount         = $attendeesCount
+          executionId            = $r.executionId
+          status                 = $r.status
+          filePath               = $filePath
+          webLink                = $webLink
+          transcriptAvailability = $transcriptAvailability
+          counts                 = $itemCounts
+          summary                = $summary
+          error                  = $errorMsg
+        }
+      }
+
+      [pscustomobject]@{
+        totalDispatched = [int]$rollup.totalDispatched
+        succeeded       = [int]$rollup.succeeded
+        failed          = [int]$rollup.failed
+        results         = $results
+        rollup          = $counts
+        transcripts     = $transcripts
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{dispatch-processor.output}}"
+    timeoutSeconds: 120
 
   - name: gate-noteworthy-activity
     type: Prompt
-    dependsOn: [dispatch-processor]
+    dependsOn: [aggregate-dispatch]
     systemPrompt: |
       You are a noise filter for the meeting-action-items run. Decide
       whether this scheduler tick produced anything worth surfacing to
@@ -520,7 +560,7 @@ steps:
       to surface in ActionView.
 
       Dispatcher summary:
-      {{dispatch-processor.output}}
+      {{aggregate-dispatch.output}}
     outputHandlerPrompt: |
       When continuing, output the dispatcher summary JSON object
       verbatim with no prose or fences. Otherwise (early-completion
@@ -648,7 +688,7 @@ steps:
     dependsOn:
       - discover-recent-meetings
       - filter-already-processed
-      - dispatch-processor
+      - aggregate-dispatch
       - submit-actionview-entry
     template: |
       # Meeting Action Items Run Summary
@@ -672,7 +712,7 @@ steps:
 
       ## Dispatch Results
       ```json
-      {{dispatch-processor.output}}
+      {{aggregate-dispatch.output}}
       ```
 
       ## ActionView Submission

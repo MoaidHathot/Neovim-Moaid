@@ -371,93 +371,109 @@ steps:
     mcps: [zakira]
 
   - name: dispatch-briefer
-    type: Prompt
+    type: Orchestration
     dependsOn: [filter-already-briefed]
-    systemPrompt: |
-      You are an orchestration coordinator. For every meeting that needs
-      a brief, invoke the `meeting-prep-briefer` child orchestration
-      synchronously and collect its result. Mirror of the
-      pr-auto-reviewer dispatch pattern: one child run per item, in the
-      same step.
+    orchestration: meeting-prep-briefer
+    forEach: "{{filter-already-briefed.output}}"
+    forEachPath: meetingsToBrief
+    itemParameter: meetingData
+    parameters:
+      briefingsDir: "{{vars.briefingsDir}}"
+      forceRebrief: "{{param.forceRebrief}}"
+      dryRun: "{{param.dryRun}}"
+      zakiraCategory: "{{vars.zakiraCategory}}"
+      reviewerName: "{{vars.reviewerName}}"
+      organization: "{{vars.organization}}"
+      project: "{{vars.project}}"
+      repository: "{{vars.repository}}"
+    mode: sync
+    maxConcurrency: 4
+    continueOnItemFailure: true
+    timeoutSeconds: 2400
 
-      Rules:
-      1. Read `meetingsToBrief` from the input. If the array is empty,
-         call orchestra_complete with status 'success' and reason
-         'No meetings to dispatch after the Zakira gate.'
-      2. For each meeting object in the array:
-         a. Use `invoke_orchestration` with `orchestration_name`
-            'meeting-prep-briefer', `mode` 'sync', and `timeoutSeconds`
-            2400.
-         b. Pass parameters as a JSON object mapping parameter names to
-            STRING values:
-              meetingData    : the meeting object serialised as a single
-                                canonical JSON string. Every literal
-                                backslash inside string values must be
-                                escaped so the child's Script can parse
-                                it via ConvertFrom-Json.
-              briefingsDir   : the user-prompt-supplied briefingsDir.
-              forceRebrief   : the user-prompt-supplied forceRebrief
-                                value (string 'true' or 'false').
-              dryRun         : the user-prompt-supplied dryRun value.
-              zakiraCategory : the user-prompt-supplied zakiraCategory.
-              reviewerName   : the user-prompt-supplied reviewerName.
-              organization   : the user-prompt-supplied organization.
-              project        : the user-prompt-supplied project.
-              repository     : the user-prompt-supplied repository.
-         c. Wait for completion. Capture the child's `executionId`,
-            terminal `status`, and final content.
-      3. Output a single JSON object aggregating per-meeting results:
-         {
-           "totalDispatched": <int>,
-           "succeeded": <int>,
-           "failed": <int>,
-           "results": [
-             {
-               "title": "...",
-               "startTime": "...",
-               "zakiraKey": "...",
-               "executionId": "...",
-               "status": "succeeded|failed",
-               "filePath": "<from child save block when available>" | "",
-               "summary": "<short text>",
-               "webLink": "<from input meeting>",
-               "error": null | "..."
-             }
-           ]
-         }
-      4. Do not call orchestra_save_file. Output only the JSON object.
-    userPrompt: |
-      Filter result (meetings to brief and meetings skipped):
-      {{filter-already-briefed.output}}
+  - name: aggregate-dispatch
+    type: Script
+    dependsOn: [dispatch-briefer]
+    shell: pwsh
+    script: |
+      # Deterministic aggregator over the engine forEach rollup.
+      $ErrorActionPreference = 'Stop'
 
-      Forward these parameters into every child invocation:
-        briefingsDir   : {{vars.briefingsDir}}
-        forceRebrief   : {{param.forceRebrief}}
-        dryRun         : {{param.dryRun}}
-        zakiraCategory : {{vars.zakiraCategory}}
-        reviewerName   : {{vars.reviewerName}}
-        organization   : {{vars.organization}}
-        project        : {{vars.project}}
-        repository     : {{vars.repository}}
+      $raw = $args[0]
+      if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw 'dispatch-briefer output is empty.'
+      }
+      $rollup = ConvertFrom-Json -InputObject $raw -Depth 100 -ErrorAction Stop
 
-      Dispatch each meeting through `meeting-prep-briefer` and aggregate
-      the results.
-    outputHandlerPrompt: |
-      Extract one valid JSON object only with the keys totalDispatched,
-      succeeded, failed, and results. Strip markdown fences, prose, and
-      trailing whitespace. Preserve every field. Output only the JSON
-      object.
-    mcps: [orchestra]
-    timeoutSeconds: 16000
-    retry:
-      maxRetries: 2
-      backoffSeconds: 10
-      backoffMultiplier: 2.0
-      retryOnTimeout: true
+      $results = @()
+      foreach ($r in @($rollup.results)) {
+        $title = $null; $startTime = $null; $webLink = ''; $filePath = ''; $summary = ''
+        $errorMsg = $r.errorMessage
+
+        if ($r.input) {
+          try {
+            $inputObj = if ($r.input -is [string]) { ConvertFrom-Json -InputObject $r.input -Depth 50 } else { $r.input }
+            $title = $inputObj.title
+            $startTime = $inputObj.startTime
+            if ($inputObj.webLink) { $webLink = [string]$inputObj.webLink }
+          } catch { }
+        }
+
+        if ($r.status -eq 'succeeded' -and $r.finalContent) {
+          try {
+            $rawFc = [string]$r.finalContent
+            $segments = $rawFc -split "`n---`n"
+            $emitJson = $null
+            foreach ($seg in $segments) {
+              if ($seg.StartsWith('[emit-child-result]')) {
+                $nl = $seg.IndexOf("`n")
+                if ($nl -ge 0) { $emitJson = $seg.Substring($nl + 1) }
+                break
+              }
+            }
+            if (-not $emitJson) {
+              if ($rawFc.TrimStart().StartsWith('{')) { $emitJson = $rawFc }
+              elseif ($segments.Count -gt 0) {
+                $first = $segments[0]
+                $nl = $first.IndexOf("`n")
+                if ($nl -ge 0 -and $first.StartsWith('[')) { $emitJson = $first.Substring($nl + 1) }
+                else { $emitJson = $first }
+              }
+            }
+
+            $childObj = ConvertFrom-Json -InputObject $emitJson -Depth 100 -ErrorAction Stop
+            if ($childObj.save -and $childObj.save.filePath) { $filePath = [string]$childObj.save.filePath }
+            if ($childObj.brief -and $childObj.brief.summary) { $summary = [string]$childObj.brief.summary }
+          } catch {
+            $errorMsg = "Failed to parse child finalContent: $_"
+          }
+        }
+
+        $results += [pscustomobject]@{
+          title       = $title
+          startTime   = $startTime
+          executionId = $r.executionId
+          status      = $r.status
+          filePath    = $filePath
+          webLink     = $webLink
+          summary     = $summary
+          error       = $errorMsg
+        }
+      }
+
+      [pscustomobject]@{
+        totalDispatched = [int]$rollup.totalDispatched
+        succeeded       = [int]$rollup.succeeded
+        failed          = [int]$rollup.failed
+        results         = $results
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{dispatch-briefer.output}}"
+    timeoutSeconds: 120
 
   - name: gate-noteworthy-activity
     type: Prompt
-    dependsOn: [dispatch-briefer]
+    dependsOn: [aggregate-dispatch]
     systemPrompt: |
       You are a noise filter for the meeting-prep run. Decide whether
       this scheduler tick produced anything worth surfacing to ActionView.
@@ -482,7 +498,7 @@ steps:
       in ActionView.
 
       Dispatcher summary:
-      {{dispatch-briefer.output}}
+      {{aggregate-dispatch.output}}
     outputHandlerPrompt: |
       When continuing, output the dispatcher summary JSON object verbatim
       with no prose or fences. Otherwise (early-completion path),
@@ -597,7 +613,7 @@ steps:
     dependsOn:
       - discover-meetings
       - filter-already-briefed
-      - dispatch-briefer
+      - aggregate-dispatch
       - submit-actionview-entry
     template: |
       # Meeting Prep Run Summary
@@ -621,7 +637,7 @@ steps:
 
       ## Dispatch Results
       ```json
-      {{dispatch-briefer.output}}
+      {{aggregate-dispatch.output}}
       ```
 
       ## ActionView Submission

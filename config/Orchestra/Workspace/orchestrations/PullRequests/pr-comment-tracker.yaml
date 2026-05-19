@@ -134,37 +134,83 @@ steps:
       If the array is empty, call orchestra_complete. Otherwise, output the array as-is.
 
   - name: dispatch-candidates
-    type: Prompt
+    type: Orchestration
     dependsOn: [gate-no-prs]
-    systemPrompt: |
-      You are an orchestration coordinator. Delegate each PR candidate to pr-comment-dispatcher using synchronous mode. The dispatcher decides whether to skip or invoke pr-comment-responder, and it handles comment-response state through the child response path.
-    userPrompt: |
-      Dispatch each PR candidate through pr-comment-dispatcher:
+    orchestration: pr-comment-dispatcher
+    forEach: "{{gate-no-prs.output}}"
+    itemParameter: prData
+    parameters:
+      mode: auto
+      forceProcess: "false"
+    mode: sync
+    maxConcurrency: 4
+    continueOnItemFailure: true
+    timeoutSeconds: 5000
 
-      {{gate-no-prs.output}}
+  - name: aggregate-dispatch
+    type: Script
+    dependsOn: [dispatch-candidates]
+    shell: pwsh
+    script: |
+      # Deterministic aggregator over the engine forEach rollup. Best-effort
+      # classification of each child's finalContent into processed/skipped using
+      # a substring search (same heuristic as pr-auto-reviewer's aggregator).
+      $ErrorActionPreference = 'Stop'
 
-      For each PR object in the array:
-      1. Use invoke_orchestration to invoke 'pr-comment-dispatcher' with mode 'sync' and timeoutSeconds 5000.
-      2. Pass parameters: prData = the serialized PR object as valid JSON, mode = 'auto', forceProcess = 'false'. The prData string must be parseable JSON; escape every literal backslash in string values (for example, reviewer names like `[TEAM FOUNDATION]\ZTS`).
-      3. Record whether the dispatcher processed, skipped, failed, or completed with no action.
-
-      After all dispatches complete, output a JSON summary:
-      {
-        "totalPRsDispatched": <count>,
-        "processed": <count>,
-        "skipped": <count>,
-        "succeeded": <count>,
-        "failed": <count>,
-        "results": [
-          { "prId": ..., "prTitle": "...", "executionId": "...", "status": "processed|skipped|failed", "summary": "...", "error": null | "..." }
-        ]
+      $raw = $args[0]
+      if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw 'dispatch-candidates output is empty.'
       }
-    mcps: [orchestra]
-    timeoutSeconds: 7200
+      $rollup = ConvertFrom-Json -InputObject $raw -Depth 100 -ErrorAction Stop
+
+      $results = @()
+      $processed = 0
+      $skipped = 0
+      foreach ($r in @($rollup.results)) {
+        $prId = $null; $prTitle = $null
+        if ($r.input) {
+          try {
+            $inputObj = if ($r.input -is [string]) { ConvertFrom-Json -InputObject $r.input -Depth 50 } else { $r.input }
+            $prId = $inputObj.id
+            $prTitle = $inputObj.title
+          } catch { }
+        }
+
+        $classification = $r.status
+        if ($r.status -eq 'succeeded' -and $r.finalContent) {
+          $fc = ([string]$r.finalContent).ToLowerInvariant()
+          if ($fc.Contains('"status":"skipped"') -or ($fc.Contains('skipped') -and -not $fc.Contains('processed'))) {
+            $classification = 'skipped'; $skipped++
+          } else {
+            $classification = 'processed'; $processed++
+          }
+        }
+
+        $results += [pscustomobject]@{
+          prId        = $prId
+          prTitle     = $prTitle
+          executionId = $r.executionId
+          status      = $classification
+          summary     = if ($r.finalContent) { [string]$r.finalContent } else { '' }
+          error       = $r.errorMessage
+        }
+      }
+
+      [pscustomobject]@{
+        totalPRsDispatched = [int]$rollup.totalDispatched
+        succeeded          = [int]$rollup.succeeded
+        failed             = [int]$rollup.failed
+        processed          = $processed
+        skipped            = $skipped
+        results            = $results
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{dispatch-candidates.output}}"
+    timeoutSeconds: 120
 
   - name: gate-noteworthy-activity
     type: Prompt
-    dependsOn: [dispatch-candidates]
+    dependsOn: [aggregate-dispatch]
     systemPrompt: |
       You are a noise filter for the PR comment tracker. Your only job is to decide whether this scheduled run produced anything worth surfacing to the user via ActionView.
 
@@ -179,7 +225,7 @@ steps:
       Decide whether this PR comment tracker run is noteworthy enough to surface in ActionView.
 
       Dispatcher summary:
-      {{dispatch-candidates.output}}
+      {{aggregate-dispatch.output}}
 
   - name: create-action-view-entry
     type: Prompt
@@ -222,7 +268,7 @@ steps:
 
   - name: generate-summary
     type: Prompt
-    dependsOn: [dispatch-candidates, gate-no-prs, submit-action-view-entry]
+    dependsOn: [aggregate-dispatch, gate-no-prs, submit-action-view-entry]
     systemPrompt: |
       You are a reporting assistant. Produce a clear, concise markdown summary of the PR comment tracking orchestration run.
     userPrompt: |
@@ -232,7 +278,7 @@ steps:
       {{gate-no-prs.output}}
 
       Dispatcher results:
-      {{dispatch-candidates.output}}
+      {{aggregate-dispatch.output}}
 
       ActionView submission:
       {{submit-action-view-entry.output}}
