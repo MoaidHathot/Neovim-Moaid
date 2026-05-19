@@ -6,7 +6,8 @@
   },
   "search": {
     "onnx": {
-      "autoDownload": true
+      "autoDownload": true,
+      "model": "multilingual-e5-small"
     }
   },
   "llm": {
@@ -75,7 +76,9 @@
       "durationProbeTimeoutSeconds": 20,
       "jpegQuality": 90,
       "captureCaptions": true,
-      "maxCaptionBytes": 5242880
+      "maxCaptionBytes": 5242880,
+      "debug": false,
+      "debugMaxBodyBytes": 1048576
     }
   },
   "auth": {
@@ -87,5 +90,6 @@
     "minDurationOffSeconds": 0.5,
     "threads": 1,
     "autoDownload": true
-  }
+  },
+  "runs": {}
 }
