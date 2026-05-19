@@ -34,6 +34,22 @@
   "//32": "  mcplense inspect <url> --profile agent365-cli",
   "//33": "When only one of the two profiles is loaded (e.g. you delete the other entry),",
   "//34": "McpLense picks it automatically and --profile is optional.",
+  "targetPatterns": [
+    {
+      "//":      "Wildcard match against any URL whose host contains 'bluebird'. The ** glob",
+      "//1":     "spans labels + dots so this catches mcp.bluebird-ai.net AND any other bluebird",
+      "//2":     "subdomain. scope=All means the three x-mcp-ec-* headers ride along with both the",
+      "//3":     "MCP session and the same-origin probes (transport probe, CORS preflight,",
+      "//4":     "authenticated-headers re-probe, DCR endpoint when same-origin).",
+      "match":   "https://**bluebird**/**",
+      "headers": {
+        "x-mcp-ec-organization": "msazure",
+        "x-mcp-ec-project":      "One",
+        "x-mcp-ec-repository":   "ZTS"
+      },
+      "scope":   "All"
+    }
+  ],
   "authProfiles": [
     {
       "name": "agent365",
