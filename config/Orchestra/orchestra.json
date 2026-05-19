@@ -5,7 +5,7 @@
 	"defaultModel": "gpt-5.5",
 	"agentPool": {
 		"minInstances": 1,
-		"maxInstances": 70,
+		"maxInstances": 100,
 		"maxSessionsPerInstance": 3,
 		"idleTimeoutSeconds": 120
 	},
