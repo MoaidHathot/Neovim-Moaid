@@ -1,0 +1,14 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"example-agent","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"analyze.start","arguments":{"source":"https://example.com/video","visionInstruction":"Bias toward slide titles, code blocks, and chart axes.","ocrInstruction":"Preserve indentation in code-like text.","frames":7,"frameStrategy":"scene","cache":true,"ocr":true,"vision":true,"ocrProvider":"copilot"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"analyze.status","arguments":{"jobId":"<job-id-from-create>"}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"analyze.result","arguments":{"jobId":"<job-id-from-create>"}}}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"index.build","arguments":{"runDirectory":"<artifact-directory-from-result>","backend":"sqlite-onnx"}}}
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"index.query","arguments":{"target":"<artifact-directory-from-result>","query":"important topic","backend":"sqlite-onnx","top":5}}}
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"chapters.build","arguments":{"runDirectory":"<artifact-directory-from-result>","minDuration":60,"maxDuration":600}}}
+{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"analyze.start","arguments":{"source":"C:/meetings/team-sync.mp4","visionInstruction":"Extract slide content from this Teams meeting recording.","frames":12,"frameStrategy":"scene","cache":true,"ocr":true,"ocrProvider":"local","smartCrop":true,"smartCropProfile":"teams"}}}
+{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"analyze.start","arguments":{"source":"https://medius.studios.ms/Embed/video-12345","visionInstruction":"Extract slide titles, bullets, code blocks, and demo content.","frames":30,"frameStrategy":"scene","cache":true,"ocr":true,"vision":true,"captureMode":"browser","authProfile":"ignite-2026"}}}
+{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"analyze.start","arguments":{"source":"https://example.com/maybe-supported","visionInstruction":"Try yt-dlp first; fall back to browser capture if needed.","frames":7,"frameStrategy":"scene","cache":true,"captureMode":"auto"}}}
+{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"frames","arguments":{"source":"https://example.com/recipe-video","at":["02:45","04:12","06:35","08:50","11:20"],"maxLongEdgePixels":1024,"jpegQuality":85}}}
+{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"frames","arguments":{"source":"https://example.com/demo","from":"02:00","to":"03:00","count":5,"strategy":"scene"}}}

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anomalyco/Zakira.Conduit/main/schemas/conduit.schema.json",
+  "version": 1,
+  "entries": [
+    {
+      "name": "ActionView",
+      "source": {
+        "type": "github",
+        "repo": "https://github.com/MoaidHathot/ActionView",
+        "path": "skills",
+        "branch": "main"
+      },
+      "targets": [
+        "$XDG_CONFIG_HOME/Orchestra/workspace/skills"
+      ]
+    },
+    {
+      "name": "PowerReview",
+      "source": {
+        "type": "github",
+        "repo": "https://github.com/MoaidHathot/PowerReview",
+        "path": "skills",
+        "branch": "main"
+      },
+      "targets": [
+        "$XDG_CONFIG_HOME/Orchestra/workspace/skills"
+      ]
+    },
+    {
+      "name": "Zakira.Replay",
+      "source": {
+        "type": "github",
+        "repo": "https://github.com/MoaidHathot/Zakira.Replay",
+        "path": "skills",
+        "branch": "main"
+      },
+      "targets": [
+        "$XDG_CONFIG_HOME/Orchestra/workspace/skills"
+      ]
+    },
+    {
+      "name": "McpLense",
+      "source": {
+        "type": "github",
+        "repo": "https://github.com/MoaidHathot/McpLense",
+        "path": "skills",
+        "branch": "main"
+      },
+      "targets": [
+        "$XDG_CONFIG_HOME/Orchestra/workspace/skills"
+      ]
+    }
+  ]
+}

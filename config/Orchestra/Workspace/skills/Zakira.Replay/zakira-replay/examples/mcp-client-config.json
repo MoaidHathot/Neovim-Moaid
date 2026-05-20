@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "zakira-replay": {
+      "command": "zakira-replay",
+      "args": ["mcp", "serve"],
+      "env": {
+        "ZAKIRA_REPLAY_YTDLP_PATH": "C:/tools/yt-dlp/yt-dlp.exe",
+        "ZAKIRA_REPLAY_FFMPEG_PATH": "C:/tools/ffmpeg/bin/ffmpeg.exe",
+        "ZAKIRA_REPLAY_FFPROBE_PATH": "C:/tools/ffmpeg/bin/ffprobe.exe",
+        "ZAKIRA_REPLAY_ONNX_MODEL_PATH": "C:/Users/<you>/AppData/Local/Zakira.Replay/portable/models/bge-small-en-v1.5/model.onnx",
+        "ZAKIRA_REPLAY_ONNX_TOKENIZER_PATH": "C:/Users/<you>/AppData/Local/Zakira.Replay/portable/models/bge-small-en-v1.5/vocab.txt",
+        "ZAKIRA_REPLAY_OCR_MODEL_DIRECTORY": "C:/models/rapidocr-ppocrv5-latin",
+        "ZAKIRA_REPLAY_AUTH_DIRECTORY": "C:/secrets/zakira-replay-auth"
+      }
+    }
+  }
+}
