@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/anomalyco/Zakira.Conduit/main/schemas/conduit.schema.json",
+  "$schema": "https://raw.githubusercontent.com/MoaidHathot/Zakira.Conduit/main/schemas/conduit.schema.json",
   "version": 1,
   "entries": [
     {
@@ -44,6 +44,18 @@
         "type": "github",
         "repo": "https://github.com/MoaidHathot/McpLense",
         "path": "skills",
+        "branch": "main"
+      },
+      "targets": [
+        "$XDG_CONFIG_HOME/Orchestra/workspace/skills"
+      ]
+    },
+    {
+      "name": "Zakira.Conduit",
+      "source": {
+        "type": "github",
+        "repo": "https://github.com/MoaidHathot/Zakira.Conduit",
+        "path": "skills/zakira-conduit",
         "branch": "main"
       },
       "targets": [
