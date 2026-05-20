@@ -25,6 +25,8 @@ zakira-replay mcp serve [--transport stdio|http|sse] [--port 8765]
 
 If `zakira-replay` is not on `PATH`, configure the MCP client to use the full executable path or a development `dotnet run` command.
 
+The MCP server reads + writes artifacts under the configured **runs directory**: `ZAKIRA_REPLAY_RUNS_DIRECTORY` env var > `runs.directory` user-config key > legacy `<cwd>/runs`. Job snapshots persist under `<runs>/.mcp/jobs/`, the persistent queue lives under `<runs>/.queue/`. When deploying the MCP server as a long-running service (HTTP transport), set `runs.directory` to a stable location (`%LOCALAPPDATA%\Zakira.Replay\runs` on Windows, `~/Library/Application Support/Zakira.Replay/runs` on macOS, `$XDG_DATA_HOME/Zakira.Replay/runs` on Linux) so runs survive cwd changes.
+
 Use `doctor` as the first tool when dependency or provider readiness is unknown.
 
 ## Tool Selection

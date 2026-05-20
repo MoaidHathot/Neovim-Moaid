@@ -17,7 +17,9 @@ Zakira.Replay ships separate reusable agent-facing skills for CLI and MCP use.
 Copy or reference `../zakira-replay-cli/SKILL.md` for CLI use, or `../zakira-replay-mcp/SKILL.md` for MCP use, in an agent system that supports custom skills/instructions. Configure the MCP server command as:
 
 ```bash
-zakira-replay mcp serve
+zakira-replay mcp serve                                  # stdio (default)
+zakira-replay mcp serve --transport http --port 8765     # Streamable HTTP for hosted agent platforms
+zakira-replay mcp serve --transport sse  --port 8765     # alias for Streamable HTTP (legacy SSE clients)
 ```
 
 If the `zakira-replay` global tool is not on PATH, use the full path to the executable or run through `dotnet` from the project during development.

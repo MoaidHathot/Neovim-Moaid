@@ -1,0 +1,78 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MoaidHathot/Zakira.Conduit/main/schemas/conduit.schema.json",
+  "version": 1,
+  "entries": [
+    {
+      "name": "code-review",
+      "description": "One sub-path from one GitHub repo, tracked on main.",
+      "source": {
+        "type": "github",
+        "repo": "anthropics/skills",
+        "path": "code-review",
+        "branch": "main"
+      },
+      "targets": [
+        "~/.config/claude/skills",
+        "~/projects/my-app/.agents/skills"
+      ]
+    },
+
+    {
+      "name": "anthropic-bundle",
+      "description": "Many skills from one repo. With multi-path, each landing dir is the basename (or per-path 'as' alias) and the entry name is metadata only.",
+      "source": {
+        "type": "github",
+        "repo": "https://github.com/anthropics/skills",
+        "paths": [
+          "code-review",
+          { "path": "test-writer", "as": "tests" },
+          "refactor"
+        ],
+        "branch": "main"
+      },
+      "targets": [
+        "~/.config/claude/skills"
+      ]
+    },
+
+    {
+      "name": "internal-runbooks",
+      "description": "Private repo pinned to an immutable commit. Use $CONDUIT_GITHUB_TOKEN.",
+      "source": {
+        "type": "github",
+        "repo": "my-org/agent-runbooks",
+        "branch": "main",
+        "commit": "1f2e3d4c5b6a7980abcdef0123456789abcdef01"
+      },
+      "targets": [
+        "$XDG_CONFIG_HOME/agents/skills"
+      ]
+    },
+
+    {
+      "name": "house-style",
+      "description": "A local in-house skill, kept under version control next to this manifest.",
+      "source": {
+        "type": "local",
+        "path": "./vendor/skills/house-style"
+      },
+      "targets": [
+        { "path": "~/.config/claude/skills", "as": "house" },
+        "~/projects/my-app/.agents/skills"
+      ]
+    },
+
+    {
+      "name": "parked-for-later",
+      "description": "Disabled entries are skipped at sync time but kept for documentation.",
+      "disabled": true,
+      "source": {
+        "type": "github",
+        "repo": "octocat/experimental-skills"
+      },
+      "targets": [
+        "~/.config/claude/skills"
+      ]
+    }
+  ]
+}

@@ -66,12 +66,17 @@ Dependency path overrides, if needed:
 - `ZAKIRA_REPLAY_YTDLP_PATH`
 - `ZAKIRA_REPLAY_FFMPEG_PATH`
 - `ZAKIRA_REPLAY_FFPROBE_PATH`
+- `ZAKIRA_REPLAY_ONNX_MODEL` (0.10.0+: search-embedding model id — `bge-small-en-v1.5`, `snowflake-arctic-embed-s`, `multilingual-e5-small`)
+- `ZAKIRA_REPLAY_ONNX_MODEL_KIND` (0.10.0+: embedding scheme override — `bert`, `bge`, or `e5`)
 - `ZAKIRA_REPLAY_ONNX_MODEL_PATH`
-- `ZAKIRA_REPLAY_ONNX_VOCAB_PATH`
+- `ZAKIRA_REPLAY_ONNX_TOKENIZER_PATH` (0.10.0+: tokenizer file — `vocab.txt` for BERT, `sentencepiece.bpe.model` for XLM-R)
+- `ZAKIRA_REPLAY_ONNX_VOCAB_PATH` (legacy alias for `ZAKIRA_REPLAY_ONNX_TOKENIZER_PATH`)
 - `ZAKIRA_REPLAY_OCR_MODEL_DIRECTORY` (plus per-file `*_DETECTION_MODEL_PATH`, `*_CLASSIFICATION_MODEL_PATH`, `*_RECOGNITION_MODEL_PATH`, `*_DICTIONARY_PATH`)
 - `ZAKIRA_REPLAY_EDGE_USER_DATA_DIR` (overrides `capture.browser.edgeUserDataDir`)
 - `ZAKIRA_REPLAY_RUNS_DIRECTORY` (overrides `runs.directory`; pins where every `runs/<run-id>/` artifact tree lands instead of inheriting `<cwd>/runs`)
-- Config keys: `yt-dlp.path`, `ffmpeg.path`, `ffprobe.path`, `search.onnx.*`, `ocr.local.*`, `capture.browser.edge{UserDataDir,ProfileDirectory}`, `dependencies.portableDirectory` (where models / yt-dlp / ffmpeg land), `runs.directory` (where analysis artifacts land; env-var literals like `%LOCALAPPDATA%\Zakira.Replay\runs` are preserved verbatim and expanded at read time)
+- Config keys: `yt-dlp.path`, `ffmpeg.path`, `ffprobe.path`, `search.onnx.*` (including the 0.10.0 `search.onnx.model`, `search.onnx.modelKind`, `search.onnx.tokenizerPath`), `ocr.local.*`, `capture.browser.edge{UserDataDir,ProfileDirectory}`, `dependencies.portableDirectory` (where models / yt-dlp / ffmpeg land), `runs.directory` (where analysis artifacts land; env-var literals like `%LOCALAPPDATA%\Zakira.Replay\runs` are preserved verbatim and expanded at read time)
+
+Tokenization for the `sqlite-onnx` search backend is handled by **`Microsoft.ML.Tokenizers` 2.0** — `BertTokenizer.Create(vocab.txt)` for BGE / arctic / generic-BERT, `SentencePieceTokenizer.Create(stream)` for the XLM-R-based multilingual-e5 family. The right path is picked automatically from the tokenizer-file extension, so swapping `search.onnx.model` between known ids requires no extra config.
 
 Do not put secret values in JSON config. Config stores environment variable names for provider secrets.
 
