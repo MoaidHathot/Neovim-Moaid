@@ -93,3 +93,5 @@ credentials.json
 *_secret
 .netrc
 .npmrc
+
+.conduit-state.json
