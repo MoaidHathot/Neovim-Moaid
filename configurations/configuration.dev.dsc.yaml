@@ -63,6 +63,26 @@ properties:
         UserEmail: "MoaidHathot@users.noreply.github.com"
         ConfigLocation: "Global"
 
+    - resource: PSDscResources/Script
+      id: Git_Enable_LongPaths
+      dependsOn:
+        - Git
+      directives:
+        description: |
+          Enable git long-path support (core.longpaths=true). Without this, git
+          refuses paths > 260 chars on Windows and clones / worktrees of large
+          repos like msazure/One/ZTS fail mid-checkout with "Filename too long".
+          Affects all git commands for this user from then on; safe and additive.
+      settings:
+        GetScript: |
+          $current = (& git config --global --get core.longpaths) 2>$null
+          return @{ Result = $current }
+        TestScript: |
+          $current = (& git config --global --get core.longpaths) 2>$null
+          return ($current -eq 'true')
+        SetScript: |
+          & git config --global core.longpaths true
+
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: Windows_Terminal_Preview
       directives:
