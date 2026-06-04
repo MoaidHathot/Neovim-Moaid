@@ -3,12 +3,7 @@
   "version": 1,
   "entries": [
     {
-      "name": "my-skill",
-      "source": {
-        "type": "github",
-        "repo": "owner/repo",
-        "branch": "main"
-      },
+      "source": "https://github.com/owner/repo",
       "targets": [
         "~/.config/agents/skills"
       ]

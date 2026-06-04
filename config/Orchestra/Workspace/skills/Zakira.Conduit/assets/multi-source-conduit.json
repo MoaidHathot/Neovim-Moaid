@@ -4,7 +4,7 @@
   "entries": [
     {
       "name": "code-review",
-      "description": "One sub-path from one GitHub repo, tracked on main.",
+      "description": "One sub-path from one GitHub repo. Bare-URL shorthand also works: 'https://github.com/anthropics/skills/code-review'.",
       "source": {
         "type": "github",
         "repo": "anthropics/skills",
@@ -19,16 +19,17 @@
 
     {
       "name": "anthropic-bundle",
-      "description": "Many skills from one repo. With multi-path, each landing dir is the basename (or per-path 'as' alias) and the entry name is metadata only.",
+      "description": "Many skills from one repo with one fetch. With multi-path, each landing dir is the basename (or per-path 'as' alias) and the entry name is metadata only.",
       "source": {
         "type": "github",
         "repo": "https://github.com/anthropics/skills",
         "paths": [
-          "code-review",
-          { "path": "test-writer", "as": "tests" },
-          "refactor"
+          { "path": "test-writer", "as": "ant-test-writer" },
+          { "path": "refactor", "as": "ant-refactor" }
         ],
-        "branch": "main"
+        "branch": "main",
+        "include": ["**/*.md", "scripts/**"],
+        "exclude": ["**/*.test.*"]
       },
       "targets": [
         "~/.config/claude/skills"
@@ -36,26 +37,47 @@
     },
 
     {
+      "description": "Array source: three separate sources mirrored into one target. Names are derived from each element (CONDUIT-team-A, CONDUIT-team-B, HouseStyle).",
+      "source": [
+        "https://github.com/example-org/skills-a -> CONDUIT-team-A",
+        "https://github.com/example-org/skills-b -> CONDUIT-team-B",
+        "./vendor/skills/house-style -> HouseStyle"
+      ],
+      "targets": [
+        "~/.config/claude/skills"
+      ]
+    },
+
+    {
       "name": "internal-runbooks",
-      "description": "Private repo pinned to an immutable commit. Use $CONDUIT_GITHUB_TOKEN.",
-      "source": {
-        "type": "github",
-        "repo": "my-org/agent-runbooks",
-        "branch": "main",
-        "commit": "1f2e3d4c5b6a7980abcdef0123456789abcdef01"
-      },
+      "description": "Private repo pinned to an immutable commit via the URL-native form. Uses CONDUIT_GITHUB_TOKEN (or 'gh auth token' via the default auth chain).",
+      "source": "https://github.com/my-org/agent-runbooks/tree/1f2e3d4c5b6a7980abcdef0123456789abcdef01",
       "targets": [
         "$XDG_CONFIG_HOME/agents/skills"
       ]
     },
 
     {
-      "name": "house-style",
-      "description": "A local in-house skill, kept under version control next to this manifest.",
+      "name": "azdo-skills",
+      "description": "Azure DevOps repo with two sub-paths, custom aliases (so they don't clash with the github multi-path basenames above) and the default [env, az] auth chain.",
+      "disabled": true,
       "source": {
-        "type": "local",
-        "path": "./vendor/skills/house-style"
+        "type": "azdo",
+        "url": "https://dev.azure.com/contoso/Conduit/_git/agent-skills",
+        "branch": "main",
+        "paths": [
+          { "path": "skills/code-review", "as": "azdo-code-review" },
+          { "path": "skills/test-writer", "as": "azdo-test-writer" }
+        ]
       },
+      "targets": [
+        "~/.config/claude/skills"
+      ]
+    },
+
+    {
+      "description": "Local in-house skill. Name omitted: Conduit derives 'house-style' from the directory basename. Per-target 'as' renames the destination at one target only.",
+      "source": "./vendor/skills/house-style",
       "targets": [
         { "path": "~/.config/claude/skills", "as": "house" },
         "~/projects/my-app/.agents/skills"
@@ -66,10 +88,7 @@
       "name": "parked-for-later",
       "description": "Disabled entries are skipped at sync time but kept for documentation.",
       "disabled": true,
-      "source": {
-        "type": "github",
-        "repo": "octocat/experimental-skills"
-      },
+      "source": "https://github.com/octocat/experimental-skills",
       "targets": [
         "~/.config/claude/skills"
       ]
