@@ -11,7 +11,7 @@
     }
   },
   "llm": {
-    "provider": "github-copilot",
+    "provider": "local-whisper",
     "openAi": {
       "apiKeyEnvironmentVariables": [],
       "baseUrlEnvironmentVariables": [],
@@ -45,7 +45,7 @@
     }
   },
   "vision": {
-    "provider": "copilot",
+    "provider": "local",
     "local": {
       "mode": "clip-caption",
       "autoDownload": true
