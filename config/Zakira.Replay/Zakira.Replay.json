@@ -1,8 +1,8 @@
 {
   "dependencies": {
     "autoDownload": true,
-    "portableDirectory": "C:\\Users\\moaid\\AppData\\Local\\Zakira.Replay\\portable",
-    "ytDlpPath": "C:\\Users\\moaid\\AppData\\Roaming\\Python\\Python312\\Scripts\\yt-dlp.exe"
+    "portableDirectory": "%LOCALAPPDATA%\\Zakira.Replay\\portable",
+    "ytDlpPath": "C:\\Users\\moaidhathot\\AppData\\Roaming\\Python\\Python314\\Scripts\\yt-dlp.exe"
   },
   "search": {
     "onnx": {
@@ -11,7 +11,7 @@
     }
   },
   "llm": {
-    "provider": "local-whisper",
+    "provider": "github-copilot",
     "openAi": {
       "apiKeyEnvironmentVariables": [],
       "baseUrlEnvironmentVariables": [],
@@ -91,5 +91,7 @@
     "threads": 1,
     "autoDownload": true
   },
-  "runs": {}
+  "runs": {
+    "directory": "C:\\Users\\moaidhathot\\AppData\\Local\\Zakira.Replay\\runs"
+  }
 }
