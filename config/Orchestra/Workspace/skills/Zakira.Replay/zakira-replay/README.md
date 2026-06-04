@@ -7,6 +7,7 @@ Zakira.Replay ships separate reusable agent-facing skills for CLI and MCP use.
 - `../zakira-replay-cli/SKILL.md`: CLI workflow for agents that can run shell commands.
 - `../zakira-replay-mcp/SKILL.md`: MCP workflow for agents connected to `zakira-replay mcp serve`.
 - `SKILL.md`: compatibility router for older setups that only referenced `skills/zakira-replay`.
+- `sources/README.md`: per-source recommendation profiles (Microsoft Build, Medius, SharePoint Stream, YouTube). Both skills point at this directory and tell agents to read only the matching profile when handling a URL, so per-source guidance doesn't bloat the main skill context. Adding a new source is one file + one row in the index.
 - `examples/mcp-client-config.json`: generic MCP stdio client configuration.
 - `examples/job-flow.jsonl`: JSON-RPC job-flow example.
 - `examples/prompts.md`: user prompt patterns and agent execution notes.

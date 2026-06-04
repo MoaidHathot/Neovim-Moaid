@@ -80,6 +80,10 @@ Tokenization for the `sqlite-onnx` search backend is handled by **`Microsoft.ML.
 
 Do not put secret values in JSON config. Config stores environment variable names for provider secrets.
 
+## Source-specific profiles
+
+When the source is a URL (not a local file), open `skills/zakira-replay/sources/README.md` and match the URL's host against the index. If a profile matches, read **that profile only** — it names the recommended capture mode, flag combinations, expected artifacts, known limitations, and warning codes specific to that source. Lookup is advisory: hosts not in the index use the defaults documented here. Adding a new source profile is one file + one row in the index — see the directory's README for the contribution shape.
+
 ## Recommended Analysis Commands
 
 General evidence extraction (relies on the new defaults: `--frame-strategy scene`, `--ocr-provider local`, `--max-ai-frames 50`, `--scene-safety-cap 5000`, deterministic run-id):
@@ -192,6 +196,11 @@ zakira-replay doctor    # confirm vision-models: found
 - `--frames-per-minute <n>`: per-request override of the duration-aware sampling rate for the interval strategy. The config default is `frames.perMinute=12` (one frame every 5 seconds). When set (or non-zero in config), the effective frame count is `max(framesPerMinute * durationMinutes, --frames)`. Pass `--frames-per-minute 0` to disable duration-aware scaling for one run. Ignored for `scene` and `every-frame`.
 - `--max-ai-frames <n>`: cap on the number of unique slides sent to OCR/vision. Default `50`. Slide grouping deduplicates extracted frames first; this then bounds the AI cost. Lower for cheap runs, higher when slide-deck content is dense.
 - `--scene-safety-cap <n>`: per-run override of `frames.sceneSafetyCap` (default 5000). The scene strategy returns up to this many frames; slide grouping deduplicates. When the cap is hit the run carries a `FRAMES_SCENE_CAP_REACHED` warning. The pipeline also emits `FRAMES_LIKELY_UNDERSAMPLED` if interval sampling without `--frames-per-minute` (and with `frames.perMinute=0` in config) produces fewer than 1 frame per 5 minutes.
+- `--secondary-transcripts <csv>`: opt-in additional-language transcripts written alongside `transcript.md`. Example: `--secondary-transcripts fr,he` writes `transcript.fr.md` + `transcript.he.md` for each requested language that matches a downloaded caption. Surfaced on `manifest.secondaryTranscripts` as `{ language, markdownPath, sourcePath }[]` so an agent can discover them deterministically. Missing languages emit info warnings and skip — never fail.
+- `--prefer-inline-media`: skip the in-browser play+duration probe entirely. The pipeline runs a `MetadataOnly` browser probe (~3-5s vs ~25s for a duration timeout), reads the inline media URL the registered interceptors (e.g. Medius) discovered, ffmpeg-seeks the requested frames, AND downloads the inline captions in the same pass. The fast path for sources whose JS player won't boot headlessly (Microsoft Build / Medius / Ignite). Falls through to the regular full-capture path when no inline URL is found; emits `CAPTURE_BROWSER_FALLBACK` (info) identifying the path taken. Also see the automatic version below.
+- **Automatic sidestep fallback** (no flag — always on for `--capture-mode browser` / `auto`): when the in-browser play+duration probe yields no frames AND an interceptor recovered an inline media URL, the pipeline transparently hands that URL to `ffmpeg.ExtractFramesAsync` with the request's frame strategy. Closes the "0 frames captured" gap for Build sessions analysed via `--capture-mode browser`. Identifiable by `CAPTURE_BROWSER_FALLBACK` (info) with message containing `duration-unresolved-fallback`.
+- `--autoplay-policy <default|no-user-gesture-required>`: Chromium autoplay-policy override for this run. Resolves through three layers (per-run flag > `capture.browser.autoplayPolicyByHost` map > `capture.browser.autoplayPolicy` global default). The per-host map supports exact match and `*.<suffix>` wildcards (longest match wins) — e.g. setting `capture.browser.autoplayPolicyByHost.*.event.microsoft.com = no-user-gesture-required` makes all Microsoft Events sources auto-allow autoplay without changing global behaviour. String-based so future Chromium policies extend cleanly; unknown values silently collapse to `default`.
+- `--allow-media-download`: **opt-in for any local download of the source video.** Off by default. Gates four previously-silent download paths: (1) the yt-dlp ffmpeg-failure fallback in `analyze`/`transcribe`; (2) the STT fallback when no caption / audio source is reachable; (3) the spot-frames last-resort in `frames`; (4) clip extraction when no direct URL is reachable. When declined, each path emits `MEDIA_DOWNLOAD_DECLINED` (error) with the flag name in the message and returns null / empty / throws. **`--stt` no longer implicitly authorises a download** — combine `--stt --allow-media-download` when no captions or audio source are available. Resolution: per-run flag > `capture.allowMediaDownload` config key > `false`.
 
 There is no `--summary` flag. Synthesis is your job, not Zakira.Replay's.
 
@@ -219,10 +228,10 @@ If the command reports `Reused run`, inspect existing artifacts before deciding 
 
 Read artifacts in this order:
 
-1. `manifest.json`: produced paths, structured warnings, run ID, frame list.
+1. `manifest.json`: produced paths, structured warnings, run ID, frame list. Two newer fields agents should read: `secondaryTranscripts[]` (`{ language, markdownPath, sourcePath }` for each language requested via `--secondary-transcripts`) and `sessionMetadata` (deterministic page-derived facts — `title`, `description`, `sessionCode`, `track`, `level`, `publishedAt`, `speakers[]`, `products[]`, `tags[]`, `sourceUrl`, and per-strategy provenance under `sources[]`). Both are null/empty when not applicable.
 2. `evidence.json`: structured transcript, frames, slides, OCR, vision, per-speaker registry (`speakers[]`), structured warnings.
 3. `slides/slides.json` (also embedded in `evidence.json`): slide grouping facts (`firstSeenSeconds`, `lastSeenSeconds`, `frameIds`, `primaryFrameId`). OCR/vision run once per slide; each result carries `slideId`.
-4. `transcript.md`: human-readable timestamped transcript with `[Speaker Name]` prefixes when captions carried speaker tags.
+4. `transcript.md`: human-readable timestamped transcript with `[Speaker Name]` prefixes when captions carried speaker tags. Secondary-language transcripts live alongside as `transcript.<lang>.md` when requested.
 5. `transcript/normalization.json` and `transcript/raw.*`: audit exact quotes when normalization matters. Speaker changes are hard merge boundaries.
 6. `audio/chunks/chunks.json`: present only when long-audio STT was silence-chunked. Branch on `STT_CHUNK_FAILED` warnings if any chunk failed.
 7. `ocr/{frameId}.json` and `ocr/combined.md`: structured OCR (`freeText`, `lines[]`, `tables[]`); branch on `OCR_PARSE_FALLBACK` for prose responses.
@@ -230,10 +239,11 @@ Read artifacts in this order:
 9. `frames/`: inspect images when layout, UI, charts, code, slides, or visual details matter.
 10. `metadata.json`: title, source URL, duration, uploader metadata, `availableSubtitleLanguages`.
 11. `evidence.md`: concise human-readable index of artifact paths.
+12. `chapters/chapters.json` and `chapters/chapters.md` (after `chapters build`): each `Chapter` and `ChapterEvidence` carries a `deepLink` field — a time-anchored URL the agent can hand to the user (`?t=Ns` for YouTube, `?nav=t=…` for SharePoint Stream, `#t=N` for everything else including Build/Medius).
 
 Speakers in `evidence.speakers[]` carry `id` (slug, stable), optional `displayName`, plus `segmentCount`, `totalSeconds`, `firstSeenSeconds`, `lastSeenSeconds`. Each `transcript[*]` segment has `id` (`segment-NNNN`) and may have `speakerId`/`speakerDisplayName`. STT-derived transcripts do not carry speakers in this release.
 
-Warnings in `manifest.json` and `evidence.json` are structured records: `{ code, message, source, severity }`. Branch on `code` (for example `TRANSCRIPT_NOT_FOUND`, `STT_NO_LLM_PROVIDER`, `STT_CHUNK_FAILED`, `OCR_PARSE_FALLBACK`, `OCR_LOCAL_MODELS_MISSING`, `OCR_LOCAL_INFERENCE_FAILED`, `OCR_UNKNOWN_PROVIDER`, `VISION_PARSE_FALLBACK`, `PERCEPTUAL_HASH_FAILED`, `FRAMES_REMOTE_FALLBACK`, `CROP_BAIL_OUT`, `CROP_PROFILE_UNKNOWN`, `CROP_IMAGE_DECODE_FAILED`, `CROP_OUTPUT_FAILED`, `CAPTURE_BROWSER_FALLBACK`, `CAPTURE_BROWSER_UNAVAILABLE`, `CAPTURE_PLAY_BUTTON_NOT_FOUND`, `CAPTURE_DURATION_UNRESOLVED`, `CAPTURE_SEEK_FAILED`, `CAPTURE_SCREENSHOT_FAILED`, `CAPTURE_UNKNOWN_MODE`, `CAPTIONS_BROWSER_NETWORK_NONE`, `CAPTIONS_BROWSER_NETWORK_DOWNLOAD_FAILED`, `CAPTIONS_BROWSER_NETWORK_PARSE_FAILED`, `CAPTURE_BROWSER_CAPTIONS_ACTIVATED`, `CAPTURE_BROWSER_CAPTIONS_HARVESTED_FROM_DOM`, `CAPTURE_BROWSER_PROFILE_NOT_INITIALIZED`, `CAPTURE_BROWSER_PROFILE_DIR_MISSING`, `CAPTURE_BROWSER_PROFILE_LOCKED`, `CAPTURE_BROWSER_PROFILE_LAUNCH_FAILED`, `CAPTURE_BROWSER_AUTH_REQUIRED`, `CAPTURE_BROWSER_AUTH_MFA_DETECTED`, `CAPTURE_PROFILE_CONFLICT`, `CAPTURE_BROWSER_MEDIA_DOWNLOADED`, `CAPTURE_BROWSER_MEDIA_NO_CANDIDATE`, `CAPTURE_BROWSER_MEDIA_DOWNLOAD_FAILED`, `CAPTURE_STREAM_TRANSCRIPT_DISCOVERED`, `CAPTURE_STREAM_TRANSCRIPT_DOWNLOADED`, `CAPTURE_STREAM_METADATA_PARSE_FAILED`, `CAPTURE_STREAM_TRANSCRIPT_PARSE_FAILED`, `AUTH_PROFILE_NOT_FOUND`, `AUTH_PROFILE_STALE`, `AUTH_PROFILE_LOAD_FAILED`) rather than fuzzy-matching the message.
+Warnings in `manifest.json` and `evidence.json` are structured records: `{ code, message, source, severity }`. Branch on `code` (for example `TRANSCRIPT_NOT_FOUND`, `STT_NO_LLM_PROVIDER`, `STT_CHUNK_FAILED`, `OCR_PARSE_FALLBACK`, `OCR_LOCAL_MODELS_MISSING`, `OCR_LOCAL_INFERENCE_FAILED`, `OCR_UNKNOWN_PROVIDER`, `VISION_PARSE_FALLBACK`, `PERCEPTUAL_HASH_FAILED`, `FRAMES_REMOTE_FALLBACK`, `CROP_BAIL_OUT`, `CROP_PROFILE_UNKNOWN`, `CROP_IMAGE_DECODE_FAILED`, `CROP_OUTPUT_FAILED`, `CAPTURE_BROWSER_FALLBACK`, `CAPTURE_BROWSER_UNAVAILABLE`, `CAPTURE_PLAY_BUTTON_NOT_FOUND`, `CAPTURE_DURATION_UNRESOLVED`, `CAPTURE_SEEK_FAILED`, `CAPTURE_SCREENSHOT_FAILED`, `CAPTURE_UNKNOWN_MODE`, `CAPTIONS_BROWSER_NETWORK_NONE`, `CAPTIONS_BROWSER_NETWORK_DOWNLOAD_FAILED`, `CAPTIONS_BROWSER_NETWORK_PARSE_FAILED`, `CAPTURE_BROWSER_CAPTIONS_ACTIVATED`, `CAPTURE_BROWSER_CAPTIONS_HARVESTED_FROM_DOM`, `CAPTURE_BROWSER_PROFILE_NOT_INITIALIZED`, `CAPTURE_BROWSER_PROFILE_DIR_MISSING`, `CAPTURE_BROWSER_PROFILE_LOCKED`, `CAPTURE_BROWSER_PROFILE_LAUNCH_FAILED`, `CAPTURE_BROWSER_AUTH_REQUIRED`, `CAPTURE_BROWSER_AUTH_MFA_DETECTED`, `CAPTURE_PROFILE_CONFLICT`, `CAPTURE_BROWSER_MEDIA_DOWNLOADED`, `CAPTURE_BROWSER_MEDIA_NO_CANDIDATE`, `CAPTURE_BROWSER_MEDIA_DOWNLOAD_FAILED`, `CAPTURE_STREAM_TRANSCRIPT_DISCOVERED`, `CAPTURE_STREAM_TRANSCRIPT_DOWNLOADED`, `CAPTURE_STREAM_METADATA_PARSE_FAILED`, `CAPTURE_STREAM_TRANSCRIPT_PARSE_FAILED`, `CAPTURE_MEDIUS_TRANSCRIPT_DISCOVERED`, `CAPTURE_MEDIUS_TRANSCRIPT_DOWNLOADED`, `CAPTURE_MEDIUS_TRANSCRIPT_FAILED`, `MEDIA_DOWNLOAD_DECLINED`, `AUTH_PROFILE_NOT_FOUND`, `AUTH_PROFILE_STALE`, `AUTH_PROFILE_LOAD_FAILED`) rather than fuzzy-matching the message.
 
 ## Inspect Existing Runs (`runs` group)
 
@@ -320,7 +330,22 @@ provider applies the right prefix and pooling.
 to rebuild against the new model, or pass `--onnx-model <original-id>` to pin the index's
 model for this query.
 
-Treat search matches as pointers into evidence, not final answers by themselves.
+Treat search matches as pointers into evidence, not final answers by themselves. Each `SearchMatch` now carries `deepLink` (a time-anchored URL the agent can hand to the user — `?t=Ns` for YouTube, `?nav=t=…` for SharePoint Stream, `#t=N` for everything else), plus `runId` and `sourceUrl` so cross-run hits remain attributable to their session.
+
+### Cross-run / conference index
+
+`index build-conference <id> --runs <pattern>` aggregates `evidence.json` from N completed runs into one searchable JSON index at `<runs-root>/.indexes/<conferenceId>/index.json`. Use it to query an entire conference / event / topic sweep with one call.
+
+```powershell
+# Build (paths or globs; comma- or semicolon-separated)
+zakira-replay index build-conference build-2026 --runs "runs/*"
+zakira-replay index build-conference build-2026 --runs "runs/key01,runs/brk101,runs/brk205"
+
+# Query — ResolveQueryTarget resolves the conference id to the .indexes/<slug>/index.json path
+zakira-replay index query build-2026 "Foundry hosted agents" --top 10 --output-format json
+```
+
+Each cross-run hit carries `runId`, `sourceUrl`, and `deepLink` so the agent can attribute and link directly to the source-session timestamp. Document frequency is computed across the merged corpus (not per-run-then-merged), so per-session rare terms rank correctly. Per-run ingest failures (missing or unparseable `evidence.json`) are non-fatal — surfaced on stdout and in `SearchIndexConferenceBuildResult.Skipped[]`.
 
 ## Clips
 
@@ -368,8 +393,11 @@ Ad-hoc flag cheatsheet:
 - `--output-format json`: emit machine-readable output (runId, artifactDirectory, manifestPath, frameCount, frames[], warnings) instead of the human-readable per-frame summary.
 - `--cookies` / `--cookies-from-browser` / `--browser-auth`: yt-dlp auth for remote sources, identical semantics to `analyze`.
 - `--run-id <id>`: pin the artifact folder name; otherwise auto-generated from the source.
+- `--allow-media-download`: opt in to downloading the source video locally when neither yt-dlp nor the browser inline-media probe (see below) can resolve a direct URL. Off by default; the command emits `MEDIA_DOWNLOAD_DECLINED` (error) and produces no frames rather than silently pulling GB off the network.
 
 `--at` and `--from`/`--to` are mutually exclusive; passing both raises a CLI error before ffmpeg runs.
+
+**Browser-probe fallback for Microsoft Build / Medius sources.** When yt-dlp can't resolve the URL, `FrameCaptureService` runs a fast metadata-only browser probe (~3-5s) and reads the inline HLS manifest the `MediusTranscriptInterceptor` discovers in the embed page's `coreConfiguration`. ffmpeg then seeks directly into that HLS URL. End-to-end on `https://build.microsoft.com/en-US/sessions/KEY01?source=sessions` with `--at "00:02:00"`: ~45 seconds, real JPEG, no full-video download. The probe happens automatically — no flag required — and is the recommended path for agent workflows that grab "the slide at this transcript moment".
 
 Frame-capture-specific warning codes (also written into `manifest.warnings`):
 
@@ -378,7 +406,8 @@ Frame-capture-specific warning codes (also written into `manifest.warnings`):
 - `FRAME_CAPTURE_TOO_MANY_TIMESTAMPS` - >64 timestamps supplied; only the first 64 were used.
 - `FRAME_CAPTURE_NO_FRAMES` - ffmpeg returned zero frames (e.g. scene detection found nothing in the window).
 - `FRAME_CAPTURE_SCENE_CAP_REACHED` - safety cap was hit during scene detection.
-- `FRAME_CAPTURE_MEDIA_URL_UNRESOLVED` - yt-dlp could not resolve a direct media URL; the pipeline fell back to downloading.
+- `FRAME_CAPTURE_MEDIA_URL_UNRESOLVED` - yt-dlp could not resolve a direct media URL; the pipeline fell back to the browser probe / local download.
+- `MEDIA_DOWNLOAD_DECLINED` - resolved through to a local-download path but `--allow-media-download` is off. Message names the flag for retry.
 
 Do not reach for `frames --at`/`--from`/`--to` when you actually need transcript, slides, OCR, vision, chapters, or evidence alignment; use `analyze` for those.
 
@@ -395,7 +424,29 @@ zakira-replay queue status --queue-id research --output-format json
 Use batch manifests when the user already has a manifest file:
 
 ```powershell
-zakira-replay batch run <manifest.json>
+zakira-replay batch run <manifest.json>                          # sequential (default)
+zakira-replay batch run <manifest.json> --concurrency 4          # parallel (overrides manifest)
+```
+
+A batch manifest accepts every shared analyze option as a top-level default and per-item override (item value wins). Beyond the obvious shape (`items[].source`, `items[].runId`, …) the following fields actually bind: `captureMode` (`auto|ytdlp|browser`), `authProfile`, `ocrProvider` (`copilot|local`), `smartCrop` + `smartCropProfile`, `useDiarization` + `numSpeakers` + `diarizationThreshold`, `captionLanguages`, `secondaryCaptionLanguages`, `preferInlineMedia`, `autoplayPolicy`, `allowMediaDownload`, plus the manifest-only `continueOnError` (default `true`) and `concurrency` (default `1`). `batch-result.json` items always mirror manifest order regardless of completion order; `continueOnError=false` cancels in-flight items on the first failure (in-flight items dropped from the result; only the trigger failure recorded). The `--concurrency` flag overrides `concurrency` from the manifest.
+
+For an agent building a "book of a conference" workflow (e.g. all Microsoft Build sessions), the recommended pattern is queue-based:
+
+```powershell
+# 1) Enqueue every session — captions + frames via the inline-media sidestep, no downloads.
+zakira-replay queue enqueue "https://build.microsoft.com/en-US/sessions/KEY01?source=sessions" `
+    --queue-id build-2026 --capture-mode browser --frames 5 --frame-strategy interval `
+    --caption-languages en --prefer-inline-media
+# ...repeat per session...
+
+# 2) Drain in parallel.
+zakira-replay queue run --queue-id build-2026 --concurrency 4 --retries 2
+
+# 3) Build the cross-conference index.
+zakira-replay index build-conference build-2026 --runs "runs/*"
+
+# 4) Query — each hit carries runId, sourceUrl, deepLink.
+zakira-replay index query build-2026 "Maia 200 announcement" --top 10 --output-format json
 ```
 
 ## Topic Summary And Work Items Pattern
@@ -432,6 +483,7 @@ If access-related:
 - For SSO-gated sources (Microsoft 365 / Azure AD / Okta), **prefer the dedicated Edge profile** (`zakira-replay auth init-edge-profile [--url <site>]`) which writes DPAPI-encrypted cookies into Edge's native storage. Once per machine, then every subsequent `--capture-mode browser` run picks it up automatically \u2014 no `--auth-profile` flag needed. Stale: SSO/Conditional-Access may force re-auth after 1\u201390 days; emit `CAPTURE_BROWSER_AUTH_REQUIRED` (error) when the post-navigation URL lands on a sign-in domain; remediation is to re-run `auth init-edge-profile`. Locked: `CAPTURE_BROWSER_PROFILE_LOCKED` (error) means an Edge instance is already using the user-data-dir; close Edge and retry. MFA: `CAPTURE_BROWSER_AUTH_MFA_DETECTED` (error) means the player rendered an MFA challenge that headless capture cannot satisfy; re-init interactively.
 - The legacy `auth login <name>` / `--auth-profile <name>` path (Playwright StorageState JSON) still works, but writes plaintext cookies and expires faster. Use only when persistent-context is unavailable. List existing StorageState profiles with `zakira-replay auth list`; refresh by re-running `auth login` with the same name.
 - **SharePoint Stream / Microsoft Stream transcripts**: when the dedicated Edge profile is initialised and `--capture-mode browser` is used, transcripts are downloaded automatically with full speaker attribution (Teams transcript JSON \u2192 WebVTT `<v Speaker>` voice spans). No flag needed. See `CAPTURE_STREAM_TRANSCRIPT_DOWNLOADED` (info) on each run with a Stream URL. If the page exposes transcripts metadata but Zakira can't download the file, `CAPTURE_STREAM_TRANSCRIPT_PARSE_FAILED` (warning) records the URL for manual inspection.
+- **Microsoft Medius / Build / Ignite transcripts + frames**: `medius.studios.ms`, `medius.microsoft.com`, `medius*.event.microsoft.com`, and `build.microsoft.com/.../sessions/<CODE>` URLs go through the `MediusTranscriptInterceptor`. The interceptor parses the embed page's inline `captionsConfiguration` (SAS-signed `Caption_<lang>.vtt` URLs) and `coreConfiguration` (HLS master playlist) — neither needs the Shaka MSE player to boot, so transcripts arrive even when `CAPTURE_DURATION_UNRESOLVED` fires. See `CAPTURE_MEDIUS_TRANSCRIPT_DISCOVERED` (info; advertises the language count), `CAPTURE_MEDIUS_TRANSCRIPT_DOWNLOADED` (info; per-language VTT under `captions/medius-NNNN-<lang>.vtt`), and `CAPTURE_MEDIUS_TRANSCRIPT_FAILED` (warning) on a per-caption download error. For frames against the same sources, use `--prefer-inline-media` (or rely on the automatic sidestep fallback when the duration probe times out) to ffmpeg-seek the inline HLS URL.
 
 If transcript is missing:
 

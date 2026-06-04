@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MoaidHathot/Zakira.Conduit/main/schemas/conduit.schema.json",
+  "version": 1,
+  "entries": [
+    {
+      "source": "https://github.com/owner/repo",
+      "targets": [
+        "~/.config/agents/skills"
+      ]
+    }
+  ]
+}
