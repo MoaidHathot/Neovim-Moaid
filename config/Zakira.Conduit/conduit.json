@@ -3,12 +3,14 @@
   "version": 1,
   "entries": [
     {
+      "strategy": "skills",
+      "groupBy": "source",
       "source": [
-        "https://github.com/MoaidHathot/ActionView/skills",
-        "https://github.com/MoaidHathot/PowerReview/skills",
-        "https://github.com/MoaidHathot/Zakira.Replay/skills",
-        "https://github.com/MoaidHathot/McpLense/skills",
-        "https://github.com/MoaidHathot/Zakira.Conduit/skills/zakira-conduit"
+        "https://github.com/MoaidHathot/ActionView",
+        "https://github.com/MoaidHathot/PowerReview",
+        "https://github.com/MoaidHathot/Zakira.Replay",
+        "https://github.com/MoaidHathot/McpLense",
+        "https://github.com/MoaidHathot/Zakira.Conduit"
       ],
       "targets": [
         "$XDG_CONFIG_HOME/Orchestra/workspace/skills"
