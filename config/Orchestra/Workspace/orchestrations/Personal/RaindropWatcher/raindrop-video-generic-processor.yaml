@@ -1,0 +1,193 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: raindrop-video-generic-processor
+description: |
+  Fallback processor for (video, generic) raindrops. Cheap transcript-first
+  Zakira.Replay run, light synthesis, ActionView entry. Use this for one-off
+  videos that don't warrant deep frame extraction.
+version: 1.0.0
+tags: ["personal", "raindrop", "auto", "video", "generic"]
+defaultModel: claude-opus-4.7-1m-internal
+
+inputs:
+  raindropId: { type: string, required: true }
+  url:        { type: string, required: true }
+  title:      { type: string, required: true }
+  note:       { type: string, required: false, default: "", multiline: true }
+  noteHash:   { type: string, required: false, default: "" }
+  tags:       { type: string, required: false, default: "[]" }
+  addedAt:    { type: string, required: false, default: "" }
+
+variables:
+  defaultAnalysisAsk: |
+    Summarize this video in plain prose, then list:
+      - 3-5 key takeaways
+      - 3-5 notable quotes with timestamps
+      - 1-3 potential follow-up actions or open questions
+
+defaultStepTimeoutSeconds: 1800
+timeoutSeconds: 5400
+
+steps:
+  - name: zakira-analyze
+    type: Command
+    command: dnx
+    arguments:
+      - Zakira.Replay
+      - "--yes"
+      - "--"
+      - analyze
+      - "{{param.url}}"
+      - "--frames"
+      - "0"
+      - "--frame-strategy"
+      - interval
+      - "--cache"
+      - "--output-format"
+      - json
+      - "--correlation-id"
+      - "{{orchestration.runId}}"
+    includeStdErr: false
+    timeoutSeconds: 3600
+
+  - name: read-artifacts
+    type: Script
+    dependsOn: [zakira-analyze]
+    shell: pwsh
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $payload = $args[0] | ConvertFrom-Json
+      $artifactDir = $payload.artifactDirectory
+      if (-not $artifactDir -or -not (Test-Path -LiteralPath $artifactDir)) {
+        throw "artifactDirectory missing or not on disk: $artifactDir"
+      }
+      function ReadFileOrEmpty($name) {
+        $p = Join-Path $artifactDir $name
+        if (Test-Path -LiteralPath $p) { Get-Content -LiteralPath $p -Raw } else { '' }
+      }
+      function Cap($s, [int]$max) {
+        if ($null -eq $s) { return '' }
+        if ($s.Length -le $max) { return $s }
+        return $s.Substring(0, $max) + "`n`n...[truncated $($s.Length - $max) chars]"
+      }
+      $pack = @{
+        runId = $payload.runId
+        artifactDirectory = $artifactDir
+        manifest   = (Cap (ReadFileOrEmpty 'manifest.json') 20000)
+        transcript = (Cap (ReadFileOrEmpty 'transcript.md') 80000)
+        metadata   = (Cap (ReadFileOrEmpty 'metadata.json') 20000)
+      }
+      $pack | ConvertTo-Json -Depth 8 -Compress
+    arguments:
+      - "{{zakira-analyze.output}}"
+    timeoutSeconds: 120
+
+  - name: synthesize
+    type: Prompt
+    dependsOn: [read-artifacts]
+    systemPrompt: |
+      You are a video summarizer. Synthesize a tight markdown summary strictly
+      from the Zakira.Replay artifact pack. Cite every quote with its
+      transcript timestamp. Never invent claims. Use the user's note as the
+      analysis request when non-empty, else fall back to the default ask.
+
+      Save the final markdown via orchestra_save_file.
+    userPrompt: |
+      Raindrop:
+        title = {{param.title}}
+        url   = {{param.url}}
+        tags  = {{param.tags}}
+
+      User note (analysis request; may be empty):
+        {{param.note}}
+
+      Default analysis ask:
+        {{vars.defaultAnalysisAsk}}
+
+      Artifact pack:
+      {{read-artifacts.output}}
+
+      Produce the markdown summary. Save via orchestra_save_file. Output
+      the markdown as the step output.
+    timeoutSeconds: 1200
+
+  - name: fetch-action-view-schema
+    type: Command
+    command: dnx
+    arguments: [ActionView.Cli, "--yes", "--", schema]
+    timeoutSeconds: 120
+
+  - name: create-action-view-entry
+    type: Prompt
+    dependsOn: [synthesize, fetch-action-view-schema]
+    systemPrompt: |
+      You produce ActionView entries that match the entry schema. Type must
+      be 'raindrop-video-generic'; source must be '{{orchestration.name}}'.
+      Save the JSON via orchestra_save_file -- the next step submits the file.
+    userPrompt: |
+      ActionView schema:
+      {{fetch-action-view-schema.output}}
+
+      Raindrop:
+        id    = {{param.raindropId}}
+        title = {{param.title}}
+        url   = {{param.url}}
+        tags  = {{param.tags}}
+        note  = {{param.note}}
+
+      Synthesized summary:
+      {{synthesize.output}}
+
+      Build an entry with:
+        type     = 'raindrop-video-generic'
+        source   = '{{orchestration.name}}'
+        title    = the raindrop title (cap at 120 chars)
+        subtitle = '<duration if known> | <source host>'
+        severity = 'low'
+        icon     = 'video'
+        tags     = raindrop tags + ['raindrop','video']
+        content blocks:
+          - keyValue 'Source' with: URL, Added at, Original tags, Note
+          - section 'Summary' containing a markdown block with the synthesized summary
+          - link 'Open original' to the raindrop URL
+        actions:
+          - 'Open original' (cli, onSuccess=keep)
+          - 'Dismiss'       (default, onSuccess=archive)
+
+      Save the JSON via orchestra_save_file. Output ONLY the raw JSON.
+    timeoutSeconds: 600
+
+  - name: submit-action-view-entry
+    type: Command
+    dependsOn: [create-action-view-entry]
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - add
+      - "--file"
+      - "{{create-action-view-entry.files[0]}}"
+    timeoutSeconds: 120
+
+  - name: result-envelope
+    type: Prompt
+    dependsOn: [zakira-analyze, synthesize, submit-action-view-entry]
+    systemPrompt: |
+      Output ONLY a JSON envelope describing the outcome.
+    userPrompt: |
+      Build a JSON envelope like:
+
+      {
+        "ok": true,
+        "processor": "{{orchestration.name}}",
+        "raindropId": "{{param.raindropId}}",
+        "zakiraReplayRunId": "<runId from zakira-analyze output>",
+        "actionViewEntryId": "<id parsed from submit-action-view-entry output, or null>",
+        "summary": "<one-sentence summary line>"
+      }
+
+      Zakira analyze output: {{zakira-analyze.output}}
+      ActionView submission: {{submit-action-view-entry.output}}
+
+      Output ONLY the JSON.
+    timeoutSeconds: 60

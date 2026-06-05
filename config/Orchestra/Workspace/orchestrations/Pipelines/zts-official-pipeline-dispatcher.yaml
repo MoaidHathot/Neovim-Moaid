@@ -3,7 +3,7 @@ name: zts-official-pipeline-dispatcher
 description: reusable dispatcher for tracking Azure DevOps CI/CD runs
 version: 1.0.0
 tags: ["ZTS", "pipelines", "MSFT", "Azure-DevOps", "Pipeline", "Tracking", "Dispatcher"]
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 timeoutSeconds: 9200
 
 trigger:

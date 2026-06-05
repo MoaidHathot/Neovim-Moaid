@@ -8,7 +8,7 @@ description: |
   meetings, etc.) and verify connectivity end to end.
 version: 1.0.0
 tags: ["debug", "diagnostics", "m365", "teams"]
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 defaultStepTimeoutSeconds: 380
 
 inputs:

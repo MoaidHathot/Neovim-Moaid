@@ -1,0 +1,252 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: raindrop-article-recipe-processor
+description: |
+  Processor for raindrops classified as (article, recipe). Fetches the page
+  via Invoke-WebRequest first, then falls back to Playwright when the cheap
+  fetch returns a JS-only / thin / login-walled body. Extracts a clean recipe
+  markdown, saves it to the recipes directory, and publishes a raindrop-recipe
+  ActionView entry.
+version: 1.0.0
+tags: ["personal", "raindrop", "auto", "article", "recipe"]
+defaultModel: claude-opus-4.7-1m-internal
+
+inputs:
+  raindropId: { type: string, required: true }
+  url:        { type: string, required: true }
+  title:      { type: string, required: true }
+  note:       { type: string, required: false, default: "", multiline: true }
+  noteHash:   { type: string, required: false, default: "" }
+  tags:       { type: string, required: false, default: "[]" }
+  addedAt:    { type: string, required: false, default: "" }
+  recipesDirectory:
+    type: string
+    description: Where to save the extracted recipe markdown. Passed in by the parent processor.
+    required: true
+
+variables:
+  defaultAnalysisAsk: |
+    Extract this recipe from the article. Produce a clean markdown recipe
+    with these sections (in order):
+
+      ## Summary       (1-2 sentences)
+      ## Yield         (servings or output count)
+      ## Time          (prep time, cook time, total time)
+      ## Equipment     (bullet list)
+      ## Ingredients   (bullet list with quantity + ingredient + prep notes;
+                        group by sub-recipe when applicable)
+      ## Steps         (numbered list; each step references the relevant
+                        paragraph from the source when possible)
+      ## Tips          (variations, substitutions, pitfalls)
+      ## Source        (link + author / publisher)
+
+defaultStepTimeoutSeconds: 900
+timeoutSeconds: 3600
+
+mcps:
+  # Playwright MCP -- used by the fetch-readable step as fallback when the
+  # cheap HTTP fetch returns thin / JS-only content. Same package the
+  # items-availability orchestration uses.
+  - name: playwright
+    type: local
+    command: npx
+    arguments:
+      - "@playwright/mcp@latest"
+      - "--headless"
+
+steps:
+  - name: fetch-http
+    type: Script
+    shell: pwsh
+    scriptFile: "./tools/scripts/fetch-article.ps1"
+    arguments:
+      - "{{param.url}}"
+      - "-MaxChars"
+      - "80000"
+      - "-TimeoutSeconds"
+      - "30"
+    timeoutSeconds: 90
+
+  - name: fetch-readable
+    type: Prompt
+    dependsOn: [fetch-http]
+    systemPrompt: |
+      You are a fetch-and-extract assistant. You receive the JSON result of
+      a cheap HTTP fetch. Decide whether the body is good enough:
+
+        - If `ok` is true AND `looksThin` is false AND `wordCount` >= 80:
+            extract the recipe content directly from `text`.
+        - Otherwise: use the Playwright MCP tools to navigate to the URL,
+            wait for the page to render, take a snapshot, and extract the
+            recipe content from the rendered DOM. Use browser_close when
+            done so the browser process exits.
+
+      Always emit a single JSON object on completion (NOT markdown):
+
+        {
+          "mode": "http" | "playwright",
+          "fetchedAt": "<ISO-8601 UTC>",
+          "finalUrl": "<resolved URL>",
+          "title": "<page title>",
+          "byline": "<author or null>",
+          "siteName": "<publication or null>",
+          "publishedAt": "<ISO date or null>",
+          "content": "<clean markdown body of the article -- prefer the recipe-relevant content>",
+          "rawWordCount": <number>
+        }
+
+      The `content` field should be markdown with paragraph breaks. Do not
+      synthesize a recipe yet -- just extract the page text faithfully. The
+      synth step will format the recipe.
+    userPrompt: |
+      HTTP fetch result:
+      {{fetch-http.output}}
+
+      Raindrop:
+        url   = {{param.url}}
+        title = {{param.title}}
+
+      Follow the system prompt and output ONLY the JSON object.
+    mcps: [playwright]
+    timeoutSeconds: 600
+
+  - name: synthesize
+    type: Prompt
+    dependsOn: [fetch-readable]
+    systemPrompt: |
+      You are a recipe extractor. Build a clean recipe markdown document
+      from the extracted page content. Never invent quantities, times, or
+      ingredients -- when something is not stated, write "unspecified".
+
+      Use the user's note as the analysis request when it is non-empty.
+      Otherwise use the default ask provided.
+
+      Start the markdown with a YAML front-matter block ('---') including:
+      title, source_url, source_type (= "article"), author (when known),
+      site (when known), servings (when known), total_time (when known),
+      tags (recipe + raindrop tags). Then the body following the requested
+      section order.
+
+      Save the final markdown via orchestra_save_file.
+    userPrompt: |
+      Raindrop:
+        title = {{param.title}}
+        url   = {{param.url}}
+        tags  = {{param.tags}}
+
+      User note (analysis request; may be empty):
+        {{param.note}}
+
+      Default analysis ask:
+        {{vars.defaultAnalysisAsk}}
+
+      Extracted page content (JSON envelope from previous step):
+      {{fetch-readable.output}}
+
+      Produce the recipe markdown. Save via orchestra_save_file. Output the
+      markdown as the step output.
+    timeoutSeconds: 1200
+
+  - name: save-recipe-file
+    type: Script
+    dependsOn: [synthesize]
+    shell: pwsh
+    scriptFile: "./tools/scripts/save-recipe.ps1"
+    arguments:
+      - "-RecipesDirectory"
+      - "{{param.recipesDirectory}}"
+      - "-SourcePath"
+      - "{{synthesize.files[0]}}"
+      - "-Title"
+      - "{{param.title}}"
+      - "-SourceUrl"
+      - "{{param.url}}"
+    timeoutSeconds: 60
+
+  - name: fetch-action-view-schema
+    type: Command
+    command: dnx
+    arguments: [ActionView.Cli, "--yes", "--", schema]
+    timeoutSeconds: 120
+
+  - name: create-action-view-entry
+    type: Prompt
+    dependsOn: [synthesize, save-recipe-file, fetch-action-view-schema]
+    systemPrompt: |
+      You produce ActionView entries that match the entry schema. Type must
+      be 'raindrop-recipe'; source must be '{{orchestration.name}}'.
+      Save the JSON via orchestra_save_file -- the next step submits the file.
+    userPrompt: |
+      ActionView schema:
+      {{fetch-action-view-schema.output}}
+
+      Raindrop:
+        id    = {{param.raindropId}}
+        title = {{param.title}}
+        url   = {{param.url}}
+        tags  = {{param.tags}}
+        note  = {{param.note}}
+
+      Recipe markdown:
+      {{synthesize.output}}
+
+      Recipe save result:
+      {{save-recipe-file.output}}
+
+      Build an entry with:
+        type     = 'raindrop-recipe'
+        source   = '{{orchestration.name}}'
+        title    = the recipe title (from the markdown front-matter when present, otherwise raindrop title)
+        subtitle = '<servings if known> | <total_time if known> | source: article'
+        severity = 'low'
+        icon     = 'utensils-crossed'
+        tags     = raindrop tags + ['raindrop','recipe','article']
+        content blocks:
+          - keyValue 'Source' with: URL, Added at, Source medium = "article", Saved to (savedPath)
+          - section 'Recipe' containing a markdown block with the recipe body
+          - link 'Open original article'
+          - link 'Open saved recipe' (file:// URI)
+        actions:
+          - 'Open original'      (cli, onSuccess=keep)
+          - 'Open saved recipe'  (cli, onSuccess=keep)
+          - 'Dismiss'            (default, onSuccess=archive)
+
+      Save the JSON via orchestra_save_file. Output ONLY the raw JSON.
+    timeoutSeconds: 600
+
+  - name: submit-action-view-entry
+    type: Command
+    dependsOn: [create-action-view-entry]
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - add
+      - "--file"
+      - "{{create-action-view-entry.files[0]}}"
+    timeoutSeconds: 120
+
+  - name: result-envelope
+    type: Prompt
+    dependsOn: [fetch-readable, synthesize, save-recipe-file, submit-action-view-entry]
+    systemPrompt: |
+      Output ONLY a JSON envelope describing the outcome.
+    userPrompt: |
+      Build a JSON envelope like:
+
+      {
+        "ok": true,
+        "processor": "{{orchestration.name}}",
+        "raindropId": "{{param.raindropId}}",
+        "fetchMode": "<http or playwright from fetch-readable output>",
+        "savedRecipePath": "<savedPath from save-recipe-file output>",
+        "actionViewEntryId": "<id parsed from submit-action-view-entry output, or null>",
+        "summary": "<one-sentence summary line>"
+      }
+
+      Fetch-readable output: {{fetch-readable.output}}
+      Recipe save output:    {{save-recipe-file.output}}
+      ActionView submission: {{submit-action-view-entry.output}}
+
+      Output ONLY the JSON.
+    timeoutSeconds: 60

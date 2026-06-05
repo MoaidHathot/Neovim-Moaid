@@ -1,0 +1,220 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: raindrop-article-generic-processor
+description: |
+  Fallback processor for (article, generic) and (article, session) raindrops.
+  Fetches the page via Invoke-WebRequest, falls back to Playwright when the
+  cheap fetch returns thin/JS-only content, then synthesizes a flexible
+  analysis. The default ask covers blog posts, news articles, and reference
+  docs; the user's note overrides everything when provided.
+version: 1.0.0
+tags: ["personal", "raindrop", "auto", "article", "generic"]
+defaultModel: claude-opus-4.7-1m-internal
+
+inputs:
+  raindropId: { type: string, required: true }
+  url:        { type: string, required: true }
+  title:      { type: string, required: true }
+  note:       { type: string, required: false, default: "", multiline: true }
+  noteHash:   { type: string, required: false, default: "" }
+  tags:       { type: string, required: false, default: "[]" }
+  addedAt:    { type: string, required: false, default: "" }
+
+variables:
+  defaultAnalysisAsk: |
+    Produce a polished markdown analysis. Adapt the structure to the article
+    kind:
+
+      - News article: 1-paragraph TL;DR + bullet "Key facts" (5W1H) +
+                       bullet "Notable quotes" (with attribution).
+      - Blog / opinion: 1-paragraph TL;DR + bullet "Author's argument" +
+                        bullet "Strongest claim" + bullet "Weakest claim".
+      - Reference / how-to / docs: 1-paragraph TL;DR + bullet "What it
+                                   teaches" + bullet "Prerequisites" +
+                                   bullet "Key terms / APIs" + bullet
+                                   "When to use this".
+
+    End every analysis with a short "Worth re-reading?" verdict (one
+    sentence) and 1-3 follow-up questions worth pursuing.
+
+defaultStepTimeoutSeconds: 900
+timeoutSeconds: 3600
+
+mcps:
+  - name: playwright
+    type: local
+    command: npx
+    arguments:
+      - "@playwright/mcp@latest"
+      - "--headless"
+
+steps:
+  - name: fetch-http
+    type: Script
+    shell: pwsh
+    scriptFile: "./tools/scripts/fetch-article.ps1"
+    arguments:
+      - "{{param.url}}"
+      - "-MaxChars"
+      - "80000"
+      - "-TimeoutSeconds"
+      - "30"
+    timeoutSeconds: 90
+
+  - name: fetch-readable
+    type: Prompt
+    dependsOn: [fetch-http]
+    systemPrompt: |
+      You are a fetch-and-extract assistant. Decide whether the cheap HTTP
+      fetch result is good enough:
+
+        - If `ok` is true AND `looksThin` is false AND `wordCount` >= 80:
+            extract the readable content directly from `text`.
+        - Otherwise: use the Playwright MCP tools to navigate to the URL,
+            wait for the page to render, take a snapshot, and extract the
+            readable content from the rendered DOM. Use browser_close when
+            done.
+
+      Output ONLY a JSON object:
+
+        {
+          "mode": "http" | "playwright",
+          "fetchedAt": "<ISO-8601 UTC>",
+          "finalUrl": "<resolved URL>",
+          "title": "<page title>",
+          "byline": "<author or null>",
+          "siteName": "<publication or null>",
+          "publishedAt": "<ISO date or null>",
+          "content": "<clean markdown of the article body>",
+          "rawWordCount": <number>
+        }
+
+      Do not synthesize -- just extract the page text. The synth step will
+      analyse it.
+    userPrompt: |
+      HTTP fetch result:
+      {{fetch-http.output}}
+
+      Raindrop:
+        url   = {{param.url}}
+        title = {{param.title}}
+
+      Follow the system prompt and output ONLY the JSON object.
+    mcps: [playwright]
+    timeoutSeconds: 600
+
+  - name: synthesize
+    type: Prompt
+    dependsOn: [fetch-readable]
+    systemPrompt: |
+      You are an article analyst. Build a clean markdown analysis based on
+      the extracted page content. Cite specific paragraphs when quoting.
+      Never invent facts.
+
+      Use the user's note as the analysis request when it is non-empty.
+      Otherwise use the default ask, choosing the shape that best matches
+      the article kind (news vs blog vs docs).
+
+      Save the final markdown via orchestra_save_file.
+    userPrompt: |
+      Raindrop:
+        title = {{param.title}}
+        url   = {{param.url}}
+        tags  = {{param.tags}}
+
+      User note (analysis request; may be empty):
+        {{param.note}}
+
+      Default analysis ask:
+        {{vars.defaultAnalysisAsk}}
+
+      Extracted page content (JSON envelope):
+      {{fetch-readable.output}}
+
+      Produce the markdown analysis. Save via orchestra_save_file. Output
+      the markdown as the step output.
+    timeoutSeconds: 1200
+
+  - name: fetch-action-view-schema
+    type: Command
+    command: dnx
+    arguments: [ActionView.Cli, "--yes", "--", schema]
+    timeoutSeconds: 120
+
+  - name: create-action-view-entry
+    type: Prompt
+    dependsOn: [synthesize, fetch-action-view-schema]
+    systemPrompt: |
+      You produce ActionView entries that match the entry schema. Type must
+      be 'raindrop-article'; source must be '{{orchestration.name}}'.
+      Save the JSON via orchestra_save_file -- the next step submits the file.
+    userPrompt: |
+      ActionView schema:
+      {{fetch-action-view-schema.output}}
+
+      Raindrop:
+        id    = {{param.raindropId}}
+        title = {{param.title}}
+        url   = {{param.url}}
+        tags  = {{param.tags}}
+        note  = {{param.note}}
+
+      Extracted page content (for metadata only):
+      {{fetch-readable.output}}
+
+      Synthesized analysis:
+      {{synthesize.output}}
+
+      Build an entry with:
+        type     = 'raindrop-article'
+        source   = '{{orchestration.name}}'
+        title    = the raindrop title (cap at 120 chars)
+        subtitle = '<author if known> | <publication if known> | <published date if known>'
+        severity = 'low'
+        icon     = 'file-text'
+        tags     = raindrop tags + ['raindrop','article']
+        content blocks:
+          - keyValue 'Source' with: URL, Added at, Original tags, Note, Fetch mode (from fetch-readable)
+          - section 'Analysis' containing a markdown block with the synth output
+          - link 'Open original' to the raindrop URL
+        actions:
+          - 'Open original' (cli, onSuccess=keep)
+          - 'Dismiss'       (default, onSuccess=archive)
+
+      Save the JSON via orchestra_save_file. Output ONLY the raw JSON.
+    timeoutSeconds: 600
+
+  - name: submit-action-view-entry
+    type: Command
+    dependsOn: [create-action-view-entry]
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - add
+      - "--file"
+      - "{{create-action-view-entry.files[0]}}"
+    timeoutSeconds: 120
+
+  - name: result-envelope
+    type: Prompt
+    dependsOn: [fetch-readable, synthesize, submit-action-view-entry]
+    systemPrompt: |
+      Output ONLY a JSON envelope describing the outcome.
+    userPrompt: |
+      Build a JSON envelope like:
+
+      {
+        "ok": true,
+        "processor": "{{orchestration.name}}",
+        "raindropId": "{{param.raindropId}}",
+        "fetchMode": "<http or playwright from fetch-readable>",
+        "actionViewEntryId": "<id parsed from submit-action-view-entry, or null>",
+        "summary": "<one-sentence summary line>"
+      }
+
+      Fetch-readable output: {{fetch-readable.output}}
+      ActionView submission: {{submit-action-view-entry.output}}
+
+      Output ONLY the JSON.
+    timeoutSeconds: 60

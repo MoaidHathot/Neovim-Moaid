@@ -3,7 +3,7 @@ description: |
   Discovers Pull Requests assigned to me in Azure DevOps, filters out self-authored PRs, and delegates each candidate to pr-review-dispatcher. The dispatcher owns PowerReview session refresh, Zakira review-state checks, reviewer-agent thread reply detection, and invoking pr-code-reviewer only when needed.
 version: 2.0.0
 tags: ["ZTS", "MSFT", "PR", "Code-Review", "auto"]
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 
 variables:
   organization: msazure

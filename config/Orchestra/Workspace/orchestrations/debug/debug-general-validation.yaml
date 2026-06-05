@@ -3,11 +3,11 @@ description: |
   Diagnostics orchestration for validating MCP connectivity, tool availability, engine tools, template resolution, and orchestration invocation. Run this to verify the Orchestra setup is healthy.
 version: 1.0.0
 tags: ["debug", "diagnostics", "validation"]
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 
 variables:
   testValue: hello-from-variables
-  defaultModel: gpt-5.4
+  defaultModel: claude-opus-4.7-1m-internal
 
 defaultStepTimeoutSeconds: 420
 timeoutSeconds: 1600

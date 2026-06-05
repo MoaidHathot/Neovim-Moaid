@@ -1,0 +1,28 @@
+{
+  "type": "raindrop-error",
+  "description": "Surface a raindrop-processor failure so the user can take action (open in raindrop.io, dismiss, etc.).",
+  "defaults": {
+    "severity": "high",
+    "icon": "alert-triangle",
+    "tags": ["raindrop", "error"]
+  },
+  "contentTemplate": [
+    {
+      "type": "keyValue",
+      "label": "Failure",
+      "required": true,
+      "requiredKeys": ["Raindrop ID", "URL", "Failed step", "Failed at"],
+      "keyAliases": {
+        "Id": "Raindrop ID",
+        "RaindropId": "Raindrop ID",
+        "Link": "URL",
+        "Step": "Failed step",
+        "When": "Failed at"
+      }
+    },
+    { "type": "alert", "level": "error" }
+  ],
+  "expectedActions": [
+    { "label": "Open in raindrop.io", "style": "primary" }
+  ]
+}

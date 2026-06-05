@@ -3,7 +3,7 @@ description: |
   Discovers active Pull Requests created by me in Azure DevOps and delegates each candidate to pr-comment-dispatcher. The dispatcher owns PowerReview session refresh, Zakira comment-response state checks, unaddressed reviewer comment detection, and invoking pr-comment-responder only when needed. Runs on an hourly schedule.
 version: 2.0.0
 tags: ["ZTS", "MSFT", "PR", "Comment-Response", "auto"]
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 
 variables:
   organization: msazure

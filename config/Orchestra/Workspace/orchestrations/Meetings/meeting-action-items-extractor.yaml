@@ -14,7 +14,7 @@ description: |
   emits a deterministic markdown summary.
 version: 2.0.0
 tags: ["productivity", "meetings", "action-items", "WorkIQ", "MSFT", "auto", "ZTS"]
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 
 metadata:
   owner: Moaid Hathot

@@ -1,6 +1,6 @@
 name: skill-sync
 description: Runs the Zakira Conduit skill sync once per day at 14:00.
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 tags:
   - skill
   - system

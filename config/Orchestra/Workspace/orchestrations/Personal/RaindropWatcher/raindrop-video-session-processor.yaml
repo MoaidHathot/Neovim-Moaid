@@ -1,0 +1,250 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: raindrop-video-session-processor
+description: |
+  Processor for raindrops classified as (video, session) -- conference talks,
+  lectures, keynotes, webinars. Runs Zakira.Replay with the lecture preset,
+  builds chapters, synthesizes a session summary using the user's note as
+  the analysis prompt (default ask if note is empty), and publishes a rich
+  ActionView entry with per-chapter deep-links.
+version: 1.0.0
+tags: ["personal", "raindrop", "auto", "video", "session"]
+defaultModel: claude-opus-4.7-1m-internal
+
+inputs:
+  raindropId: { type: string, required: true }
+  url:        { type: string, required: true }
+  title:      { type: string, required: true }
+  note:       { type: string, required: false, default: "", multiline: true }
+  noteHash:   { type: string, required: false, default: "" }
+  tags:       { type: string, required: false, default: "[]" }
+  addedAt:    { type: string, required: false, default: "" }
+
+variables:
+  defaultAnalysisAsk: |
+    Summarize this conference / lecture session. Produce:
+    1. A 3-5 sentence executive summary.
+    2. A "Key takeaways" list (5-10 bullet points).
+    3. A "Notable quotes" list with timestamps and the speaker's name when known.
+    4. A "Action items / follow-ups" list extracted from explicit calls to action.
+    5. A short list of "Open questions" worth following up on.
+
+defaultStepTimeoutSeconds: 1800
+timeoutSeconds: 7200
+
+steps:
+  - name: zakira-analyze
+    type: Command
+    command: dnx
+    arguments:
+      - Zakira.Replay
+      - "--yes"
+      - "--"
+      - analyze
+      - "{{param.url}}"
+      - "--preset"
+      - lecture
+      - "--cache"
+      - "--output-format"
+      - json
+      - "--correlation-id"
+      - "{{orchestration.runId}}"
+    includeStdErr: false
+    timeoutSeconds: 5400
+
+  - name: zakira-chapters
+    type: Script
+    dependsOn: [zakira-analyze]
+    shell: pwsh
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $payload = $args[0] | ConvertFrom-Json
+      $runId = $payload.runId
+      if (-not $runId) { throw "zakira-analyze did not return a runId" }
+      $artifactDir = $payload.artifactDirectory
+      if (-not $artifactDir -or -not (Test-Path -LiteralPath $artifactDir)) {
+        throw "artifactDirectory missing or not on disk: $artifactDir"
+      }
+      & dnx Zakira.Replay --yes -- chapters build $artifactDir --output-format json 2>$null
+      if ($LASTEXITCODE -ne 0) {
+        # Soft fail: chapters are nice to have, not required.
+        Write-Output (@{ ok = $false; reason = "chapters build exit $LASTEXITCODE" } | ConvertTo-Json -Compress)
+      }
+    arguments:
+      - "{{zakira-analyze.output}}"
+    timeoutSeconds: 600
+
+  - name: read-artifacts
+    type: Script
+    dependsOn: [zakira-analyze, zakira-chapters]
+    shell: pwsh
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $payload = $args[0] | ConvertFrom-Json
+      $artifactDir = $payload.artifactDirectory
+      function ReadFileOrEmpty($name) {
+        $p = Join-Path $artifactDir $name
+        if (Test-Path -LiteralPath $p) { Get-Content -LiteralPath $p -Raw } else { '' }
+      }
+      $manifestText  = ReadFileOrEmpty 'manifest.json'
+      $evidenceText  = ReadFileOrEmpty 'evidence.json'
+      $transcriptMd  = ReadFileOrEmpty 'transcript.md'
+      $chaptersText  = ReadFileOrEmpty 'chapters/chapters.md'
+      $ocrCombined   = ReadFileOrEmpty 'ocr/combined.md'
+      $visionCombined= ReadFileOrEmpty 'vision/combined.md'
+
+      # Cap large artifacts so we don't blow the LLM's context.
+      function Cap($s, [int]$max) {
+        if ($null -eq $s) { return '' }
+        if ($s.Length -le $max) { return $s }
+        return $s.Substring(0, $max) + "`n`n...[truncated $($s.Length - $max) chars]"
+      }
+
+      $pack = @{
+        runId = $payload.runId
+        artifactDirectory = $artifactDir
+        manifest = (Cap $manifestText 30000)
+        evidence = (Cap $evidenceText 30000)
+        transcript = (Cap $transcriptMd 80000)
+        chapters = (Cap $chaptersText 20000)
+        ocr = (Cap $ocrCombined 20000)
+        vision = (Cap $visionCombined 20000)
+      }
+      $pack | ConvertTo-Json -Depth 8 -Compress
+    arguments:
+      - "{{zakira-analyze.output}}"
+    timeoutSeconds: 120
+
+  - name: synthesize
+    type: Prompt
+    dependsOn: [read-artifacts]
+    systemPrompt: |
+      You are a session analyst. The user attached a raindrop to their inbox
+      and you have a pack of Zakira.Replay artifacts (manifest, evidence,
+      transcript, chapters, OCR, vision). Synthesize the requested analysis
+      strictly from the artifacts -- never invent claims, names, or quotes.
+      Every quote must be tied to a transcript timestamp. Every claim about
+      a slide must reference a slideId from the evidence.
+
+      Use the user's note as the analysis request when it is non-empty.
+      Otherwise fall back to the default ask provided in the userPrompt.
+
+      Save the final markdown to a file using orchestra_save_file so that
+      downstream steps can reference it via {{synthesize.files[0]}}.
+    userPrompt: |
+      Raindrop:
+        title = {{param.title}}
+        url   = {{param.url}}
+        tags  = {{param.tags}}
+
+      User note (analysis request; may be empty):
+        {{param.note}}
+
+      Default analysis ask (use only when the note is empty):
+        {{vars.defaultAnalysisAsk}}
+
+      Zakira.Replay artifact pack:
+        {{read-artifacts.output}}
+
+      Produce a polished markdown report following the requested analysis.
+      Save it via orchestra_save_file. Output the markdown content as the
+      step output as well.
+    timeoutSeconds: 1800
+
+  - name: fetch-action-view-schema
+    type: Command
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - schema
+    timeoutSeconds: 120
+
+  - name: create-action-view-entry
+    type: Prompt
+    dependsOn: [synthesize, fetch-action-view-schema]
+    systemPrompt: |
+      You produce ActionView entries that match the entry schema. The entry
+      type must be 'raindrop-video-session' and source must be
+      '{{orchestration.name}}'. Save the JSON via orchestra_save_file -- the
+      next step submits whatever was saved.
+    userPrompt: |
+      ActionView schema:
+      {{fetch-action-view-schema.output}}
+
+      Raindrop:
+        id    = {{param.raindropId}}
+        title = {{param.title}}
+        url   = {{param.url}}
+        tags  = {{param.tags}}
+        note  = {{param.note}}
+
+      Synthesized analysis (markdown):
+      {{synthesize.output}}
+
+      Zakira.Replay artifact pack:
+      {{read-artifacts.output}}
+
+      Build an entry with:
+        type     = 'raindrop-video-session'
+        source   = '{{orchestration.name}}'
+        title    = the raindrop title (truncate to 120 chars)
+        subtitle = '<duration> | <speaker(s) if known> | <source host>'
+        severity = 'medium'
+        icon     = 'video'
+        tags     = the raindrop tags + ['raindrop','session']
+        content blocks:
+          - keyValue 'Source' with: URL, Added at, Original tags, Note (the user prompt)
+          - alert (level info) if the run produced warnings worth surfacing
+          - section 'Summary' containing a markdown block with the synthesized summary
+          - section 'Chapters' containing a table (Time | Title | Notes) built from the chapters pack
+                          (omit the section entirely if there are no chapters)
+          - section 'Key Quotes' containing a markdown block of timestamped quotes (linked via deep-links when possible)
+          - section 'Action items' containing a markdown checklist
+          - link 'Open original' to the raindrop URL
+        actions:
+          - 'Open original'   (cli command opening the URL in browser, onSuccess=keep)
+          - 'Open Zakira run' (cli command opening the artifactDirectory in the user's file manager, onSuccess=keep)
+          - 'Dismiss'         (default action, onSuccess=archive)
+
+      Save the JSON via orchestra_save_file. Output ONLY the raw JSON.
+    timeoutSeconds: 600
+
+  - name: submit-action-view-entry
+    type: Command
+    dependsOn: [create-action-view-entry]
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - add
+      - "--file"
+      - "{{create-action-view-entry.files[0]}}"
+    timeoutSeconds: 120
+
+  - name: result-envelope
+    type: Prompt
+    dependsOn: [zakira-analyze, synthesize, create-action-view-entry, submit-action-view-entry]
+    systemPrompt: |
+      You produce a single small JSON envelope describing the outcome of
+      this processor run, so the parent raindrop-processor can persist a
+      tidy state record. Output ONLY the JSON.
+    userPrompt: |
+      Build a JSON envelope like:
+
+      {
+        "ok": true,
+        "processor": "{{orchestration.name}}",
+        "raindropId": "{{param.raindropId}}",
+        "zakiraReplayRunId": "<runId from zakira-analyze output>",
+        "actionViewEntryId": "<id parsed from submit-action-view-entry output, or null>",
+        "summary": "<one-sentence summary line>"
+      }
+
+      Zakira analyze output: {{zakira-analyze.output}}
+      ActionView submission output: {{submit-action-view-entry.output}}
+      Synth headline: take the first line of {{synthesize.output}}
+
+      Output ONLY the JSON.
+    timeoutSeconds: 60

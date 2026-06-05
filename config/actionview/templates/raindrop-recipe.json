@@ -1,0 +1,31 @@
+{
+  "type": "raindrop-recipe",
+  "description": "Recipes extracted from raindrops (video OR article). Always also saved as a standalone markdown file in the configured recipes directory.",
+  "defaults": {
+    "severity": "low",
+    "icon": "utensils-crossed",
+    "tags": ["raindrop", "recipe"]
+  },
+  "contentTemplate": [
+    {
+      "type": "keyValue",
+      "label": "Source",
+      "required": true,
+      "requiredKeys": ["URL", "Added at", "Source medium"],
+      "keyAliases": {
+        "Link": "URL",
+        "AddedAt": "Added at",
+        "Tags": "Original tags",
+        "Medium": "Source medium",
+        "Saved": "Saved to",
+        "SavedPath": "Saved to"
+      }
+    },
+    { "type": "section", "title": "Recipe", "titleAliases": ["Body"] }
+  ],
+  "expectedActions": [
+    { "label": "Open original", "style": "primary" },
+    { "label": "Open saved recipe", "style": "default" },
+    { "label": "Dismiss", "style": "default" }
+  ]
+}

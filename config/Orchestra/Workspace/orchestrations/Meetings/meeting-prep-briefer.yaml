@@ -12,7 +12,7 @@ description: |
   meetings or the parent's Zakira state.
 version: 2.0.0
 tags: ["productivity", "meetings", "WorkIQ", "MSFT", "ZTS", "child", "auto"]
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 
 metadata:
   owner: Moaid Hathot

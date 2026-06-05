@@ -3,7 +3,7 @@ description: |
   Shared dispatcher for PR comment responses. Accepts either a PR URL or PR data, opens or refreshes the PowerReview session, uses Zakira.Exchange plus PowerReview session/thread state to decide whether reviewer comments need responses, builds the enriched prData contract, and invokes pr-comment-responder. Used by scheduled comment tracking and optional manual comment-response entrypoints.
 version: 1.0.0
 tags: ["ZTS", "MSFT", "PR", "Comment-Response", "dispatcher"]
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 
 inputs:
   prUrl:

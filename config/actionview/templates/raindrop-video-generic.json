@@ -1,0 +1,27 @@
+{
+  "type": "raindrop-video-generic",
+  "description": "General-purpose video summaries (anything not categorized as session or recipe).",
+  "defaults": {
+    "severity": "low",
+    "icon": "video",
+    "tags": ["raindrop", "video"]
+  },
+  "contentTemplate": [
+    {
+      "type": "keyValue",
+      "label": "Source",
+      "required": true,
+      "requiredKeys": ["URL", "Added at"],
+      "keyAliases": {
+        "Link": "URL",
+        "AddedAt": "Added at",
+        "Tags": "Original tags"
+      }
+    },
+    { "type": "section", "title": "Summary", "titleAliases": ["Overview", "Synthesis"] }
+  ],
+  "expectedActions": [
+    { "label": "Open original", "style": "primary" },
+    { "label": "Dismiss", "style": "default" }
+  ]
+}

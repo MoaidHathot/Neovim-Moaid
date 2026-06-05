@@ -1,0 +1,28 @@
+{
+  "type": "raindrop-article",
+  "description": "Generic article analysis (blogs, news, docs).",
+  "defaults": {
+    "severity": "low",
+    "icon": "file-text",
+    "tags": ["raindrop", "article"]
+  },
+  "contentTemplate": [
+    {
+      "type": "keyValue",
+      "label": "Source",
+      "required": true,
+      "requiredKeys": ["URL", "Added at"],
+      "keyAliases": {
+        "Link": "URL",
+        "AddedAt": "Added at",
+        "Tags": "Original tags",
+        "Author": "Byline"
+      }
+    },
+    { "type": "section", "title": "Analysis", "titleAliases": ["Summary", "Synthesis"] }
+  ],
+  "expectedActions": [
+    { "label": "Open original", "style": "primary" },
+    { "label": "Dismiss", "style": "default" }
+  ]
+}

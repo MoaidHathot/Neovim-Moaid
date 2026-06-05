@@ -1,0 +1,352 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: raindrop-tracker
+description: |
+  Polls a raindrop.io inbox collection on a schedule, compares the current
+  raindrops against per-item state in Zakira.Exchange, and dispatches the
+  raindrop-processor child orchestration (async) for each new or changed item.
+
+  The tracker is fully name-based: collection names live in `variables` and
+  are resolved to numeric ids by a `bootstrap-config` step that runs at the
+  top of every tick. Auth is verified at the same time. There are no numeric
+  collection ids hard-coded anywhere -- the suite is portable across
+  machines as soon as `raindrop login` (or RAINDROP_TOKEN) is configured.
+
+  Concurrency is capped per tick via maxDispatchPerTick. State that survives
+  ticks (and even host restarts) lives in Zakira.Exchange under the
+  raindrop-watcher-state category. Re-processing is triggered when a
+  raindrop's note text changes (the orchestration tracks a SHA-256 hash of
+  the note).
+
+  Auth, API calls, and OAuth all live in tools/raindrop.cs -- this
+  orchestration shells out to that helper and never speaks raindrop.io's
+  REST API directly.
+version: 1.0.0
+tags: ["personal", "raindrop", "auto", "watcher"]
+defaultModel: claude-opus-4.7-1m-internal
+
+variables:
+  # ---- USER-FACING CONFIG -------------------------------------------------
+  # Collection names (NOT numeric ids). The bootstrap-config step creates
+  # the collections on first tick if they don't exist (idempotent), so
+  # this is the single source of truth across every machine.
+  inboxCollectionName: "AI-Inbox"
+  processedCollectionName: "AI-Processed"
+  # Where recipes (from both video and article recipe processors) are
+  # written. Propagated to children as a parameter -- do not duplicate
+  # this value in any child orchestration.
+  recipesDirectory: "{{env.USERPROFILE}}/OneDrive/Documents/Recipes"
+  # Tuning knobs.
+  maxDispatchPerTick: "3"
+  maxAttempts: "3"
+  pollMaxItems: "100"
+  # -------------------------------------------------------------------------
+  childOrchestrationName: "raindrop-processor"
+  zakiraCategory: "raindrop-watcher-state"
+  raindropCli: "{{orchestration.sourceDirectory}}/tools/raindrop.cs"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 600
+timeoutSeconds: 3600
+
+mcps:
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - "--yes"
+      - "--"
+      - "--db"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - mcp
+      - "--category"
+      - "{{vars.zakiraCategory}}"
+
+  - name: orchestra
+    type: remote
+    endpoint: "{{server.url}}/mcp/data"
+
+steps:
+  - name: bootstrap-config
+    type: Script
+    shell: pwsh
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $cli = $args[0]
+      $inboxName = $args[1]
+      $processedName = $args[2]
+
+      # Windows-only resilience: if Orchestra host was started BEFORE the
+      # user set these env vars at User scope, the host's process tree
+      # (including this script) doesn't see them. Pull them from the User
+      # registry and inject into the current process so `dotnet run` below
+      # inherits the right values. No-op on non-Windows or when the vars
+      # are already present.
+      if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+        foreach ($name in @('RAINDROP_TOKEN','RAINDROP_OAUTH_CLIENT_ID','RAINDROP_OAUTH_CLIENT_SECRET','RAINDROP_AUTO_LOGIN','RAINDROP_API_BASE','RAINDROP_STATE_DIR')) {
+          if (-not [Environment]::GetEnvironmentVariable($name,'Process')) {
+            $fromUser = [Environment]::GetEnvironmentVariable($name,'User')
+            if ($fromUser) {
+              [Environment]::SetEnvironmentVariable($name, $fromUser, 'Process')
+            }
+          }
+        }
+      }
+
+      # 1) Auth probe. whoami uses the resolved auth (RAINDROP_TOKEN or OAuth
+      #    via persisted DPAPI-encrypted refresh token). When OAuth env vars
+      #    are set but no token is on disk yet, the CLI auto-launches the
+      #    interactive browser login flow -- the user only needs to click
+      #    "Allow" once on a brand-new machine; subsequent ticks reuse the
+      #    refresh token silently. Set RAINDROP_AUTO_LOGIN=0 to disable.
+      & dotnet run $cli -- whoami 1>$null 2>$null
+      if ($LASTEXITCODE -ne 0) {
+        throw "raindrop auth check failed (exit $LASTEXITCODE). On this machine, set RAINDROP_TOKEN, OR set RAINDROP_OAUTH_CLIENT_ID + RAINDROP_OAUTH_CLIENT_SECRET (login is automatic on first use). If you already set these as User-scope env vars, the Orchestra host may have been started before -- the script tries to pull them from the User registry as a fallback; if it's still failing, restart the Orchestra host so all children inherit the new env."
+      }
+
+      # 2) Resolve / create both collections by name (idempotent).
+      $inboxJson = & dotnet run $cli -- ensure-collection $inboxName 2>$null
+      if ($LASTEXITCODE -ne 0) {
+        throw "raindrop ensure-collection '$inboxName' failed with exit $LASTEXITCODE"
+      }
+      $procJson = & dotnet run $cli -- ensure-collection $processedName 2>$null
+      if ($LASTEXITCODE -ne 0) {
+        throw "raindrop ensure-collection '$processedName' failed with exit $LASTEXITCODE"
+      }
+
+      $inbox = ($inboxJson -join "`n") | ConvertFrom-Json
+      $proc  = ($procJson  -join "`n") | ConvertFrom-Json
+
+      @{
+        inboxCollectionId       = $inbox.id
+        inboxCollectionName     = $inboxName
+        processedCollectionId   = $proc.id
+        processedCollectionName = $processedName
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{vars.raindropCli}}"
+      - "{{vars.inboxCollectionName}}"
+      - "{{vars.processedCollectionName}}"
+    # Bumped to cover first-run interactive OAuth (browser open + user click).
+    # Subsequent ticks finish in ~1-2 seconds; this only matters once per machine.
+    timeoutSeconds: 600
+
+  - name: list-inbox
+    type: Script
+    shell: pwsh
+    dependsOn: [bootstrap-config]
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $cli = $args[0]
+      $cfg = $args[1] | ConvertFrom-Json
+      $maxItems = [int]$args[2]
+
+      $stdout = & dotnet run $cli -- list --collection $cfg.inboxCollectionId --max $maxItems 2>$null
+      if ($LASTEXITCODE -ne 0) {
+        throw "raindrop list failed with exit code $LASTEXITCODE"
+      }
+      ($stdout -join "`n")
+    arguments:
+      - "{{vars.raindropCli}}"
+      - "{{bootstrap-config.output}}"
+      - "{{vars.pollMaxItems}}"
+    timeoutSeconds: 180
+
+  - name: gate-empty
+    type: Prompt
+    dependsOn: [list-inbox]
+    systemPrompt: |
+      You are a gate-check assistant. Your only job is to decide whether the
+      tracker should continue. You have access to the orchestra_complete tool.
+    userPrompt: |
+      Inspect this JSON response from the raindrop CLI:
+
+      {{list-inbox.output}}
+
+      The shape is { "ok": true, "collectionId": <int>, "count": <n>, "items": [ ... ] }.
+
+      If `count` is 0 or `items` is empty or missing, call orchestra_complete
+      with status 'success' and reason 'Inbox is empty, nothing to dispatch.'
+
+      Otherwise output the items array as a JSON array (and nothing else)
+      so downstream steps can iterate it. Do not add commentary.
+    timeoutSeconds: 120
+
+  - name: load-state
+    type: Prompt
+    dependsOn: [gate-empty]
+    systemPrompt: |
+      You are a state retrieval assistant. You have Zakira.Exchange MCP tools.
+      The category is locked to raindrop-watcher-state. The memory key is the
+      raindrop id (as a string). Stored records carry status, noteHash,
+      attempts, lastError, processedAt, etc.
+    userPrompt: |
+      For every raindrop in this array, look up its existing memory record
+      using the raindrop's `_id` (as a string) as the key. Use get_memory.
+      If no record exists, treat the entry as null.
+
+      Raindrops:
+      {{gate-empty.output}}
+
+      Output a single JSON object mapping raindrop id (string) to either the
+      stored record JSON or null. Output ONLY the JSON, no commentary.
+    mcps: [zakira]
+    timeoutSeconds: 300
+
+  - name: select-dispatchable
+    type: Prompt
+    dependsOn: [gate-empty, load-state]
+    systemPrompt: |
+      You are a queue scheduler. You decide which raindrops should be
+      dispatched to the processor in this tick. You have access to
+      orchestra_complete.
+
+      Dispatch rules (apply in order, first matching rule wins per item):
+        - No state record present                              -> dispatch (status: queued).
+        - Status == "completed" AND noteHash unchanged          -> SKIP.
+        - Status == "completed" AND noteHash changed            -> RE-DISPATCH (note edited; user wants re-analysis).
+        - Status == "queued" OR "processing"                    -> SKIP (in flight or dispatched recently).
+        - Status == "failed" AND attempts < maxAttempts         -> RE-DISPATCH.
+        - Status == "failed" AND attempts >= maxAttempts        -> SKIP (manual intervention needed; surface in summary).
+
+      Hard cap: never select more than `maxDispatchPerTick` items in one tick.
+      If the cap is hit, surface the deferred ids in the output so the
+      tracker reports them.
+
+      Compute the noteHash as SHA-256 of the raindrop's `note` field (UTF-8;
+      empty string when null). The downstream step that marks-queued will
+      persist the new hash.
+
+      If after applying the rules nothing is selected, call orchestra_complete
+      with status 'success' and reason 'Nothing new to dispatch this tick.'
+    userPrompt: |
+      Inputs:
+        - maxDispatchPerTick = {{vars.maxDispatchPerTick}}
+        - maxAttempts        = {{vars.maxAttempts}}
+
+      Raindrops:
+      {{gate-empty.output}}
+
+      Existing state records (keyed by raindrop id as string):
+      {{load-state.output}}
+
+      Output a single JSON object exactly like this (no commentary):
+
+      {
+        "selected": [
+          {
+            "raindropId": "<id-as-string>",
+            "url": "<link>",
+            "title": "<title>",
+            "note": "<note or empty>",
+            "noteHash": "<sha256 hex>",
+            "tags": ["..."],
+            "addedAt": "<created>",
+            "reason": "<new|note-changed|retry-failed>",
+            "priorAttempts": <int>
+          }
+        ],
+        "skipped": [
+          { "raindropId": "<id-as-string>", "reason": "<short reason>" }
+        ],
+        "deferred": [
+          { "raindropId": "<id-as-string>", "reason": "max-dispatch-per-tick-reached" }
+        ]
+      }
+    timeoutSeconds: 300
+
+  - name: mark-queued
+    type: Prompt
+    dependsOn: [select-dispatchable]
+    systemPrompt: |
+      You are a state-persistence assistant. You have Zakira.Exchange MCP tools.
+      For each item in `selected`, write a memory record with status="queued",
+      the noteHash, attempts incremented (priorAttempts+1), queuedAt timestamp,
+      url, title, tags, and addedAt. Use create_memory for first-time entries
+      and edit_memory when a record already exists (re-dispatch path).
+
+      Always try create_memory first; if it fails because the key exists,
+      fall back to edit_memory and merge fields (keep historical data such as
+      `firstSeenAt` and `lastZakiraReplayRunId` if present).
+    userPrompt: |
+      Selection from previous step:
+      {{select-dispatchable.output}}
+
+      For every item in `selected`, persist its initial state record under
+      key = raindropId (string). Tag the memory record with ["queued"].
+
+      After saving all records, output a JSON object:
+        { "ok": true, "queuedIds": ["..."] }
+    mcps: [zakira]
+    timeoutSeconds: 300
+
+  - name: dispatch
+    type: Prompt
+    dependsOn: [bootstrap-config, select-dispatchable, mark-queued]
+    systemPrompt: |
+      You are a fan-out dispatcher. You have the Orchestra control-plane MCP
+      and you launch child orchestrations asynchronously. For every selected
+      raindrop, invoke `invoke_orchestration` with these arguments:
+        - orchestrationId: "{{vars.childOrchestrationName}}"
+        - mode: "async"
+        - parameters: {
+            "raindropId":            "<raindropId>",
+            "url":                   "<url>",
+            "title":                 "<title>",
+            "note":                  "<note>",
+            "noteHash":              "<noteHash>",
+            "tags":                  "<tags as JSON string>",
+            "addedAt":               "<addedAt>",
+            "priorAttempts":         "<priorAttempts as string>",
+            "processedCollectionId": "<from bootstrap-config: processedCollectionId>",
+            "recipesDirectory":      "{{vars.recipesDirectory}}"
+          }
+
+      Record the returned executionId for each child. Do NOT poll for
+      completion -- this is fire-and-forget. The child orchestration will
+      update Zakira.Exchange state on its own.
+
+      Note: orchestration parameter values must be strings. Convert numbers
+      and arrays accordingly.
+    userPrompt: |
+      Selection from earlier:
+      {{select-dispatchable.output}}
+
+      Bootstrap config (read processedCollectionId from here):
+      {{bootstrap-config.output}}
+
+      Dispatch async children for every item in `selected`.
+
+      After all dispatches, output JSON:
+        { "ok": true, "dispatched": [{ "raindropId": "...", "executionId": "..." }] }
+    mcps: [orchestra]
+    timeoutSeconds: 600
+
+  - name: tracker-summary
+    type: Prompt
+    dependsOn: [bootstrap-config, dispatch]
+    systemPrompt: |
+      You are a reporting assistant. Produce a concise scheduler-log-friendly
+      summary of this tick. One short paragraph plus a bullet list.
+    userPrompt: |
+      Inputs:
+      - bootstrap: {{bootstrap-config.output}}
+      - selection: {{select-dispatchable.output}}
+      - dispatch:  {{dispatch.output}}
+
+      Output a small markdown report:
+        - One-line headline (e.g. "raindrop-tracker: dispatched N, skipped M, deferred K (inbox=<id>, processed=<id>)").
+        - Bullets for dispatched ids with their executionIds.
+        - Bullets for skipped ids with reasons.
+        - Note if anything is deferred to the next tick.
+    timeoutSeconds: 120
+
+trigger:
+  type: scheduler
+  enabled: true
+  intervalSeconds: 300

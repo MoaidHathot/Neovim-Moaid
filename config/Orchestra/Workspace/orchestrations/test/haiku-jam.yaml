@@ -4,7 +4,7 @@ version: "1.0.0"
 tags: ["demo", "subagents", "manual", "test"]
 trigger:
   type: manual
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 timeoutSeconds: 900
 
 steps:

@@ -3,7 +3,7 @@ description: |
   Reviews or follows up on a single Pull Request using six expert reviewers (.NET Expert, Principal Software Engineer, Security Expert, DurableTasksFramework Expert, liabadi persona, ohads persona). Uses PowerReview open to create or refresh the session, then reviewers use PowerReview MCP on demand for metadata, diffs, files, threads, replies, and draft comments. Handles new PRs, new PR iterations, and replies to comments created by reviewer agents. Correlates with WorkIQ for related organizational context. Tracks PR review state via Zakira.Exchange. Produces an ActionView summary of all draft feedback.
 version: 1.1.0
 tags: ["ZTS", "MSFT", "PR", "Code-Review", "auto"]
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 
 inputs:
   prData:

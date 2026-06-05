@@ -1,0 +1,31 @@
+{
+  "type": "raindrop-video-session",
+  "description": "Conference talks, lectures, keynotes, webinars analyzed via Zakira.Replay.",
+  "defaults": {
+    "severity": "medium",
+    "icon": "video",
+    "tags": ["raindrop", "session"]
+  },
+  "contentTemplate": [
+    {
+      "type": "keyValue",
+      "label": "Source",
+      "required": true,
+      "requiredKeys": ["URL", "Added at"],
+      "keyAliases": {
+        "Link": "URL",
+        "AddedAt": "Added at",
+        "Tags": "Original tags"
+      }
+    },
+    { "type": "section", "title": "Summary", "titleAliases": ["Overview", "Synthesis"] },
+    { "type": "section", "title": "Chapters", "titleAliases": ["Outline", "Sections"] },
+    { "type": "section", "title": "Key Quotes", "titleAliases": ["Quotes", "Notable Quotes"] },
+    { "type": "section", "title": "Action items", "titleAliases": ["Follow-ups", "Next Steps"] }
+  ],
+  "expectedActions": [
+    { "label": "Open original", "style": "primary" },
+    { "label": "Open Zakira run", "style": "default" },
+    { "label": "Dismiss", "style": "default" }
+  ]
+}

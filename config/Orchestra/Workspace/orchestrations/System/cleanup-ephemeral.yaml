@@ -17,7 +17,7 @@ description: |
   dry-run mode is available for inspection.
 version: 1.0.0
 tags: ["ephemeral", "system"]
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 
 variables:
   ephemeralDir: "{{orchestration.sourceDirectory}}/../Ephemeral"

@@ -3,7 +3,7 @@ name: zts-official-pipeline-investigator
 description: investigate failed Azure DevOps CI/CD runs and persist findings
 version: 1.0.0
 tags: ["ZTS", "pipelines", "MSFT", "Azure-DevOps", "Pipeline", "Investigator", "auto"]
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 timeoutSeconds: 7200
 trigger:
   type: manual

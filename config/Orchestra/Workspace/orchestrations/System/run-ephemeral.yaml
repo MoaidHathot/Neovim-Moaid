@@ -11,7 +11,7 @@ description: |
   separate cleanup process can purge them later.
 version: 1.0.0
 tags: ["meta", "ephemeral", "system", "manual", "favorite"]
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 
 variables:
   ephemeralDir: "{{orchestration.sourceDirectory}}/../Ephemeral"

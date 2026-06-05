@@ -1,0 +1,296 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: raindrop-processor
+description: |
+  Processes a single raindrop. Classifies it across two orthogonal axes
+  (`medium` = video|article and `intent` = recipe|session|generic), then
+  delegates synchronously to the appropriate (medium, intent) processor
+  child orchestration, marks Zakira.Exchange state to completed, and moves
+  the raindrop into the Processed collection.
+
+  Collection ids and the recipes directory are passed in as parameters by
+  the tracker (which resolves them from names via `bootstrap-config`). This
+  orchestration carries no machine-specific config.
+
+  If any step fails the orchestration.failure hook flips Zakira.Exchange
+  state to "failed" and publishes a raindrop-error ActionView entry so the
+  failure is visible.
+version: 1.0.0
+tags: ["personal", "raindrop", "auto", "processor"]
+defaultModel: claude-opus-4.7-1m-internal
+
+inputs:
+  raindropId:
+    type: string
+    description: Raindrop.io item id (as a string).
+    required: true
+  url:
+    type: string
+    description: The raindrop link.
+    required: true
+  title:
+    type: string
+    description: Raindrop title.
+    required: true
+  note:
+    type: string
+    description: User note attached to the raindrop. May be empty. Used as the user-provided analysis prompt.
+    required: false
+    default: ""
+    multiline: true
+  noteHash:
+    type: string
+    description: SHA-256 hex of the note string at dispatch time.
+    required: false
+    default: ""
+  tags:
+    type: string
+    description: JSON array of tag strings.
+    required: false
+    default: "[]"
+  addedAt:
+    type: string
+    description: When the raindrop was added (ISO-8601).
+    required: false
+    default: ""
+  priorAttempts:
+    type: string
+    description: How many times this item was previously attempted.
+    required: false
+    default: "0"
+  processedCollectionId:
+    type: string
+    description: Numeric id of the Processed collection (resolved by the tracker's bootstrap-config step). Required.
+    required: true
+  recipesDirectory:
+    type: string
+    description: Where recipe processors should save extracted recipe markdown. Propagated from the tracker.
+    required: true
+
+variables:
+  zakiraCategory: "raindrop-watcher-state"
+  raindropCli: "{{orchestration.sourceDirectory}}/tools/raindrop.cs"
+  routerSkillsDir: "{{orchestration.sourceDirectory}}/skills"
+
+defaultRetryPolicy:
+  maxRetries: 1
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 1800
+timeoutSeconds: 7200
+
+mcps:
+  - name: zakira
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Exchange
+      - "--yes"
+      - "--"
+      - "--db"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - mcp
+      - "--category"
+      - "{{vars.zakiraCategory}}"
+
+  - name: orchestra
+    type: remote
+    endpoint: "{{server.url}}/mcp/data"
+
+hooks:
+  - name: mark-failed-on-orchestration-failure
+    on: orchestration.failure
+    payload:
+      detail: standard
+      steps: failed
+      includeRefs: true
+    action:
+      type: script
+      shell: pwsh
+      scriptFile: ./tools/scripts/hook-mark-failed.ps1
+      arguments:
+        - "{{param.raindropId}}"
+        - "{{param.url}}"
+        - "{{param.title}}"
+
+steps:
+  - name: mark-processing
+    type: Prompt
+    dependsOn: []
+    systemPrompt: |
+      You are a state-persistence assistant with Zakira.Exchange MCP tools.
+      The category is locked to raindrop-watcher-state. Update the existing
+      memory record for this raindrop, setting status="processing", noting
+      orchestrationRunId, and bumping attempts based on priorAttempts.
+      Use edit_memory (the tracker pre-created the record with create_memory).
+    userPrompt: |
+      Update the state record for this raindrop.
+
+      raindropId    = {{param.raindropId}}
+      url           = {{param.url}}
+      title         = {{param.title}}
+      priorAttempts = {{param.priorAttempts}}
+      orchestration = {{orchestration.runId}}
+
+      Fields to write:
+        status            = "processing"
+        attempts          = priorAttempts + 1
+        startedAt         = current ISO-8601 timestamp
+        orchestrationRunId = "{{orchestration.runId}}"
+        lastError         = null
+
+      Output: { "ok": true }
+    mcps: [zakira]
+    timeoutSeconds: 60
+
+  - name: classify
+    type: Prompt
+    dependsOn: [mark-processing]
+    systemPrompt: |
+      You are the RaindropWatcher router. You assign every raindrop to one
+      of the registered processor orchestrations by computing a (medium,
+      intent) pair. Follow the router skill precisely.
+
+      You output ONLY a single JSON object with this exact shape:
+
+      {
+        "medium": "video" | "article",
+        "intent": "recipe" | "session" | "generic",
+        "processor": "<full child-orchestration name from the routing table>",
+        "reasoning": "<one short sentence explaining the decision>"
+      }
+    userPrompt: |
+      Classify this raindrop:
+
+      url       = {{param.url}}
+      title     = {{param.title}}
+      tags      = {{param.tags}}
+      note      = {{param.note}}
+      addedAt   = {{param.addedAt}}
+
+      Output ONLY the JSON object described in the system prompt.
+    skillDirectories:
+      - "{{vars.routerSkillsDir}}"
+    timeoutSeconds: 180
+
+  - name: dispatch-processor
+    type: Prompt
+    dependsOn: [classify]
+    systemPrompt: |
+      You are a dispatcher. Read the classification JSON, extract its
+      `processor` field, and call `invoke_orchestration` with mode="sync"
+      so the child's final output flows back. Pass these parameters
+      (every value is a STRING):
+
+        raindropId, url, title, note, noteHash, tags, addedAt,
+        recipesDirectory   (always pass; recipe processors require it,
+                            non-recipe processors will silently ignore it)
+
+      Return the child's executionId, status, and finalContent verbatim.
+
+      The classification JSON is:
+        {{classify.output}}
+
+      Do not invent parameters. Do not call any other tool than
+      invoke_orchestration. Output a JSON object:
+
+        {
+          "processor": "<name>",
+          "executionId": "<id>",
+          "status": "<child status>",
+          "finalContent": "<child output>"
+        }
+    userPrompt: |
+      Dispatch the chosen child orchestration synchronously.
+
+      Original raindrop:
+        raindropId       = {{param.raindropId}}
+        url              = {{param.url}}
+        title            = {{param.title}}
+        note             = {{param.note}}
+        noteHash         = {{param.noteHash}}
+        tags             = {{param.tags}}
+        addedAt          = {{param.addedAt}}
+        recipesDirectory = {{param.recipesDirectory}}
+
+      Wait for completion and return the result envelope described in the
+      system prompt.
+    mcps: [orchestra]
+    timeoutSeconds: 5400
+
+  - name: mark-completed
+    type: Prompt
+    dependsOn: [dispatch-processor]
+    systemPrompt: |
+      You are a state-persistence assistant with Zakira.Exchange MCP tools.
+      Update the memory record for this raindrop to status="completed".
+      Preserve the noteHash from input parameters; record the processor name,
+      the child executionId, and a short summary line. Use edit_memory.
+    userPrompt: |
+      Update state for raindropId={{param.raindropId}}.
+
+      Child dispatch result:
+      {{dispatch-processor.output}}
+
+      Fields to write:
+        status              = "completed"
+        completedAt         = current ISO-8601 timestamp
+        noteHash            = "{{param.noteHash}}"
+        lastProcessor       = (read `processor` from the dispatch result)
+        lastChildExecutionId = (read `executionId` from the dispatch result)
+        lastError           = null
+
+      Tag the memory record with ["completed"].
+
+      Output: { "ok": true }
+    mcps: [zakira]
+    timeoutSeconds: 120
+
+  - name: move-to-processed
+    type: Script
+    dependsOn: [mark-completed]
+    shell: pwsh
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $cli = $args[0]
+      $rid = $args[1]
+      $target = $args[2]
+      $out = & dotnet run $cli -- move $rid --to-collection $target --add-tag processed 2>$null
+      if ($LASTEXITCODE -ne 0) {
+        throw "raindrop move failed with exit code $LASTEXITCODE. Output: $out"
+      }
+      $out
+    arguments:
+      - "{{vars.raindropCli}}"
+      - "{{param.raindropId}}"
+      - "{{param.processedCollectionId}}"
+    timeoutSeconds: 120
+
+  - name: processor-summary
+    type: Prompt
+    dependsOn: [dispatch-processor, mark-completed, move-to-processed]
+    systemPrompt: |
+      You are a reporting assistant. Produce a short markdown summary of
+      this per-item processor run -- one paragraph then a tiny bullet list.
+    userPrompt: |
+      raindropId = {{param.raindropId}}
+      url        = {{param.url}}
+      title      = {{param.title}}
+
+      Classification:
+      {{classify.output}}
+
+      Child dispatch:
+      {{dispatch-processor.output}}
+
+      State update:
+      {{mark-completed.output}}
+
+      Move result:
+      {{move-to-processed.output}}
+
+      Write a short markdown report (no headings deeper than h3) with one
+      summary line + a bullet list. End with a line "Done." when everything
+      succeeded.
+    timeoutSeconds: 60

@@ -7,7 +7,7 @@ description: |
   so the outputs can be compared side by side.
 version: 1.0.0
 tags: ["debug", "diagnostics", "m365", "calendar"]
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 defaultStepTimeoutSeconds: 380
 
 steps:

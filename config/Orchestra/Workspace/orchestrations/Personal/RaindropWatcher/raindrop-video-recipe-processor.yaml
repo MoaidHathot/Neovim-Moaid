@@ -1,0 +1,252 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: raindrop-video-recipe-processor
+description: |
+  Processor for raindrops classified as (video, recipe). Uses Zakira.Replay
+  with scene-detection frames to grab one image per visual scene change so the
+  recipe steps and ingredient shots are captured, then extracts a structured
+  recipe (front-matter + Markdown body) and persists it both as an ActionView
+  entry and as a plain markdown file in the user's recipes directory.
+version: 1.0.0
+tags: ["personal", "raindrop", "auto", "video", "recipe"]
+defaultModel: claude-opus-4.7-1m-internal
+
+inputs:
+  raindropId: { type: string, required: true }
+  url:        { type: string, required: true }
+  title:      { type: string, required: true }
+  note:       { type: string, required: false, default: "", multiline: true }
+  noteHash:   { type: string, required: false, default: "" }
+  tags:       { type: string, required: false, default: "[]" }
+  addedAt:    { type: string, required: false, default: "" }
+  recipesDirectory:
+    type: string
+    description: Where to save the extracted recipe markdown. Passed in by the parent processor.
+    required: true
+
+variables:
+  defaultAnalysisAsk: |
+    Extract this recipe from the cooking video. Produce a clean, repeatable
+    recipe markdown document with these sections (in order):
+
+      ## Summary       (1-2 sentences)
+      ## Yield         (servings or output count)
+      ## Time          (prep time, cook time, total time)
+      ## Equipment     (bullet list)
+      ## Ingredients   (bullet list with quantity + ingredient + prep notes;
+                        group by sub-recipe when applicable)
+      ## Steps         (numbered list; each step references the timestamp
+                        in the source video as `[hh:mm:ss]` so the user can
+                        jump back; cite the frame slideId when a step is
+                        primarily visual)
+      ## Tips          (bullet list of variations / substitutions / pitfalls)
+      ## Source        (link to the original video + author / channel name)
+
+defaultStepTimeoutSeconds: 1800
+timeoutSeconds: 7200
+
+steps:
+  - name: zakira-analyze
+    type: Command
+    command: dnx
+    arguments:
+      - Zakira.Replay
+      - "--yes"
+      - "--"
+      - analyze
+      - "{{param.url}}"
+      - "--frame-strategy"
+      - scene
+      - "--ocr"
+      - "--vision"
+      - "--cache"
+      - "--max-ai-frames"
+      - "80"
+      - "--output-format"
+      - json
+      - "--correlation-id"
+      - "{{orchestration.runId}}"
+    includeStdErr: false
+    timeoutSeconds: 5400
+
+  - name: read-artifacts
+    type: Script
+    dependsOn: [zakira-analyze]
+    shell: pwsh
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $payload = $args[0] | ConvertFrom-Json
+      $artifactDir = $payload.artifactDirectory
+      if (-not $artifactDir -or -not (Test-Path -LiteralPath $artifactDir)) {
+        throw "artifactDirectory missing or not on disk: $artifactDir"
+      }
+      function ReadFileOrEmpty($name) {
+        $p = Join-Path $artifactDir $name
+        if (Test-Path -LiteralPath $p) { Get-Content -LiteralPath $p -Raw } else { '' }
+      }
+      function Cap($s, [int]$max) {
+        if ($null -eq $s) { return '' }
+        if ($s.Length -le $max) { return $s }
+        return $s.Substring(0, $max) + "`n`n...[truncated $($s.Length - $max) chars]"
+      }
+      $pack = @{
+        runId = $payload.runId
+        artifactDirectory = $artifactDir
+        manifest = (Cap (ReadFileOrEmpty 'manifest.json') 30000)
+        evidence = (Cap (ReadFileOrEmpty 'evidence.json') 40000)
+        transcript = (Cap (ReadFileOrEmpty 'transcript.md') 60000)
+        ocr = (Cap (ReadFileOrEmpty 'ocr/combined.md') 30000)
+        vision = (Cap (ReadFileOrEmpty 'vision/combined.md') 30000)
+      }
+      $pack | ConvertTo-Json -Depth 8 -Compress
+    arguments:
+      - "{{zakira-analyze.output}}"
+    timeoutSeconds: 120
+
+  - name: synthesize
+    type: Prompt
+    dependsOn: [read-artifacts]
+    systemPrompt: |
+      You are a recipe extractor. The user wants a clean, repeatable recipe
+      built from the transcript + extracted frames + OCR + vision artifacts.
+      Never invent ingredients or steps -- if an ingredient is mentioned in
+      narration but not visible on-screen, that's fine; cite the timestamp.
+      If you cannot find a piece of information (e.g., exact oven temperature),
+      write "unspecified" rather than guessing.
+
+      Use the user's note as the primary analysis request when it is
+      non-empty; otherwise use the default ask provided.
+
+      Output a single self-contained markdown document. Start with a YAML
+      front-matter block ('---') including: title, source_url, source_type
+      (= "video"), servings (if known), total_time (if known), tags (recipe
+      plus any tags from the raindrop). Then the body following the section
+      order specified in the ask.
+
+      Save the final markdown to a file via orchestra_save_file -- the
+      downstream step uses {{synthesize.files[0]}}.
+    userPrompt: |
+      Raindrop:
+        title = {{param.title}}
+        url   = {{param.url}}
+        tags  = {{param.tags}}
+
+      User note (analysis request; may be empty):
+        {{param.note}}
+
+      Default analysis ask (use only when the note is empty):
+        {{vars.defaultAnalysisAsk}}
+
+      Zakira.Replay artifact pack:
+        {{read-artifacts.output}}
+
+      Produce the recipe markdown. Save it via orchestra_save_file. Output
+      the markdown content as the step output too.
+    timeoutSeconds: 1800
+
+  - name: save-recipe-file
+    type: Script
+    dependsOn: [synthesize]
+    shell: pwsh
+    scriptFile: "./tools/scripts/save-recipe.ps1"
+    arguments:
+      - "-RecipesDirectory"
+      - "{{param.recipesDirectory}}"
+      - "-SourcePath"
+      - "{{synthesize.files[0]}}"
+      - "-Title"
+      - "{{param.title}}"
+      - "-SourceUrl"
+      - "{{param.url}}"
+    timeoutSeconds: 60
+
+  - name: fetch-action-view-schema
+    type: Command
+    command: dnx
+    arguments: [ActionView.Cli, "--yes", "--", schema]
+    timeoutSeconds: 120
+
+  - name: create-action-view-entry
+    type: Prompt
+    dependsOn: [synthesize, save-recipe-file, fetch-action-view-schema]
+    systemPrompt: |
+      You produce ActionView entries that match the entry schema. The entry
+      type must be 'raindrop-recipe' and source must be '{{orchestration.name}}'.
+      Save the JSON via orchestra_save_file -- the next step submits whatever
+      was saved.
+    userPrompt: |
+      ActionView schema:
+      {{fetch-action-view-schema.output}}
+
+      Raindrop:
+        id    = {{param.raindropId}}
+        title = {{param.title}}
+        url   = {{param.url}}
+        tags  = {{param.tags}}
+        note  = {{param.note}}
+
+      Recipe markdown:
+      {{synthesize.output}}
+
+      Recipe save result (JSON):
+      {{save-recipe-file.output}}
+
+      Build an entry with:
+        type     = 'raindrop-recipe'
+        source   = '{{orchestration.name}}'
+        title    = the recipe title (from the markdown front-matter when present, otherwise raindrop title)
+        subtitle = '<servings if known> | <total_time if known> | source: video'
+        severity = 'low'
+        icon     = 'utensils-crossed'
+        tags     = the raindrop tags + ['raindrop','recipe','video']
+        content blocks:
+          - keyValue 'Source' with: URL, Added at, Source medium = "video", Saved to (path from save-recipe-file)
+          - section 'Recipe' containing a markdown block with the entire recipe body
+          - link 'Open original video' to the raindrop URL
+          - link 'Open saved recipe' to the file:// URI of the saved recipe path
+        actions:
+          - 'Open original'      (cli: open URL in browser, onSuccess=keep)
+          - 'Open saved recipe'  (cli: open the saved recipe file in the user's editor, onSuccess=keep)
+          - 'Dismiss'            (default action, onSuccess=archive)
+
+      Save the JSON via orchestra_save_file. Output ONLY the raw JSON.
+    timeoutSeconds: 600
+
+  - name: submit-action-view-entry
+    type: Command
+    dependsOn: [create-action-view-entry]
+    command: dnx
+    arguments:
+      - ActionView.Cli
+      - "--yes"
+      - "--"
+      - add
+      - "--file"
+      - "{{create-action-view-entry.files[0]}}"
+    timeoutSeconds: 120
+
+  - name: result-envelope
+    type: Prompt
+    dependsOn: [zakira-analyze, synthesize, save-recipe-file, submit-action-view-entry]
+    systemPrompt: |
+      You produce a single small JSON envelope describing the outcome of
+      this processor run, so the parent raindrop-processor can persist a
+      tidy state record. Output ONLY the JSON.
+    userPrompt: |
+      Build a JSON envelope like:
+
+      {
+        "ok": true,
+        "processor": "{{orchestration.name}}",
+        "raindropId": "{{param.raindropId}}",
+        "zakiraReplayRunId": "<runId from zakira-analyze output>",
+        "savedRecipePath": "<savedPath from save-recipe-file output>",
+        "actionViewEntryId": "<id parsed from submit-action-view-entry output, or null>",
+        "summary": "<one-sentence summary line>"
+      }
+
+      Zakira analyze output: {{zakira-analyze.output}}
+      Recipe save output:    {{save-recipe-file.output}}
+      ActionView submission: {{submit-action-view-entry.output}}
+
+      Output ONLY the JSON.
+    timeoutSeconds: 60

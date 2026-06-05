@@ -23,7 +23,7 @@ description: |
   transition (success) or by the investigator (failure).
 version: 2.1.0
 tags: ["ZTS", "pipelines", "MSFT", "Azure-DevOps", "Pipeline", "auto-discovery", "auto"]
-defaultModel: gpt-5.4
+defaultModel: claude-opus-4.7-1m-internal
 timeoutSeconds: 7200
 trigger:
   type: scheduler
@@ -51,16 +51,38 @@ steps:
   - name: discover-ci-runs
     type: Script
     shell: pwsh
+    # Hard timeout so a regression in the underlying REST call fails fast instead
+    # of hanging indefinitely like the prior `az pipelines runs list` path
+    # (which prompts on stdin for the missing azure-devops extension and hangs
+    # forever in a piped-stdin orchestration context).
+    timeoutSeconds: 60
     script: |
-      # Deterministic discovery via az CLI (replaces the prior azdo MCP prompt).
-      # Emits the same JSON contract the downstream `enumerate-runs` step expects:
+      # Deterministic CI run discovery via the Build REST API.
+      #
+      # PREVIOUS APPROACH (broken): `az pipelines runs list` requires the
+      # `azure-devops` extension. When the extension isn't installed, az prompts
+      # interactively (via stdin) "Do you want to install it now? (Y/n)" -- in
+      # an orchestration Script step stdin is piped, the prompt receives EOF,
+      # and az hangs indefinitely waiting for input. Multiple zombie az/python
+      # processes accumulated across portal restarts (5+ observed before fix).
+      #
+      # NEW APPROACH: call the Build REST API directly via `az rest` (built-in,
+      # no extension required). The endpoint
+      #   GET /_apis/build/builds?definitions=<id>&queryOrder=queueTimeDescending&$top=N
+      # returns the same per-build records az pipelines was producing (id,
+      # buildNumber, status, result, requestedFor/By, triggerInfo, etc.) so the
+      # downstream transformation loop below works unchanged.
+      #
+      # Emits the same JSON contract `enumerate-runs` expects:
       #   { "pipelineType":"ci", "definitionId":<num>, "definitionName":"<string>", "runs":[ ... ] }
-      # NOTE: assemble every hash value into a local variable first to avoid the
-      # PowerShell 7.6.1 codegen quirk documented in `enumerate-runs`.
       $ErrorActionPreference = 'Stop'
       try { Get-Command az -ErrorAction Stop | Out-Null } catch {
         throw "az CLI is not available on PATH; cannot discover CI pipeline runs."
       }
+      # az ships an embedded Python that defaults to cp1252 on Windows and dies
+      # with UnicodeEncodeError if any response field contains non-ASCII (msazure
+      # pipeline requestedFor/displayName fields routinely do).
+      $env:PYTHONIOENCODING = 'utf-8'
 
       function ConvertTo-IsoUtcString {
         param($value)
@@ -76,20 +98,30 @@ steps:
       $definitionName = '{{vars.ciDefinitionName}}'
       $orgUrl = "https://dev.azure.com/$organization"
       $definitionIdInt = [int]$definitionIdRaw
+      # Azure DevOps OAuth resource ID -- same constant az CLI uses for ADO calls.
+      $adoResource = '499b84ac-1321-427f-aa17-267ca6975798'
 
-      $raw = & az pipelines runs list `
-        --org $orgUrl `
-        --project $project `
-        --pipeline-ids $definitionIdRaw `
-        --top 25 `
-        --query-order QueueTimeDesc `
+      # `$top` is single-quoted so PowerShell doesn't interpolate $top. The base
+      # URI stays free of `&` characters because az.cmd dispatches via cmd.exe
+      # and cmd interprets `&` as a command separator; --uri-parameters lets az
+      # re-encode the query safely.
+      $listBase = "$orgUrl/$project/_apis/build/builds"
+      $raw = & az rest `
+        --method get `
+        --uri $listBase `
+        --uri-parameters "api-version=7.1-preview.7" "definitions=$definitionIdRaw" "queryOrder=queueTimeDescending" '$top=25' `
+        --resource $adoResource `
         -o json 2>&1
       if ($LASTEXITCODE -ne 0) {
         $errText = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
-        throw "az pipelines runs list (CI def $definitionIdRaw) failed with exit $LASTEXITCODE`: $errText"
+        throw "az rest builds list (CI def $definitionIdRaw) failed with exit $LASTEXITCODE`: $errText"
       }
       $jsonString = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
-      $list = $jsonString | ConvertFrom-Json -Depth 100
+      # The REST API wraps results in { value: [...], count: N }; az pipelines
+      # unwrapped automatically. Unwrap explicitly so the downstream foreach body
+      # (originally written against the unwrapped array) keeps working unchanged.
+      $envelope = $jsonString | ConvertFrom-Json -Depth 100
+      $list = if ($null -ne $envelope.value) { $envelope.value } else { @() }
 
       $runs = New-Object System.Collections.Generic.List[object]
       foreach ($b in @($list)) {
@@ -190,16 +222,19 @@ steps:
   - name: discover-cd-runs
     type: Script
     shell: pwsh
+    # See discover-ci-runs for the rationale -- same hard-timeout defense.
+    timeoutSeconds: 60
     script: |
-      # Deterministic discovery via az CLI (replaces the prior azdo MCP prompt).
-      # Emits the same JSON contract the downstream `enumerate-runs` step expects:
-      #   { "pipelineType":"cd", "definitionId":<num>, "definitionName":"<string>", "runs":[ ... ] }
-      # cdDefinitionId is a YAML/build-style pipeline (Build REST API). Classic Release
-      # Management URLs are intentionally out of scope today.
+      # Deterministic CD run discovery via the Build REST API. See discover-ci-runs
+      # for the long-form rationale; both steps replaced `az pipelines runs list`
+      # (extension-prompt-hang) with `az rest` (built-in, no extension required).
+      # cdDefinitionId is a YAML/build-style pipeline (Build REST API). Classic
+      # Release Management URLs are intentionally out of scope today.
       $ErrorActionPreference = 'Stop'
       try { Get-Command az -ErrorAction Stop | Out-Null } catch {
         throw "az CLI is not available on PATH; cannot discover CD pipeline runs."
       }
+      $env:PYTHONIOENCODING = 'utf-8'
 
       function ConvertTo-IsoUtcString {
         param($value)
@@ -215,20 +250,22 @@ steps:
       $definitionName = '{{vars.cdDefinitionName}}'
       $orgUrl = "https://dev.azure.com/$organization"
       $definitionIdInt = [int]$definitionIdRaw
+      $adoResource = '499b84ac-1321-427f-aa17-267ca6975798'
 
-      $raw = & az pipelines runs list `
-        --org $orgUrl `
-        --project $project `
-        --pipeline-ids $definitionIdRaw `
-        --top 25 `
-        --query-order QueueTimeDesc `
+      $listBase = "$orgUrl/$project/_apis/build/builds"
+      $raw = & az rest `
+        --method get `
+        --uri $listBase `
+        --uri-parameters "api-version=7.1-preview.7" "definitions=$definitionIdRaw" "queryOrder=queueTimeDescending" '$top=25' `
+        --resource $adoResource `
         -o json 2>&1
       if ($LASTEXITCODE -ne 0) {
         $errText = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
-        throw "az pipelines runs list (CD def $definitionIdRaw) failed with exit $LASTEXITCODE`: $errText"
+        throw "az rest builds list (CD def $definitionIdRaw) failed with exit $LASTEXITCODE`: $errText"
       }
       $jsonString = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
-      $list = $jsonString | ConvertFrom-Json -Depth 100
+      $envelope = $jsonString | ConvertFrom-Json -Depth 100
+      $list = if ($null -ne $envelope.value) { $envelope.value } else { @() }
 
       $runs = New-Object System.Collections.Generic.List[object]
       foreach ($b in @($list)) {
