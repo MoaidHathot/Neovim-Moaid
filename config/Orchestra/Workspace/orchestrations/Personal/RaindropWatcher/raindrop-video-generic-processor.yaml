@@ -47,14 +47,15 @@ steps:
       - analyze
       - "{{param.url}}"
       # Light baseline so the user always sees SOME visual evidence even
-      # if the targeted-pick step decides nothing is essential. ~0.5 frames
-      # per minute -> 5-6 frames for a typical 10-15 min video. --allow-media-download
-      # is needed for sources yt-dlp can't directly resolve (e.g., some
-      # YouTube videos with cookie/region issues).
+      # if the targeted-pick step decides nothing is essential. ~1 frame
+      # per minute -> ~10-15 frames for a typical 10-15 min video.
+      # --frames-per-minute requires an INTEGER (Zakira.Replay 0.14.x);
+      # --allow-media-download is needed for sources yt-dlp can't directly
+      # resolve (e.g., some YouTube videos with cookie/region issues).
       - "--frame-strategy"
       - interval
       - "--frames-per-minute"
-      - "0.5"
+      - "1"
       - "--max-ai-frames"
       - "12"
       - "--allow-media-download"
