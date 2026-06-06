@@ -4,7 +4,12 @@ description: |
   Fallback processor for (video, generic) raindrops. Cheap transcript-first
   Zakira.Replay run, light synthesis, ActionView entry. Use this for one-off
   videos that don't warrant deep frame extraction.
-version: 1.0.0
+
+  Includes an optional, tightly-capped (5 frames) targeted-frame-capture
+  step driven by Zakira.Replay's MCP, so genuinely visual moments
+  ("look at this graph", a screenshot, a meme) can still be surfaced
+  without doing a full vision pass.
+version: 1.1.0
 tags: ["personal", "raindrop", "auto", "video", "generic"]
 defaultModel: claude-opus-4.7-1m-internal
 
@@ -24,8 +29,25 @@ variables:
       - 3-5 notable quotes with timestamps
       - 1-3 potential follow-up actions or open questions
 
+  # Keep this very low -- the whole point of "generic" is to be cheap. The
+  # LLM should only capture truly visual moments.
+  targetedFrameCap: "5"
+
 defaultStepTimeoutSeconds: 1800
 timeoutSeconds: 5400
+
+mcps:
+  - name: zakira-replay
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Replay
+      - "--yes"
+      - "--"
+      - mcp
+      - serve
+      - "--transport"
+      - stdio
 
 steps:
   - name: zakira-analyze
@@ -81,14 +103,64 @@ steps:
       - "{{zakira-analyze.output}}"
     timeoutSeconds: 120
 
-  - name: synthesize
+  - name: targeted-frame-capture
     type: Prompt
     dependsOn: [read-artifacts]
+    systemPrompt: |
+      You are an optional visual evidence curator for a cheap video-summary
+      pipeline. The baseline run did NOT extract any frames, so this is the
+      one chance to grab visuals -- but the budget is tight ({{vars.targetedFrameCap}}).
+
+      You have the Zakira.Replay MCP server (transport: stdio). Use whichever
+      tool corresponds to ad-hoc frame capture (`frames` or similar). Reuse
+      the same `runId` so the frames land in the existing artifact directory.
+
+      Only capture a frame if the transcript clearly indicates that what's
+      on screen is essential to the meaning ("look at this graph", "here is
+      the screenshot of the bug", "this is the meme I was talking about").
+      When in doubt, do NOT capture -- this processor is intentionally
+      light-touch.
+
+      Each captured frame MUST have a one-sentence reason.
+
+      Output a SINGLE JSON object:
+
+      {
+        "ok": true,
+        "runId": "<runId>",
+        "captured": [
+          { "timestamp": "hh:mm:ss", "reason": "...", "path": "...", "fileUri": "..." }
+        ],
+        "skipped": [],
+        "budget": "captured N of {{vars.targetedFrameCap}}"
+      }
+
+      If no transcript moments are clearly worth a frame, output captured=[]
+      and move on. Do NOT call any non-MCP tool. Output ONLY the JSON.
+    userPrompt: |
+      Raindrop:
+        title = {{param.title}}
+        url   = {{param.url}}
+
+      Artifact pack:
+      {{read-artifacts.output}}
+
+      Decide per the system prompt. Output ONLY the JSON.
+    mcps: [zakira-replay]
+    timeoutSeconds: 600
+
+  - name: synthesize
+    type: Prompt
+    dependsOn: [read-artifacts, targeted-frame-capture]
     systemPrompt: |
       You are a video summarizer. Synthesize a tight markdown summary strictly
       from the Zakira.Replay artifact pack. Cite every quote with its
       transcript timestamp. Never invent claims. Use the user's note as the
       analysis request when non-empty, else fall back to the default ask.
+
+      If the targeted-frame-capture step captured any frames, embed them
+      inline at the corresponding timestamp in the summary using markdown
+      image syntax with the `fileUri` value: `![reason](file:///...)`.
 
       Save the final markdown via orchestra_save_file.
     userPrompt: |
@@ -106,6 +178,9 @@ steps:
       Artifact pack:
       {{read-artifacts.output}}
 
+      Targeted frame capture results:
+      {{targeted-frame-capture.output}}
+
       Produce the markdown summary. Save via orchestra_save_file. Output
       the markdown as the step output.
     timeoutSeconds: 1200
@@ -118,7 +193,7 @@ steps:
 
   - name: create-action-view-entry
     type: Prompt
-    dependsOn: [synthesize, fetch-action-view-schema]
+    dependsOn: [synthesize, targeted-frame-capture, fetch-action-view-schema]
     systemPrompt: |
       You produce ActionView entries that match the entry schema. Type must
       be 'raindrop-video-generic'; source must be '{{orchestration.name}}'.
@@ -137,7 +212,11 @@ steps:
       Synthesized summary:
       {{synthesize.output}}
 
+      Targeted frame capture:
+      {{targeted-frame-capture.output}}
+
       Build an entry with:
+        id       = 'raindrop-{{param.raindropId}}-video-generic'  # stable per-raindrop key -> idempotent re-runs
         type     = 'raindrop-video-generic'
         source   = '{{orchestration.name}}'
         title    = the raindrop title (cap at 120 chars)
@@ -148,6 +227,9 @@ steps:
         content blocks:
           - keyValue 'Source' with: URL, Added at, Original tags, Note
           - section 'Summary' containing a markdown block with the synthesized summary
+          - section 'Visual evidence' containing a markdown block listing each `captured` frame
+              as "### <timestamp> -- <reason>" + `![<reason>](<fileUri>)`.
+              Omit this section if `captured` is empty.
           - link 'Open original' to the raindrop URL
         actions:
           - 'Open original' (cli, onSuccess=keep)
@@ -157,21 +239,18 @@ steps:
     timeoutSeconds: 600
 
   - name: submit-action-view-entry
-    type: Command
+    type: Script
+    shell: pwsh
     dependsOn: [create-action-view-entry]
-    command: dnx
+    scriptFile: "./tools/scripts/submit-actionview-upsert.ps1"
     arguments:
-      - ActionView.Cli
-      - "--yes"
-      - "--"
-      - add
-      - "--file"
+      - "-EntryFile"
       - "{{create-action-view-entry.files[0]}}"
     timeoutSeconds: 120
 
   - name: result-envelope
     type: Prompt
-    dependsOn: [zakira-analyze, synthesize, submit-action-view-entry]
+    dependsOn: [zakira-analyze, targeted-frame-capture, synthesize, submit-action-view-entry]
     systemPrompt: |
       Output ONLY a JSON envelope describing the outcome.
     userPrompt: |
@@ -182,12 +261,14 @@ steps:
         "processor": "{{orchestration.name}}",
         "raindropId": "{{param.raindropId}}",
         "zakiraReplayRunId": "<runId from zakira-analyze output>",
+        "targetedFramesCaptured": <count from targeted-frame-capture output `captured` length>,
         "actionViewEntryId": "<id parsed from submit-action-view-entry output, or null>",
         "summary": "<one-sentence summary line>"
       }
 
-      Zakira analyze output: {{zakira-analyze.output}}
-      ActionView submission: {{submit-action-view-entry.output}}
+      Zakira analyze output:   {{zakira-analyze.output}}
+      Targeted frame capture:  {{targeted-frame-capture.output}}
+      ActionView submission:   {{submit-action-view-entry.output}}
 
       Output ONLY the JSON.
     timeoutSeconds: 60

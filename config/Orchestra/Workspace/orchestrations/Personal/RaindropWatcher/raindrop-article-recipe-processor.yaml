@@ -3,10 +3,20 @@ name: raindrop-article-recipe-processor
 description: |
   Processor for raindrops classified as (article, recipe). Fetches the page
   via Invoke-WebRequest first, then falls back to Playwright when the cheap
-  fetch returns a JS-only / thin / login-walled body. Extracts a clean recipe
-  markdown, saves it to the recipes directory, and publishes a raindrop-recipe
-  ActionView entry.
-version: 1.0.0
+  fetch returns a JS-only / thin / login-walled body.
+
+  Image pipeline (recipe-specific):
+    1. fetch-article.ps1 extracts ad-filtered image candidates from the raw HTML.
+    2. A select-images Prompt step picks the most relevant ones for the recipe
+       (hero shot, ingredient close-ups, technique stills, finished dish).
+    3. save-article-images.ps1 downloads the chosen images into a sidecar
+       directory next to the saved recipe markdown so the recipe stays usable
+       even if the source article disappears.
+    4. The synth step embeds the LOCAL file:// URIs inline at the steps they
+       illustrate.
+    5. The ActionView entry renders the embedded markdown plus a Visual
+       evidence section listing each downloaded image with its caption.
+version: 1.1.0
 tags: ["personal", "raindrop", "auto", "article", "recipe"]
 defaultModel: claude-opus-4.7-1m-internal
 
@@ -35,17 +45,25 @@ variables:
       ## Ingredients   (bullet list with quantity + ingredient + prep notes;
                         group by sub-recipe when applicable)
       ## Steps         (numbered list; each step references the relevant
-                        paragraph from the source when possible)
+                        paragraph from the source when possible; embed
+                        relevant downloaded images inline immediately under
+                        the step they illustrate using markdown image syntax
+                        with the file:// URI from the downloaded images map:
+                        `![what it shows](file:///path/to/image.jpg)`)
       ## Tips          (variations, substitutions, pitfalls)
       ## Source        (link + author / publisher)
+
+  # Cap on how many images we ultimately download. Balance: enough to make
+  # the recipe self-contained even if the article disappears, not so many
+  # that the recipe directory bloats.
+  maxImagesToKeep: "8"
 
 defaultStepTimeoutSeconds: 900
 timeoutSeconds: 3600
 
 mcps:
   # Playwright MCP -- used by the fetch-readable step as fallback when the
-  # cheap HTTP fetch returns thin / JS-only content. Same package the
-  # items-availability orchestration uses.
+  # cheap HTTP fetch returns thin / JS-only content.
   - name: playwright
     type: local
     command: npx
@@ -64,14 +82,17 @@ steps:
       - "80000"
       - "-TimeoutSeconds"
       - "30"
-    timeoutSeconds: 90
+      - "-MaxImageCandidates"
+      - "40"
+    timeoutSeconds: 120
 
   - name: fetch-readable
     type: Prompt
     dependsOn: [fetch-http]
     systemPrompt: |
       You are a fetch-and-extract assistant. You receive the JSON result of
-      a cheap HTTP fetch. Decide whether the body is good enough:
+      a cheap HTTP fetch (which already includes ad-filtered `images`
+      candidates). Decide whether the body is good enough:
 
         - If `ok` is true AND `looksThin` is false AND `wordCount` >= 80:
             extract the recipe content directly from `text`.
@@ -97,6 +118,8 @@ steps:
       The `content` field should be markdown with paragraph breaks. Do not
       synthesize a recipe yet -- just extract the page text faithfully. The
       synth step will format the recipe.
+
+      Do NOT touch the image candidates -- the next step handles them.
     userPrompt: |
       HTTP fetch result:
       {{fetch-http.output}}
@@ -109,9 +132,92 @@ steps:
     mcps: [playwright]
     timeoutSeconds: 600
 
+  - name: select-images
+    type: Prompt
+    dependsOn: [fetch-http, fetch-readable]
+    systemPrompt: |
+      You are an image curator for a recipe extraction. You have a list of
+      ad-filtered image candidates and the extracted recipe content. Your
+      job is to pick the images most useful to a cook reproducing this
+      recipe.
+
+      Selection criteria (a chosen image should hit at least one):
+        - "Hero shot" of the finished dish.
+        - Close-up of an ingredient or product the recipe calls out.
+        - Technique still (e.g., kneading, folding, plating).
+        - Equipment shot when the recipe depends on specific tools.
+
+      Hard cap: pick at most {{vars.maxImagesToKeep}} images. Prefer
+      higher-resolution candidates (larger declared width/height when known).
+      Drop anything that looks decorative, author-headshot, related-recipe
+      thumbnail, or "subscribe to my newsletter"-style call-to-action.
+
+      Output a SINGLE JSON object (no commentary, no fences):
+
+        {
+          "selected": [
+            {
+              "src": "<URL from the candidate>",
+              "alt": "<the candidate's alt, or a short caption you write>",
+              "reason": "<one short sentence: which recipe step / ingredient / dish this depicts>"
+            }
+          ],
+          "rejected": [
+            { "src": "<URL>", "reason": "<short rejection reason>" }
+          ]
+        }
+
+      If the candidate list is empty, output { "selected": [], "rejected": [] }.
+    userPrompt: |
+      Image candidates (from fetch-http.output.images):
+      {{fetch-http.output}}
+
+      Extracted page content (use to understand the recipe and decide which images depict what):
+      {{fetch-readable.output}}
+
+      Pick at most {{vars.maxImagesToKeep}} images per the system prompt.
+      Output ONLY the JSON object.
+    timeoutSeconds: 300
+
+  - name: download-images
+    type: Script
+    shell: pwsh
+    dependsOn: [select-images]
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $imagesJson = $args[0]
+      $recipesDir = $args[1]
+      $title      = $args[2]
+      $scriptPath = $args[3]
+
+      # Parse the select-images output, pull out the `selected` array, then
+      # call save-article-images.ps1 with it. We pass title + recipesDir so
+      # the sidecar dir aligns with save-recipe.ps1's slug.
+      $sel = $null
+      if ($imagesJson) { try { $sel = $imagesJson | ConvertFrom-Json } catch {} }
+      $selected = @()
+      if ($sel -and $sel.selected) { $selected = @($sel.selected) }
+      if ($selected.Count -eq 0) {
+        # Nothing to download -- short-circuit with an empty result.
+        @{ ok = $true; sidecarDirectory = $null; downloaded = @(); failed = @(); skipped = @(); note = 'no images selected' } | ConvertTo-Json -Compress
+        return
+      }
+      $selectedJson = $selected | ConvertTo-Json -Depth 5 -Compress
+      & $scriptPath `
+          -ImagesJson $selectedJson `
+          -RecipesDirectory $recipesDir `
+          -Title $title `
+          -MaxDownloads {{vars.maxImagesToKeep}}
+    arguments:
+      - "{{select-images.output}}"
+      - "{{param.recipesDirectory}}"
+      - "{{param.title}}"
+      - "{{orchestration.sourceDirectory}}/tools/scripts/save-article-images.ps1"
+    timeoutSeconds: 600
+
   - name: synthesize
     type: Prompt
-    dependsOn: [fetch-readable]
+    dependsOn: [fetch-readable, download-images]
     systemPrompt: |
       You are a recipe extractor. Build a clean recipe markdown document
       from the extracted page content. Never invent quantities, times, or
@@ -126,6 +232,14 @@ steps:
       tags (recipe + raindrop tags). Then the body following the requested
       section order.
 
+      For each successfully downloaded image (see `downloaded` in the
+      download-images output), embed it inline at the step / ingredient it
+      illustrates using markdown image syntax with the LOCAL `fileUri`:
+        `![<alt>](<fileUri>)`
+      Do NOT embed images that only appear in `failed` or `skipped` -- only
+      embed ones from `downloaded`. If `downloaded` is empty, just produce
+      the recipe without images.
+
       Save the final markdown via orchestra_save_file.
     userPrompt: |
       Raindrop:
@@ -139,8 +253,12 @@ steps:
       Default analysis ask:
         {{vars.defaultAnalysisAsk}}
 
-      Extracted page content (JSON envelope from previous step):
+      Extracted page content (JSON envelope from fetch-readable):
       {{fetch-readable.output}}
+
+      Downloaded images (use the `fileUri` for inline embedding; ignore
+      `failed` and `skipped`):
+      {{download-images.output}}
 
       Produce the recipe markdown. Save via orchestra_save_file. Output the
       markdown as the step output.
@@ -170,7 +288,7 @@ steps:
 
   - name: create-action-view-entry
     type: Prompt
-    dependsOn: [synthesize, save-recipe-file, fetch-action-view-schema]
+    dependsOn: [synthesize, download-images, save-recipe-file, fetch-action-view-schema]
     systemPrompt: |
       You produce ActionView entries that match the entry schema. Type must
       be 'raindrop-recipe'; source must be '{{orchestration.name}}'.
@@ -192,7 +310,11 @@ steps:
       Recipe save result:
       {{save-recipe-file.output}}
 
+      Downloaded images (for Visual evidence section):
+      {{download-images.output}}
+
       Build an entry with:
+        id       = 'raindrop-{{param.raindropId}}-recipe'  # stable per-raindrop key -> idempotent re-runs
         type     = 'raindrop-recipe'
         source   = '{{orchestration.name}}'
         title    = the recipe title (from the markdown front-matter when present, otherwise raindrop title)
@@ -201,8 +323,11 @@ steps:
         icon     = 'utensils-crossed'
         tags     = raindrop tags + ['raindrop','recipe','article']
         content blocks:
-          - keyValue 'Source' with: URL, Added at, Source medium = "article", Saved to (savedPath)
-          - section 'Recipe' containing a markdown block with the recipe body
+          - keyValue 'Source' with: URL, Added at, Source medium = "article", Saved to (savedPath), Images saved (count from downloaded length)
+          - section 'Recipe' containing a markdown block with the recipe body (which already embeds inline images)
+          - section 'Visual evidence' containing a markdown block listing each `downloaded` image as
+              "### <alt or 'image N'>" followed by `![<alt>](<fileUri>)`.
+              Omit this section if `downloaded` is empty.
           - link 'Open original article'
           - link 'Open saved recipe' (file:// URI)
         actions:
@@ -214,21 +339,18 @@ steps:
     timeoutSeconds: 600
 
   - name: submit-action-view-entry
-    type: Command
+    type: Script
+    shell: pwsh
     dependsOn: [create-action-view-entry]
-    command: dnx
+    scriptFile: "./tools/scripts/submit-actionview-upsert.ps1"
     arguments:
-      - ActionView.Cli
-      - "--yes"
-      - "--"
-      - add
-      - "--file"
+      - "-EntryFile"
       - "{{create-action-view-entry.files[0]}}"
     timeoutSeconds: 120
 
   - name: result-envelope
     type: Prompt
-    dependsOn: [fetch-readable, synthesize, save-recipe-file, submit-action-view-entry]
+    dependsOn: [fetch-readable, synthesize, download-images, save-recipe-file, submit-action-view-entry]
     systemPrompt: |
       Output ONLY a JSON envelope describing the outcome.
     userPrompt: |
@@ -240,13 +362,15 @@ steps:
         "raindropId": "{{param.raindropId}}",
         "fetchMode": "<http or playwright from fetch-readable output>",
         "savedRecipePath": "<savedPath from save-recipe-file output>",
+        "imagesDownloaded": <count from download-images output `downloaded` length>,
         "actionViewEntryId": "<id parsed from submit-action-view-entry output, or null>",
         "summary": "<one-sentence summary line>"
       }
 
-      Fetch-readable output: {{fetch-readable.output}}
-      Recipe save output:    {{save-recipe-file.output}}
-      ActionView submission: {{submit-action-view-entry.output}}
+      Fetch-readable output:  {{fetch-readable.output}}
+      Recipe save output:     {{save-recipe-file.output}}
+      Download images output: {{download-images.output}}
+      ActionView submission:  {{submit-action-view-entry.output}}
 
       Output ONLY the JSON.
     timeoutSeconds: 60

@@ -14,7 +14,21 @@ description: |
   If any step fails the orchestration.failure hook flips Zakira.Exchange
   state to "failed" and publishes a raindrop-error ActionView entry so the
   failure is visible.
-version: 1.0.0
+
+  Step order is intentionally: classify -> dispatch-processor ->
+  move-to-processed -> mark-completed -> processor-summary. The raindrop is
+  moved into AI-Processed *before* the state record is flipped to
+  "completed", so a flaky move can never produce the misleading sequence
+  "state=completed but raindrop still in AI-Inbox". A failure of
+  move-to-processed leaves the raindrop in AI-Inbox and the state record at
+  "processing"; the failure hook then flips it to "failed", the tracker
+  retries on the next tick, and the dispatcher's own idempotency (cached
+  Zakira.Replay run, regenerated ActionView entry) bounds the cost. A
+  failure of mark-completed leaves the raindrop in AI-Processed with the
+  state record at "processing"; the failure hook flips it to "failed" --
+  the analysis succeeded so the user can find the ActionView entry, and
+  the next tracker tick will skip the item (it is no longer in AI-Inbox).
+version: 1.1.0
 tags: ["personal", "raindrop", "auto", "processor"]
 defaultModel: claude-opus-4.7-1m-internal
 
@@ -219,37 +233,9 @@ steps:
     mcps: [orchestra]
     timeoutSeconds: 5400
 
-  - name: mark-completed
-    type: Prompt
-    dependsOn: [dispatch-processor]
-    systemPrompt: |
-      You are a state-persistence assistant with Zakira.Exchange MCP tools.
-      Update the memory record for this raindrop to status="completed".
-      Preserve the noteHash from input parameters; record the processor name,
-      the child executionId, and a short summary line. Use edit_memory.
-    userPrompt: |
-      Update state for raindropId={{param.raindropId}}.
-
-      Child dispatch result:
-      {{dispatch-processor.output}}
-
-      Fields to write:
-        status              = "completed"
-        completedAt         = current ISO-8601 timestamp
-        noteHash            = "{{param.noteHash}}"
-        lastProcessor       = (read `processor` from the dispatch result)
-        lastChildExecutionId = (read `executionId` from the dispatch result)
-        lastError           = null
-
-      Tag the memory record with ["completed"].
-
-      Output: { "ok": true }
-    mcps: [zakira]
-    timeoutSeconds: 120
-
   - name: move-to-processed
     type: Script
-    dependsOn: [mark-completed]
+    dependsOn: [dispatch-processor]
     shell: pwsh
     script: |
       $ErrorActionPreference = 'Stop'
@@ -267,9 +253,47 @@ steps:
       - "{{param.processedCollectionId}}"
     timeoutSeconds: 120
 
+  - name: mark-completed
+    type: Prompt
+    dependsOn: [dispatch-processor, move-to-processed]
+    systemPrompt: |
+      You are a state-persistence assistant with Zakira.Exchange MCP tools.
+      Update the memory record for this raindrop to status="completed".
+      Preserve the noteHash from input parameters; record the processor name,
+      the child executionId, and a short summary line. Use edit_memory.
+
+      This step runs AFTER move-to-processed, so by the time we mark
+      "completed", the raindrop is already in AI-Processed. Order matters:
+      if we marked completed first and then the move failed, the state
+      would say "completed" but the raindrop would still be in AI-Inbox,
+      which would either confuse the next tracker tick or cause the entire
+      pipeline (analysis included) to run again.
+    userPrompt: |
+      Update state for raindropId={{param.raindropId}}.
+
+      Child dispatch result:
+      {{dispatch-processor.output}}
+
+      Move-to-processed result:
+      {{move-to-processed.output}}
+
+      Fields to write:
+        status              = "completed"
+        completedAt         = current ISO-8601 timestamp
+        noteHash            = "{{param.noteHash}}"
+        lastProcessor       = (read `processor` from the dispatch result)
+        lastChildExecutionId = (read `executionId` from the dispatch result)
+        lastError           = null
+
+      Tag the memory record with ["completed"].
+
+      Output: { "ok": true }
+    mcps: [zakira]
+    timeoutSeconds: 120
+
   - name: processor-summary
     type: Prompt
-    dependsOn: [dispatch-processor, mark-completed, move-to-processed]
+    dependsOn: [dispatch-processor, move-to-processed, mark-completed]
     systemPrompt: |
       You are a reporting assistant. Produce a short markdown summary of
       this per-item processor run -- one paragraph then a tiny bullet list.
@@ -284,11 +308,11 @@ steps:
       Child dispatch:
       {{dispatch-processor.output}}
 
-      State update:
-      {{mark-completed.output}}
-
       Move result:
       {{move-to-processed.output}}
+
+      State update:
+      {{mark-completed.output}}
 
       Write a short markdown report (no headings deeper than h3) with one
       summary line + a bullet list. End with a line "Done." when everything

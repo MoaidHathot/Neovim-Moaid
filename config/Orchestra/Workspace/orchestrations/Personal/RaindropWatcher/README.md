@@ -5,12 +5,54 @@ classifies each new raindrop along two axes (`medium` = video|article,
 `intent` = recipe|session|generic), dispatches a specialized child
 orchestration per `(medium, intent)`, publishes a rich ActionView entry,
 optionally saves recipes to a configured directory, and finally moves the
-raindrop into a "Processed" collection.
+raindrop into a "Processed" collection -- or, after `maxAttempts` failed
+attempts, into a "DeadLetter" collection so the failure cannot be silently
+lost.
 
 State per raindrop is persisted in **Zakira.Exchange** under the
 `raindrop-watcher-state` category, exactly the same pattern used by the
 existing `icm-investigator` orchestrations. Failures are surfaced as a
-`raindrop-error` ActionView entry via an orchestration-failure hook.
+`raindrop-error` ActionView entry via an orchestration-failure hook;
+permanent failures (after `maxAttempts`) additionally produce a
+`raindrop-dead-letter` entry (severity=critical). Every tracker tick also
+refreshes a single rolling `raindrop-watcher-status` entry that summarises
+inbox / dispatched / dead-lettered counts so you have a one-glance health
+indicator.
+
+## State lifetime (Zakira.Exchange records)
+
+```
+                                            +-> completed   (success)
+no record -> queued -> processing ---+
+                                     +-> failed -- retried (up to maxAttempts)
+                                                |
+                                                +-> dead-lettered  (terminal)
+```
+
+Tracker-tick guarantees, by design:
+
+- **Stuck-in-flight detection.** If `status` stays in `queued` or
+  `processing` for longer than `stuckThresholdMinutes` (default 60), the
+  next tick reclassifies the item as `failed` (with
+  `lastError = "stuck-in-flight: ..."`) and the normal failed rules apply.
+  This recovers items that were lost when the Orchestra host crashed mid-
+  run or when the orchestration.failure hook itself failed.
+- **Dead-letter after maxAttempts.** Items that fail `maxAttempts` times
+  (default 3) are *moved* out of `AI-Inbox` into `AI-DeadLetter`, tagged
+  `dead-letter`, marked `status=dead-lettered` in Zakira, and surface a
+  `raindrop-dead-letter` ActionView entry. They are NEVER skipped silently.
+- **Move-then-mark order in raindrop-processor.** `move-to-processed` runs
+  *before* `mark-completed`. This guarantees we never have the misleading
+  state "Zakira says completed, but the raindrop is still in `AI-Inbox`".
+  The trade-off: if `move` succeeds and `mark-completed` then fails, the
+  raindrop is in `AI-Processed` but its state record says `failed`. The
+  next tick will skip it (no longer in inbox), and the user finds the
+  ActionView entry that the analysis already produced.
+- **Failure hook throws on internal failure.** When the
+  `orchestration.failure` hook can't write to Zakira or can't add the
+  ActionView entry, it now throws so the error surfaces in the hook log
+  (rather than silently leaving the state inconsistent). The stuck-
+  detection rule above is the second line of defense for this case.
 
 ## Multi-machine story (dotfiles-first)
 
@@ -47,17 +89,20 @@ token):
 RaindropWatcher/
 +- raindrop-tracker.yaml                 # scheduler poller + fan-out dispatcher
 +- raindrop-processor.yaml               # classifier + router (one run per raindrop)
-+- raindrop-video-session-processor.yaml # Zakira lecture preset + chapters
-+- raindrop-video-recipe-processor.yaml  # Zakira scene frames + recipe extraction
-+- raindrop-video-generic-processor.yaml # Zakira transcript-first summary
-+- raindrop-article-recipe-processor.yaml  # HTTP+Playwright + recipe extraction
-+- raindrop-article-generic-processor.yaml # HTTP+Playwright + flexible analysis
++- raindrop-video-session-processor.yaml # Zakira lecture preset + chapters + targeted frames via Zakira.Replay MCP
++- raindrop-video-recipe-processor.yaml  # Zakira scene frames + targeted frames + recipe extraction
++- raindrop-video-generic-processor.yaml # Zakira transcript-first + light (5-cap) targeted frames
++- raindrop-article-recipe-processor.yaml  # HTTP+Playwright + image extraction + image download
++- raindrop-article-generic-processor.yaml # HTTP+Playwright + image extraction (embed remote URLs)
 +- tools/
 |   +- raindrop.cs                       # .NET 10 single-file CLI for raindrop.io
 |   +- scripts/
-|       +- fetch-article.ps1             # cheap HTTP fetch with heuristic "thin" flag
+|       +- fetch-article.ps1             # cheap HTTP fetch + ad-filtered image candidate extraction
 |       +- save-recipe.ps1               # write recipe md to recipes dir
-|       +- hook-mark-failed.ps1          # orchestration.failure hook
+|       +- save-article-images.ps1       # download chosen article images into <recipesDir>/<slug>-images/
+|       +- hook-mark-failed.ps1          # orchestration.failure hook (now throws on internal failure)
+|       +- dead-letter-process.ps1       # moves dead-letter items, marks Zakira, publishes ActionView entry
+|       +- publish-rolling-status.ps1    # tick-end: replaces the single rolling raindrop-watcher-status entry
 +- skills/
 |   +- raindrop-router/SKILL.md          # classification ruleset
 +- tests/
@@ -71,8 +116,37 @@ $XDG_CONFIG_HOME/actionview/templates/
     +- raindrop-video-generic.json
     +- raindrop-recipe.json              # used by BOTH recipe processors (video + article)
     +- raindrop-article.json
-    +- raindrop-error.json
+    +- raindrop-error.json               # one per orchestration.failure hook fire
+    +- raindrop-dead-letter.json         # one per item that exhausted maxAttempts
+    +- raindrop-watcher-status.json      # exactly one entry total; replaced each tick
 ```
+
+## Visual evidence pipeline
+
+Two-stage frame capture for **video** processors (recipe / session / generic):
+
+1. **Baseline** -- `Zakira.Replay analyze` with strategy/preset tuned per
+   intent (scene + ocr + vision for recipe; lecture preset + ocr + vision
+   for session; transcript-only with `--frames 0` for generic).
+2. **Targeted** -- a `targeted-frame-capture` Prompt step holds the
+   Zakira.Replay MCP server in scope (`mcp serve --transport stdio`). The
+   LLM scans the transcript and asks the MCP for additional frames at
+   moments judged genuinely visual (technique demos, product close-ups,
+   slide references). Bounded caps: recipe=20, session=12, generic=5.
+   Each requested frame must include a one-sentence justification.
+
+For **article-recipe**: `fetch-article.ps1` extracts ad-filtered `<img>`
+candidates from the raw HTML (drops tracking pixels, ad networks,
+sidebar/footer images, decorative small images). A `select-images` step
+picks the most relevant; `download-images` saves them into
+`<recipesDir>/<slug>-images/` next to the recipe markdown so the recipe
+remains usable if the source article disappears.
+
+For **article-generic**: same candidate extraction + selection, but the
+images are embedded into the ActionView entry **by remote URL** (no
+download).
+
+## Multi-machine story (dotfiles-first)
 
 ## Routing table
 
@@ -110,14 +184,18 @@ dotfiles.
 2. **(Optional) Customize defaults** in `raindrop-tracker.yaml` `variables`:
    - `inboxCollectionName` (default: `AI-Inbox`)
    - `processedCollectionName` (default: `AI-Processed`)
+   - `deadLetterCollectionName` (default: `AI-DeadLetter`)
    - `recipesDirectory` (default: `$USERPROFILE/OneDrive/Documents/Recipes`)
    - `maxDispatchPerTick` (default: `3`)
    - `maxAttempts` (default: `3`)
+   - `stuckThresholdMinutes` (default: `60`)
 
 3. **(Already done if you have ActionView set up):** confirm
    `actionview.json` declares `"templates": { "externalDirectory": "./templates" }`
-   so ActionView picks up the 5 raindrop-* templates already shipped at
-   `$XDG_CONFIG_HOME/actionview/templates/`.
+   so ActionView picks up the 7 raindrop-* templates already shipped at
+   `$XDG_CONFIG_HOME/actionview/templates/` (success entries for each
+   medium/intent, plus `raindrop-error`, `raindrop-dead-letter`, and
+   `raindrop-watcher-status`).
 
 ### Per machine
 
@@ -203,17 +281,58 @@ pwsh -File tests/test-raindrop-cli-tokens.ps1
   SHA-256 hash), the tracker re-dispatches it on the next tick.
 
 - **Retries**: failures bump an attempt counter in Zakira.Exchange. The
-  tracker retries failed items up to `maxAttempts` (default 3); afterwards
-  the item is left as `failed` and surfaces only via the `raindrop-error`
-  ActionView entry.
+  tracker retries failed items up to `maxAttempts` (default 3). After the
+  cap is hit the tracker **moves the raindrop** out of `AI-Inbox` into
+  `AI-DeadLetter`, marks the Zakira record `status=dead-lettered`, and
+  publishes a critical-severity `raindrop-dead-letter` ActionView entry.
+  Items are never silently skipped.
 
-- **Manual retry of a permanently-failed raindrop**: edit (or delete) the
-  Zakira.Exchange record under category `raindrop-watcher-state` with key
-  `<raindropId>`. Easiest:
-  ```powershell
-  dnx Zakira.Exchange --yes -- --db $env:XDG_CONFIG_HOME/orchestra/zakira.db `
-      delete --category raindrop-watcher-state --key <id>
-  ```
+- **Stuck-in-flight recovery**: if a state record sits in
+  `queued`/`processing` for more than `stuckThresholdMinutes` (default
+  60), the next tracker tick reclassifies it as `failed` with
+  `lastError="stuck-in-flight: ..."` and the normal failed-rule applies
+  (retry or dead-letter). This is the safety net when the Orchestra host
+  crashes mid-run, when a child orchestration is killed, or when the
+  failure hook itself fails.
+
+- **Visual evidence (videos)**: each video processor runs a baseline
+  `Zakira.Replay analyze` pass and then a targeted-frame-capture pass
+  through Zakira.Replay's MCP. Caps: recipe=20, session=12, generic=5
+  additional frames per video. Tune via the `targetedFrameCap` variable
+  in each processor YAML.
+
+- **Visual evidence (article recipes)**: `fetch-article.ps1` extracts
+  ad-filtered `<img>` candidates from the raw HTML. The `select-images`
+  step picks up to `maxImagesToKeep` (default 8) and downloads them into
+  `<recipesDir>/<recipe-slug>-images/`. Article-generic embeds remote
+  URLs only (no download).
+
+- **Rolling watcher health entry**: every tracker tick replaces the single
+  `raindrop-watcher-status` ActionView entry with fresh counts. Use it as
+  your "is the watcher healthy?" glance. Severity escalates to `medium`
+  whenever anything was dead-lettered or stuck-reclassified this tick.
+
+- **Manual retry of a permanently-failed raindrop**: a dead-lettered
+  raindrop lives in `AI-DeadLetter`. To retry it:
+  1. Move it back to `AI-Inbox` (drag in raindrop.io, or via the CLI:
+     `dotnet run tools/raindrop.cs -- move <id> --to-collection <inboxId>`).
+  2. Delete (or edit) its Zakira.Exchange record so the tracker treats it
+     as new:
+     ```powershell
+     dnx Zakira.Exchange --yes -- --db $env:XDG_CONFIG_HOME/orchestra/zakira.db `
+         delete --category raindrop-watcher-state --key <id>
+     ```
+
+- **Idempotency on retries**: every per-raindrop ActionView entry is
+  assigned a deterministic id (`raindrop-<raindropId>-<short-type>`,
+  `raindrop-error-<raindropId>`, `raindrop-dead-letter-<raindropId>`). The
+  submit step does a `delete --force` against that id before adding the
+  new entry, so re-running a processor (after a transient failure or a
+  note edit) **replaces** the old entry rather than accumulating a second
+  one. Downloaded article images are named with a SHA1-hash prefix of the
+  source URL; re-runs short-circuit as "already downloaded" without
+  re-fetching. Recipe markdown files use the existing overwrite-or-
+  timestamp semantics in `save-recipe.ps1`.
 
 - **Adding a new content type**: write a new processor orchestration, add
   a routing row to `skills/raindrop-router/SKILL.md`, and (optionally) add

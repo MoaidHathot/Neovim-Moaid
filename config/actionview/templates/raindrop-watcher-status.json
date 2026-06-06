@@ -1,0 +1,29 @@
+{
+  "type": "raindrop-watcher-status",
+  "description": "Rolling health summary of the raindrop watcher. Exactly one entry exists at any time -- the publish-rolling-status tracker step deletes prior entries of this type before adding a fresh one each tick. Use it as your 'is the watcher healthy?' glance.",
+  "defaults": {
+    "severity": "low",
+    "icon": "activity",
+    "tags": ["raindrop", "watcher", "status"]
+  },
+  "contentTemplate": [
+    {
+      "type": "keyValue",
+      "label": "Counts",
+      "required": true,
+      "requiredKeys": [
+        "Inbox",
+        "Dispatched this tick",
+        "Skipped",
+        "Deferred to next tick",
+        "Dead-lettered this tick",
+        "Stuck-reclassified",
+        "Last tick at (UTC)"
+      ]
+    }
+  ],
+  "expectedActions": [
+    { "label": "Open AI-Inbox", "style": "default" },
+    { "label": "Open AI-DeadLetter", "style": "default" }
+  ]
+}

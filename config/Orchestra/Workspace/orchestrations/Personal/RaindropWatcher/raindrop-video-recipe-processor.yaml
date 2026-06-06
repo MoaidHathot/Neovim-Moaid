@@ -1,12 +1,26 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
 name: raindrop-video-recipe-processor
 description: |
-  Processor for raindrops classified as (video, recipe). Uses Zakira.Replay
-  with scene-detection frames to grab one image per visual scene change so the
-  recipe steps and ingredient shots are captured, then extracts a structured
-  recipe (front-matter + Markdown body) and persists it both as an ActionView
-  entry and as a plain markdown file in the user's recipes directory.
-version: 1.0.0
+  Processor for raindrops classified as (video, recipe). Two-stage frame
+  pipeline:
+
+    1. BASELINE: Zakira.Replay `analyze` with scene-detection + vision + OCR.
+       Captures one frame per visual scene change so ingredient shots,
+       technique demos, and finished-dish reveals are all in the artifact
+       tree. Cached -- safe to re-run.
+
+    2. TARGETED: a Prompt step reads the transcript and asks Zakira.Replay's
+       MCP for additional frames at moments the LLM judges important (specific
+       product shots, hand-on demonstrations, "now you should see..."
+       narrations, sauce textures, plating, etc.). Bounded cap so it stays
+       balanced, not spammy.
+
+  The synth step builds the recipe markdown referencing both baseline scene
+  frames AND targeted frames by file path. The ActionView entry embeds the
+  selected images via markdown image blocks (file:// URIs).
+
+  Saves a self-contained recipe markdown file to the configured recipes dir.
+version: 1.1.0
 tags: ["personal", "raindrop", "auto", "video", "recipe"]
 defaultModel: claude-opus-4.7-1m-internal
 
@@ -37,12 +51,34 @@ variables:
       ## Steps         (numbered list; each step references the timestamp
                         in the source video as `[hh:mm:ss]` so the user can
                         jump back; cite the frame slideId when a step is
-                        primarily visual)
+                        primarily visual; inline relevant captured frames
+                        using markdown image syntax with file:// URIs:
+                        `![what it shows at hh:mm:ss](file:///path/to/frame.jpg)`)
       ## Tips          (bullet list of variations / substitutions / pitfalls)
       ## Source        (link to the original video + author / channel name)
 
+  # Cap on additional frames captured by the targeted step. Recipe is the
+  # most visual of all intents, so we allow more here than for session.
+  targetedFrameCap: "20"
+
 defaultStepTimeoutSeconds: 1800
 timeoutSeconds: 7200
+
+mcps:
+  # Zakira.Replay's MCP server -- used by the targeted-frame-capture step
+  # to request ad-hoc frame captures at specific timestamps without rerunning
+  # the full analyze pipeline. The transport is stdio (default).
+  - name: zakira-replay
+    type: local
+    command: dnx
+    arguments:
+      - Zakira.Replay
+      - "--yes"
+      - "--"
+      - mcp
+      - serve
+      - "--transport"
+      - stdio
 
 steps:
   - name: zakira-analyze
@@ -88,6 +124,21 @@ steps:
         if ($s.Length -le $max) { return $s }
         return $s.Substring(0, $max) + "`n`n...[truncated $($s.Length - $max) chars]"
       }
+
+      # Enumerate baseline frames present on disk (scene-detected by analyze).
+      $framesDir = Join-Path $artifactDir 'frames'
+      $baselineFrames = @()
+      if (Test-Path -LiteralPath $framesDir) {
+        $files = Get-ChildItem -LiteralPath $framesDir -File -Recurse -Include *.jpg,*.jpeg,*.png,*.webp -ErrorAction SilentlyContinue | Select-Object -First 80
+        foreach ($f in $files) {
+          $baselineFrames += [pscustomobject]@{
+            file = $f.Name
+            path = $f.FullName
+            fileUri = ([System.Uri]::new($f.FullName)).AbsoluteUri
+          }
+        }
+      }
+
       $pack = @{
         runId = $payload.runId
         artifactDirectory = $artifactDir
@@ -96,22 +147,110 @@ steps:
         transcript = (Cap (ReadFileOrEmpty 'transcript.md') 60000)
         ocr = (Cap (ReadFileOrEmpty 'ocr/combined.md') 30000)
         vision = (Cap (ReadFileOrEmpty 'vision/combined.md') 30000)
+        baselineFrames = $baselineFrames
       }
       $pack | ConvertTo-Json -Depth 8 -Compress
     arguments:
       - "{{zakira-analyze.output}}"
     timeoutSeconds: 120
 
-  - name: synthesize
+  - name: targeted-frame-capture
     type: Prompt
     dependsOn: [read-artifacts]
     systemPrompt: |
+      You are a visual evidence curator for a cooking-video recipe extraction
+      pipeline. You have the Zakira.Replay MCP server in scope (transport:
+      stdio). It exposes ad-hoc frame-capture capabilities; use whichever
+      tool corresponds to ad-hoc frame capture (likely named `frames` or
+      similar -- list_tools first to confirm the exact name and arg shape).
+
+      Your job: scan the transcript for moments where a still image is
+      VALUABLE to a cook trying to reproduce this recipe later, then call
+      the frame-capture tool to grab those frames into the existing
+      Zakira.Replay run directory. Reuse the same `runId` so frames land
+      next to the baseline ones (do NOT create a new run).
+
+      What counts as a valuable moment (call out one per timestamp):
+        - "Hero shot" of a specific product / brand / ingredient on screen
+          ("the brand of yeast I use is...").
+        - Hands-on technique demo ("knead like this...", "fold the egg
+          whites in like so..."). Capture mid-motion.
+        - State / texture cue ("look for this color", "should feel like
+          this", "should be the consistency of...").
+        - Visual measurement ("fill it to here").
+        - Setup / mise-en-place ("here is everything you need").
+        - Tool usage ("hold the knife like this", "the pan is at this
+          heat").
+        - Plating / finished dish.
+
+      Hard caps (BALANCE, not spam):
+        - Total additional frames captured: at most {{vars.targetedFrameCap}}.
+        - Skip any moment within ~10 seconds of an existing baseline scene
+          frame (consult baselineFrames in the input -- the file names
+          typically encode timestamps; if unclear, just spread your picks
+          across the timeline).
+        - Each request MUST include a one-sentence `reason` in your output
+          explaining why this frame helps a cook. If you cannot articulate
+          a reason, do not capture.
+
+      Output a SINGLE JSON object:
+
+      {
+        "ok": true,
+        "runId": "<runId from input>",
+        "captured": [
+          {
+            "timestamp": "hh:mm:ss",
+            "reason": "<one short sentence>",
+            "path": "<absolute path returned by the MCP tool>",
+            "fileUri": "<file:// URI for the path>"
+          }
+        ],
+        "skipped": [
+          { "timestamp": "hh:mm:ss", "reason": "<why skipped>" }
+        ],
+        "budget": "captured N of {{vars.targetedFrameCap}}"
+      }
+
+      If the MCP tool errors or no transcript timestamps look valuable,
+      output:
+        { "ok": true, "runId": "<id>", "captured": [], "skipped": [],
+          "budget": "captured 0 of {{vars.targetedFrameCap}}" }
+
+      Do NOT call any non-MCP tool. Do NOT invent paths. Output ONLY the
+      JSON object, no commentary.
+    userPrompt: |
+      Raindrop:
+        title = {{param.title}}
+        url   = {{param.url}}
+
+      Zakira.Replay artifact pack (use `runId` and `artifactDirectory` for
+      the MCP `frames` calls; consult baselineFrames before requesting new
+      ones to avoid near-duplicates):
+
+      {{read-artifacts.output}}
+
+      Pick the valuable moments per the system prompt and capture them via
+      the MCP. Output ONLY the result JSON.
+    mcps: [zakira-replay]
+    timeoutSeconds: 1200
+
+  - name: synthesize
+    type: Prompt
+    dependsOn: [read-artifacts, targeted-frame-capture]
+    systemPrompt: |
       You are a recipe extractor. The user wants a clean, repeatable recipe
-      built from the transcript + extracted frames + OCR + vision artifacts.
-      Never invent ingredients or steps -- if an ingredient is mentioned in
-      narration but not visible on-screen, that's fine; cite the timestamp.
-      If you cannot find a piece of information (e.g., exact oven temperature),
-      write "unspecified" rather than guessing.
+      built from the transcript + extracted frames (baseline scene + targeted)
+      + OCR + vision artifacts. Never invent ingredients or steps -- if an
+      ingredient is mentioned in narration but not visible on-screen, that's
+      fine; cite the timestamp. If you cannot find a piece of information
+      (e.g., exact oven temperature), write "unspecified" rather than guessing.
+
+      Embed images inline in the Steps section using markdown image syntax
+      with file:// URIs taken from `baselineFrames` and `captured` in the
+      inputs. Cap inline images at ~12 across the whole recipe and pick the
+      ones whose `reason` is most useful for a cook reproducing this. Place
+      each image immediately under the step it illustrates.
 
       Use the user's note as the primary analysis request when it is
       non-empty; otherwise use the default ask provided.
@@ -138,6 +277,9 @@ steps:
 
       Zakira.Replay artifact pack:
         {{read-artifacts.output}}
+
+      Targeted frame capture results:
+        {{targeted-frame-capture.output}}
 
       Produce the recipe markdown. Save it via orchestra_save_file. Output
       the markdown content as the step output too.
@@ -167,7 +309,7 @@ steps:
 
   - name: create-action-view-entry
     type: Prompt
-    dependsOn: [synthesize, save-recipe-file, fetch-action-view-schema]
+    dependsOn: [synthesize, targeted-frame-capture, save-recipe-file, fetch-action-view-schema]
     systemPrompt: |
       You produce ActionView entries that match the entry schema. The entry
       type must be 'raindrop-recipe' and source must be '{{orchestration.name}}'.
@@ -190,7 +332,11 @@ steps:
       Recipe save result (JSON):
       {{save-recipe-file.output}}
 
+      Targeted frame capture results (use for the Visual evidence section):
+      {{targeted-frame-capture.output}}
+
       Build an entry with:
+        id       = 'raindrop-{{param.raindropId}}-recipe'  # stable per-raindrop key -> idempotent re-runs replace, never duplicate
         type     = 'raindrop-recipe'
         source   = '{{orchestration.name}}'
         title    = the recipe title (from the markdown front-matter when present, otherwise raindrop title)
@@ -200,7 +346,10 @@ steps:
         tags     = the raindrop tags + ['raindrop','recipe','video']
         content blocks:
           - keyValue 'Source' with: URL, Added at, Source medium = "video", Saved to (path from save-recipe-file)
-          - section 'Recipe' containing a markdown block with the entire recipe body
+          - section 'Recipe' containing a markdown block with the entire recipe body (which already embeds inline images)
+          - section 'Visual evidence' containing a markdown block that lists each item from `captured` (targeted frames):
+              "### <timestamp> -- <reason>" followed by an inline image markdown line `![<reason>](<fileUri>)`.
+              Omit this section entirely when `captured` is empty.
           - link 'Open original video' to the raindrop URL
           - link 'Open saved recipe' to the file:// URI of the saved recipe path
         actions:
@@ -212,21 +361,18 @@ steps:
     timeoutSeconds: 600
 
   - name: submit-action-view-entry
-    type: Command
+    type: Script
+    shell: pwsh
     dependsOn: [create-action-view-entry]
-    command: dnx
+    scriptFile: "./tools/scripts/submit-actionview-upsert.ps1"
     arguments:
-      - ActionView.Cli
-      - "--yes"
-      - "--"
-      - add
-      - "--file"
+      - "-EntryFile"
       - "{{create-action-view-entry.files[0]}}"
     timeoutSeconds: 120
 
   - name: result-envelope
     type: Prompt
-    dependsOn: [zakira-analyze, synthesize, save-recipe-file, submit-action-view-entry]
+    dependsOn: [zakira-analyze, targeted-frame-capture, synthesize, save-recipe-file, submit-action-view-entry]
     systemPrompt: |
       You produce a single small JSON envelope describing the outcome of
       this processor run, so the parent raindrop-processor can persist a
@@ -239,14 +385,16 @@ steps:
         "processor": "{{orchestration.name}}",
         "raindropId": "{{param.raindropId}}",
         "zakiraReplayRunId": "<runId from zakira-analyze output>",
+        "targetedFramesCaptured": <count from targeted-frame-capture output `captured` length>,
         "savedRecipePath": "<savedPath from save-recipe-file output>",
         "actionViewEntryId": "<id parsed from submit-action-view-entry output, or null>",
         "summary": "<one-sentence summary line>"
       }
 
-      Zakira analyze output: {{zakira-analyze.output}}
-      Recipe save output:    {{save-recipe-file.output}}
-      ActionView submission: {{submit-action-view-entry.output}}
+      Zakira analyze output:        {{zakira-analyze.output}}
+      Targeted frame capture:       {{targeted-frame-capture.output}}
+      Recipe save output:           {{save-recipe-file.output}}
+      ActionView submission:        {{submit-action-view-entry.output}}
 
       Output ONLY the JSON.
     timeoutSeconds: 60

@@ -11,6 +11,24 @@ description: |
   collection ids hard-coded anywhere -- the suite is portable across
   machines as soon as `raindrop login` (or RAINDROP_TOKEN) is configured.
 
+  State machine (Zakira.Exchange, category=raindrop-watcher-state, key=raindropId):
+      (no record) -> queued -> processing -> completed   (success path)
+                                          \-> failed     (recoverable; retried up to maxAttempts)
+                                          \-> dead-lettered  (terminal; moved out of inbox)
+
+  Safety nets the tracker enforces every tick:
+    * stuck-in-flight detection -- if status in {queued, processing} but
+      now - (queuedAt|startedAt) > stuckThresholdMinutes, the item is
+      reclassified as failed (with lastError="stuck-in-flight: ...") and the
+      normal failed-rule applies (re-dispatch or dead-letter).
+    * dead-letter -- when attempts >= maxAttempts the item is moved out of
+      AI-Inbox into AI-DeadLetter (separate collection), tagged dead-letter,
+      and a critical-severity ActionView entry is published so it cannot be
+      silently lost.
+    * rolling watcher-status -- exactly one raindrop-watcher-status entry
+      exists in ActionView at any time; it is replaced each tick with the
+      current counts so you have a single glanceable health indicator.
+
   Concurrency is capped per tick via maxDispatchPerTick. State that survives
   ticks (and even host restarts) lives in Zakira.Exchange under the
   raindrop-watcher-state category. Re-processing is triggered when a
@@ -20,7 +38,7 @@ description: |
   Auth, API calls, and OAuth all live in tools/raindrop.cs -- this
   orchestration shells out to that helper and never speaks raindrop.io's
   REST API directly.
-version: 1.0.0
+version: 1.1.0
 tags: ["personal", "raindrop", "auto", "watcher"]
 defaultModel: claude-opus-4.7-1m-internal
 
@@ -31,6 +49,7 @@ variables:
   # this is the single source of truth across every machine.
   inboxCollectionName: "AI-Inbox"
   processedCollectionName: "AI-Processed"
+  deadLetterCollectionName: "AI-DeadLetter"
   # Where recipes (from both video and article recipe processors) are
   # written. Propagated to children as a parameter -- do not duplicate
   # this value in any child orchestration.
@@ -38,11 +57,18 @@ variables:
   # Tuning knobs.
   maxDispatchPerTick: "3"
   maxAttempts: "3"
+  # How long an item can sit in status=queued|processing before we declare
+  # it stuck and re-classify as failed. Should be larger than any legitimate
+  # child orchestration's total timeout to avoid false positives; 60min is
+  # comfortable for the current article (~1800s) and video (~5400s) ceilings.
+  stuckThresholdMinutes: "60"
   pollMaxItems: "100"
   # -------------------------------------------------------------------------
   childOrchestrationName: "raindrop-processor"
   zakiraCategory: "raindrop-watcher-state"
   raindropCli: "{{orchestration.sourceDirectory}}/tools/raindrop.cs"
+  deadLetterScript: "{{orchestration.sourceDirectory}}/tools/scripts/dead-letter-process.ps1"
+  rollingStatusScript: "{{orchestration.sourceDirectory}}/tools/scripts/publish-rolling-status.ps1"
 
 defaultRetryPolicy:
   maxRetries: 2
@@ -80,6 +106,7 @@ steps:
       $cli = $args[0]
       $inboxName = $args[1]
       $processedName = $args[2]
+      $deadLetterName = $args[3]
 
       # Windows-only resilience: if Orchestra host was started BEFORE the
       # user set these env vars at User scope, the host's process tree
@@ -98,40 +125,37 @@ steps:
         }
       }
 
-      # 1) Auth probe. whoami uses the resolved auth (RAINDROP_TOKEN or OAuth
-      #    via persisted DPAPI-encrypted refresh token). When OAuth env vars
-      #    are set but no token is on disk yet, the CLI auto-launches the
-      #    interactive browser login flow -- the user only needs to click
-      #    "Allow" once on a brand-new machine; subsequent ticks reuse the
-      #    refresh token silently. Set RAINDROP_AUTO_LOGIN=0 to disable.
+      # 1) Auth probe.
       & dotnet run $cli -- whoami 1>$null 2>$null
       if ($LASTEXITCODE -ne 0) {
-        throw "raindrop auth check failed (exit $LASTEXITCODE). On this machine, set RAINDROP_TOKEN, OR set RAINDROP_OAUTH_CLIENT_ID + RAINDROP_OAUTH_CLIENT_SECRET (login is automatic on first use). If you already set these as User-scope env vars, the Orchestra host may have been started before -- the script tries to pull them from the User registry as a fallback; if it's still failing, restart the Orchestra host so all children inherit the new env."
+        throw "raindrop auth check failed (exit $LASTEXITCODE). On this machine, set RAINDROP_TOKEN, OR set RAINDROP_OAUTH_CLIENT_ID + RAINDROP_OAUTH_CLIENT_SECRET (login is automatic on first use)."
       }
 
-      # 2) Resolve / create both collections by name (idempotent).
-      $inboxJson = & dotnet run $cli -- ensure-collection $inboxName 2>$null
-      if ($LASTEXITCODE -ne 0) {
-        throw "raindrop ensure-collection '$inboxName' failed with exit $LASTEXITCODE"
+      # 2) Resolve / create all three collections by name (idempotent).
+      function EnsureCollection([string]$name) {
+        $stdout = & dotnet run $cli -- ensure-collection $name 2>$null
+        if ($LASTEXITCODE -ne 0) {
+          throw "raindrop ensure-collection '$name' failed with exit $LASTEXITCODE"
+        }
+        return (($stdout -join "`n") | ConvertFrom-Json)
       }
-      $procJson = & dotnet run $cli -- ensure-collection $processedName 2>$null
-      if ($LASTEXITCODE -ne 0) {
-        throw "raindrop ensure-collection '$processedName' failed with exit $LASTEXITCODE"
-      }
-
-      $inbox = ($inboxJson -join "`n") | ConvertFrom-Json
-      $proc  = ($procJson  -join "`n") | ConvertFrom-Json
+      $inbox      = EnsureCollection $inboxName
+      $proc       = EnsureCollection $processedName
+      $deadLetter = EnsureCollection $deadLetterName
 
       @{
-        inboxCollectionId       = $inbox.id
-        inboxCollectionName     = $inboxName
-        processedCollectionId   = $proc.id
-        processedCollectionName = $processedName
+        inboxCollectionId        = $inbox.id
+        inboxCollectionName      = $inboxName
+        processedCollectionId    = $proc.id
+        processedCollectionName  = $processedName
+        deadLetterCollectionId   = $deadLetter.id
+        deadLetterCollectionName = $deadLetterName
       } | ConvertTo-Json -Compress
     arguments:
       - "{{vars.raindropCli}}"
       - "{{vars.inboxCollectionName}}"
       - "{{vars.processedCollectionName}}"
+      - "{{vars.deadLetterCollectionName}}"
     # Bumped to cover first-run interactive OAuth (browser open + user click).
     # Subsequent ticks finish in ~1-2 seconds; this only matters once per machine.
     timeoutSeconds: 600
@@ -184,7 +208,7 @@ steps:
       You are a state retrieval assistant. You have Zakira.Exchange MCP tools.
       The category is locked to raindrop-watcher-state. The memory key is the
       raindrop id (as a string). Stored records carry status, noteHash,
-      attempts, lastError, processedAt, etc.
+      attempts, lastError, queuedAt, startedAt, processedAt, etc.
     userPrompt: |
       For every raindrop in this array, look up its existing memory record
       using the raindrop's `_id` (as a string) as the key. Use get_memory.
@@ -202,32 +226,69 @@ steps:
     type: Prompt
     dependsOn: [gate-empty, load-state]
     systemPrompt: |
-      You are a queue scheduler. You decide which raindrops should be
-      dispatched to the processor in this tick. You have access to
-      orchestra_complete.
+      You are a queue scheduler. You decide which raindrops to dispatch to
+      the processor in this tick, and which to permanently dead-letter. You
+      have access to orchestra_complete.
 
-      Dispatch rules (apply in order, first matching rule wins per item):
-        - No state record present                              -> dispatch (status: queued).
-        - Status == "completed" AND noteHash unchanged          -> SKIP.
-        - Status == "completed" AND noteHash changed            -> RE-DISPATCH (note edited; user wants re-analysis).
-        - Status == "queued" OR "processing"                    -> SKIP (in flight or dispatched recently).
-        - Status == "failed" AND attempts < maxAttempts         -> RE-DISPATCH.
-        - Status == "failed" AND attempts >= maxAttempts        -> SKIP (manual intervention needed; surface in summary).
+      Concepts:
+        - `now` is the current UTC time (ISO-8601).
+        - A record's "age in minutes" is (now - queuedAt|startedAt|0), using
+          the most recent of those timestamps when both exist. When the
+          record has no such timestamp, treat the item as ageMinutes=0.
 
-      Hard cap: never select more than `maxDispatchPerTick` items in one tick.
-      If the cap is hit, surface the deferred ids in the output so the
-      tracker reports them.
+      Dispatch rules (apply per item, first matching rule wins):
+
+        R1. No state record present
+              -> dispatch (status: queued, reason: new).
+
+        R2. Status == "completed" AND noteHash unchanged
+              -> SKIP (reason: completed-unchanged).
+
+        R3. Status == "completed" AND noteHash changed
+              -> RE-DISPATCH (reason: note-changed).
+
+        R4. Status in {"queued","processing"} AND ageMinutes > stuckThresholdMinutes
+              -> RECLASSIFY-STUCK: treat the item as if status == "failed"
+                 with lastError = "stuck-in-flight: no progress for <N> min"
+                 and effective attempts = current attempts (do NOT bump here;
+                 the processor's mark-processing step will bump on re-dispatch).
+                 Then apply the failed-rules below.
+                 Record this in the `stuckReclassified` output array.
+
+        R5. Status in {"queued","processing"} AND ageMinutes <= stuckThresholdMinutes
+              -> SKIP (reason: in-flight).
+
+        R6. Status == "failed" AND attempts < maxAttempts
+              -> RE-DISPATCH (reason: retry-failed).
+
+        R7. Status == "failed" AND attempts >= maxAttempts
+              -> DEAD-LETTER (record in the `deadLetter` output array; do NOT
+                 select for dispatch). The dead-letter-move step will move
+                 the raindrop into the dead-letter collection and publish a
+                 raindrop-dead-letter ActionView entry.
+
+        R8. Status == "dead-lettered"
+              -> SKIP (reason: already-dead-lettered). The raindrop should
+                 no longer be in AI-Inbox; if it appears here, the last
+                 dead-letter-move failed and will be retried.
+
+      Hard cap: never select more than `maxDispatchPerTick` items for dispatch
+      in one tick. If the cap is hit, surface the deferred ids in the
+      `deferred` array. Dead-letter is NOT subject to this cap.
 
       Compute the noteHash as SHA-256 of the raindrop's `note` field (UTF-8;
-      empty string when null). The downstream step that marks-queued will
-      persist the new hash.
+      empty string when null).
 
-      If after applying the rules nothing is selected, call orchestra_complete
-      with status 'success' and reason 'Nothing new to dispatch this tick.'
+      If after applying the rules nothing is selected AND nothing is to be
+      dead-lettered, call orchestra_complete with status 'success' and
+      reason 'Nothing new to dispatch this tick.'
+
     userPrompt: |
       Inputs:
-        - maxDispatchPerTick = {{vars.maxDispatchPerTick}}
-        - maxAttempts        = {{vars.maxAttempts}}
+        - now                  = current UTC time (compute it yourself).
+        - maxDispatchPerTick   = {{vars.maxDispatchPerTick}}
+        - maxAttempts          = {{vars.maxAttempts}}
+        - stuckThresholdMinutes = {{vars.stuckThresholdMinutes}}
 
       Raindrops:
       {{gate-empty.output}}
@@ -247,7 +308,7 @@ steps:
             "noteHash": "<sha256 hex>",
             "tags": ["..."],
             "addedAt": "<created>",
-            "reason": "<new|note-changed|retry-failed>",
+            "reason": "<new|note-changed|retry-failed|stuck-retry>",
             "priorAttempts": <int>
           }
         ],
@@ -256,6 +317,24 @@ steps:
         ],
         "deferred": [
           { "raindropId": "<id-as-string>", "reason": "max-dispatch-per-tick-reached" }
+        ],
+        "deadLetter": [
+          {
+            "raindropId": "<id-as-string>",
+            "url": "<link>",
+            "title": "<title>",
+            "attempts": <int>,
+            "lastError": "<short error string>",
+            "reason": "max-attempts-exceeded"
+          }
+        ],
+        "stuckReclassified": [
+          {
+            "raindropId": "<id-as-string>",
+            "priorStatus": "queued|processing",
+            "ageMinutes": <int>,
+            "newAttempts": <int>
+          }
         ]
       }
     timeoutSeconds: 300
@@ -285,9 +364,27 @@ steps:
     mcps: [zakira]
     timeoutSeconds: 300
 
+  - name: dead-letter-move
+    type: Script
+    shell: pwsh
+    dependsOn: [bootstrap-config, select-dispatchable]
+    scriptFile: "./tools/scripts/dead-letter-process.ps1"
+    arguments:
+      - "-RaindropCli"
+      - "{{vars.raindropCli}}"
+      - "-BootstrapJson"
+      - "{{bootstrap-config.output}}"
+      - "-SelectionJson"
+      - "{{select-dispatchable.output}}"
+      - "-ZakiraDb"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "-ZakiraCategory"
+      - "{{vars.zakiraCategory}}"
+    timeoutSeconds: 900
+
   - name: dispatch
     type: Prompt
-    dependsOn: [bootstrap-config, select-dispatchable, mark-queued]
+    dependsOn: [bootstrap-config, select-dispatchable, mark-queued, dead-letter-move]
     systemPrompt: |
       You are a fan-out dispatcher. You have the Orchestra control-plane MCP
       and you launch child orchestrations asynchronously. For every selected
@@ -312,7 +409,9 @@ steps:
       update Zakira.Exchange state on its own.
 
       Note: orchestration parameter values must be strings. Convert numbers
-      and arrays accordingly.
+      and arrays accordingly. If `select-dispatchable.output.selected` is
+      empty, output { "ok": true, "dispatched": [] } and finish; do not
+      attempt to invoke anything.
     userPrompt: |
       Selection from earlier:
       {{select-dispatchable.output}}
@@ -329,21 +428,42 @@ steps:
 
   - name: tracker-summary
     type: Prompt
-    dependsOn: [bootstrap-config, dispatch]
+    dependsOn: [bootstrap-config, select-dispatchable, dispatch, dead-letter-move]
     systemPrompt: |
       You are a reporting assistant. Produce a concise scheduler-log-friendly
       summary of this tick. One short paragraph plus a bullet list.
     userPrompt: |
       Inputs:
-      - bootstrap: {{bootstrap-config.output}}
-      - selection: {{select-dispatchable.output}}
-      - dispatch:  {{dispatch.output}}
+      - bootstrap:    {{bootstrap-config.output}}
+      - selection:    {{select-dispatchable.output}}
+      - dispatch:     {{dispatch.output}}
+      - dead-letter:  {{dead-letter-move.output}}
 
       Output a small markdown report:
-        - One-line headline (e.g. "raindrop-tracker: dispatched N, skipped M, deferred K (inbox=<id>, processed=<id>)").
+        - One-line headline like "raindrop-tracker: dispatched N, skipped M, deferred K, dead-lettered D (inbox=<id>, processed=<id>, deadLetter=<id>)".
         - Bullets for dispatched ids with their executionIds.
         - Bullets for skipped ids with reasons.
+        - Bullets for stuck-reclassified ids (priorStatus, ageMinutes).
+        - Bullets for dead-lettered ids with attempts + lastError.
         - Note if anything is deferred to the next tick.
+    timeoutSeconds: 120
+
+  - name: publish-rolling-status
+    type: Script
+    shell: pwsh
+    dependsOn: [bootstrap-config, list-inbox, select-dispatchable, dispatch, dead-letter-move]
+    scriptFile: "./tools/scripts/publish-rolling-status.ps1"
+    arguments:
+      - "-BootstrapJson"
+      - "{{bootstrap-config.output}}"
+      - "-ListInboxJson"
+      - "{{list-inbox.output}}"
+      - "-SelectionJson"
+      - "{{select-dispatchable.output}}"
+      - "-DispatchJson"
+      - "{{dispatch.output}}"
+      - "-DeadLetterJson"
+      - "{{dead-letter-move.output}}"
     timeoutSeconds: 120
 
 trigger:

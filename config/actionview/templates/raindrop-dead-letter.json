@@ -1,0 +1,30 @@
+{
+  "type": "raindrop-dead-letter",
+  "description": "Raindrop exhausted maxAttempts retries. The item has been moved out of AI-Inbox into the AI-DeadLetter collection and tagged dead-letter. Manual intervention required: either fix the underlying issue and move the raindrop back into AI-Inbox, or delete it.",
+  "defaults": {
+    "severity": "critical",
+    "icon": "skull",
+    "tags": ["raindrop", "dead-letter"]
+  },
+  "contentTemplate": [
+    {
+      "type": "keyValue",
+      "label": "Dead-letter",
+      "required": true,
+      "requiredKeys": ["Raindrop ID", "URL", "Attempts", "Last error", "Dead-lettered at"],
+      "keyAliases": {
+        "Id": "Raindrop ID",
+        "RaindropId": "Raindrop ID",
+        "Link": "URL",
+        "Tries": "Attempts",
+        "Error": "Last error",
+        "When": "Dead-lettered at"
+      }
+    },
+    { "type": "alert", "level": "error" }
+  ],
+  "expectedActions": [
+    { "label": "Open in raindrop.io", "style": "primary" },
+    { "label": "Open dead-letter collection", "style": "default" }
+  ]
+}
