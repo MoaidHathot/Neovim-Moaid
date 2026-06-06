@@ -1,0 +1,206 @@
+I have enough context. Generating the orchestration now.
+
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: failed-orchestration-diagnoser
+description: |
+  Runs hourly. Queries the Orchestra host's /api/history endpoint for orchestration runs
+  that failed in the last hour, then fans out to the companion child orchestration
+  `diagnose-failed-orchestration-run` (one child per failed run) so each failure gets its
+  own isolated diagnosis context. Each child reads the failed run's on-disk artifacts
+  (run.json + step outputs) plus read-only access to the Orchestra source tree at
+  P:/github/Orchestra, produces a root-cause diagnosis + fix plan, and submits an
+  ActionView entry. When the fix is to the orchestration YAML itself, the ActionView
+  entry includes an "Apply Fix" action wired to a follow-up orchestration that applies
+  the patch; when the fix is in the Orchestra source code, the entry just renders the
+  diagnosis (no auto-apply button, since source changes must go through a human PR).
+
+  Pattern mirrors PullRequests/pr-auto-reviewer.yaml (parent enumerates work items,
+  dispatches one child per item via a forEach Orchestration step).
+
+  # TODO: companion child orchestration `diagnose-failed-orchestration-run` must be
+  # registered separately. It takes inputs { executionId, orchestrationName, runStatus,
+  # runsRoot, sourceRoot } and is responsible for the per-failure analysis + ActionView
+  # entry creation. Likewise a `apply-orchestration-fix` orchestration is referenced as
+  # the ActionView "Apply Fix" action target.
+
+version: 1.0.0
+tags: ["system", "diagnostics", "self-healing", "scheduled", "orchestra"]
+defaultModel: claude-opus-4.7-1m-internal
+
+variables:
+  runsRoot: "{{env.LOCALAPPDATA}}/Orchestra/runs"
+  sourceRoot: "P:/github/Orchestra"
+  lookbackMinutes: "70"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 600
+timeoutSeconds: 7200
+
+trigger:
+  type: scheduler
+  enabled: true
+  intervalSeconds: 3600
+
+steps:
+  - name: fetch-failed-runs
+    type: Script
+    shell: pwsh
+    timeoutSeconds: 60
+    script: |
+      # Pull recent failed runs from the Orchestra host's history API.
+      # /api/history supports server-side status filtering via `statuses=failed`.
+      # We then narrow to the last N minutes (lookback window slightly larger than
+      # the hourly schedule interval so we never miss a failure that landed right
+      # between two ticks).
+      $ErrorActionPreference = 'Stop'
+
+      $serverUrl = '{{server.url}}'.TrimEnd('/')
+      $lookbackMinutes = [int]'{{vars.lookbackMinutes}}'
+      $cutoff = (Get-Date).ToUniversalTime().AddMinutes(-1 * $lookbackMinutes)
+
+      $uri = "$serverUrl/api/history?statuses=failed&limit=200"
+      $resp = Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 30
+
+      $runs = @()
+      foreach ($r in @($resp.runs)) {
+        if ($null -eq $r) { continue }
+        $status = [string]$r.status
+        if (-not $status.ToLowerInvariant().Contains('fail')) { continue }
+
+        $tsRaw = $r.completedAt
+        if ([string]::IsNullOrWhiteSpace([string]$tsRaw)) { $tsRaw = $r.startedAt }
+        $ts = $null
+        try { $ts = [datetimeoffset]::Parse([string]$tsRaw).UtcDateTime } catch { }
+        if ($null -ne $ts -and $ts -lt $cutoff) { continue }
+
+        $runs += [pscustomobject]@{
+          executionId       = [string]$r.runId
+          orchestrationName = [string]$r.orchestrationName
+          runStatus         = $status
+          startedAt         = [string]$r.startedAt
+          completedAt       = [string]$r.completedAt
+          errorMessage      = [string]$r.errorMessage
+        }
+      }
+
+      # Emit as JSON array - downstream forEach iterates each element.
+      , $runs | ConvertTo-Json -Depth 50 -Compress -AsArray
+
+  - name: gate-any-failures
+    type: Prompt
+    dependsOn: [fetch-failed-runs]
+    systemPrompt: |
+      You are a gate for the failed-orchestration-diagnoser. Inspect the JSON array of
+      failed runs from the previous step.
+
+      If the array is empty (no failures in the lookback window), call orchestra_complete
+      with status 'success' and a reason like 'No failed orchestration runs in the last
+      {{vars.lookbackMinutes}} minutes. Nothing to diagnose.' This halts the run cleanly
+      so no child orchestrations are dispatched and no summary is generated.
+
+      Otherwise, output the JSON array UNCHANGED (no prose, no markdown, no fences) so
+      the forEach dispatcher consumes it verbatim.
+
+      Do not call any other tools. Do not write commentary in either branch.
+    userPrompt: |
+      Failed runs:
+      {{fetch-failed-runs.output}}
+
+  - name: dispatch-diagnoses
+    type: Orchestration
+    dependsOn: [gate-any-failures]
+    orchestration: diagnose-failed-orchestration-run
+    forEach: "{{gate-any-failures.output}}"
+    itemParameter: failedRun
+    parameters:
+      runsRoot: "{{vars.runsRoot}}"
+      sourceRoot: "{{vars.sourceRoot}}"
+    mode: sync
+    maxConcurrency: 3
+    continueOnItemFailure: true
+    timeoutSeconds: 6000
+
+  - name: aggregate-diagnoses
+    type: Script
+    dependsOn: [dispatch-diagnoses]
+    shell: pwsh
+    timeoutSeconds: 60
+    script: |
+      # Roll up the forEach rollup into a compact summary. The engine emits
+      # { totalDispatched, succeeded, failed, results:[{ index, executionId, status,
+      # errorMessage, finalContent, input, ... }] }. We classify by status only - the
+      # per-failure ActionView entry is already created by the child orchestration, so
+      # there is nothing further to parse from finalContent here.
+      $ErrorActionPreference = 'Stop'
+
+      $raw = $args[0]
+      if ([string]::IsNullOrWhiteSpace($raw)) {
+        '{"totalDispatched":0,"succeeded":0,"failed":0,"results":[]}'
+        return
+      }
+      $rollup = ConvertFrom-Json -InputObject $raw -Depth 100
+
+      $results = @()
+      foreach ($r in @($rollup.results)) {
+        $failedRun = $null
+        if ($r.input) {
+          try {
+            $failedRun = if ($r.input -is [string]) {
+              ConvertFrom-Json -InputObject $r.input -Depth 50
+            } else { $r.input }
+          } catch { }
+        }
+        $results += [pscustomobject]@{
+          failedExecutionId  = if ($failedRun) { [string]$failedRun.executionId } else { $null }
+          failedOrchestration= if ($failedRun) { [string]$failedRun.orchestrationName } else { $null }
+          diagnosisExecution = [string]$r.executionId
+          diagnosisStatus    = [string]$r.status
+          diagnosisError     = [string]$r.errorMessage
+        }
+      }
+
+      [pscustomobject]@{
+        totalDispatched = [int]$rollup.totalDispatched
+        succeeded       = [int]$rollup.succeeded
+        failed          = [int]$rollup.failed
+        results         = $results
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{dispatch-diagnoses.output}}"
+
+  - name: generate-summary
+    type: Prompt
+    dependsOn: [aggregate-diagnoses]
+    systemPrompt: |
+      You are a reporting assistant. Produce a concise markdown summary of this
+      hourly failed-orchestration-diagnoser run for the operator's log.
+    userPrompt: |
+      Compose a final markdown report from the rollup below.
+
+      Failed runs detected:
+      {{fetch-failed-runs.output}}
+
+      Diagnosis dispatch rollup:
+      {{aggregate-diagnoses.output}}
+
+      The report should include:
+      1. Header `## Failed Orchestration Diagnoser Run` with current time.
+      2. How many failed runs were found in the last {{vars.lookbackMinutes}} minutes.
+      3. Per failed run: the failed orchestration name + runId, the diagnosis child's
+         executionId and status, and any diagnosis-child error.
+      4. A note that one ActionView entry per failed run has been (or attempted to be)
+         submitted by the child orchestration, and the user can review/apply fixes from
+         ActionView.
+      5. Any dispatch failures and what to do about them.
+    timeoutSeconds: 120
+
+Generated. Key notes:
+
+- **Parent** runs hourly via scheduler trigger, queries `/api/history?statuses=failed`, filters to the last ~70 min, and fans out one child per failure via `Orchestration` step with `forEach` (mirrors the `pr-auto-reviewer`  `pr-review-dispatcher` pattern).
+- The companion **child orchestration** `diagnose-failed-orchestration-run` is referenced but must be registered separately (called out in the `description:` as a `# TODO`). It receives `failedRun`, `runsRoot`, `sourceRoot` and is where you'd read the on-disk run artifacts, give read-only access to `P:\github\Orchestra`, and emit the ActionView entry with the "Apply Fix" action wired to an `apply-orchestration-fix` orchestration. Let me know if you want me to generate that child file next.
+- Uses only documented Orchestra fields; no MCPs needed at the parent level (gate/summary are plain Prompt steps, dispatch is a typed `Orchestration` step).

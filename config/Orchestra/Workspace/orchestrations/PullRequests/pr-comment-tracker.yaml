@@ -34,7 +34,10 @@ steps:
       # Deterministic PR enumeration via az CLI (replaces the prior azdo MCP prompt).
       # Lists active PRs in `{{vars.project}}/{{vars.repository}}` that were CREATED BY
       # the author identified by `{{vars.authorUniqueName}}`. Emits a JSON array — the
-      # same contract the downstream `gate-no-prs` / `dispatch-candidates` steps consume.
+      # same contract the downstream `dispatch-candidates` step consumes (an empty
+      # array is fine; the engine's forEach handles zero items gracefully and the
+      # noteworthy-activity gate downstream short-circuits ActionView submission
+      # when nothing was processed).
       # Note: the `--creator` argument requires a resolvable identity (email or
       # descriptor). The display name (`vars.authorName`) cannot be used here
       # because Azure DevOps may have multiple identities with the same display
@@ -121,23 +124,11 @@ steps:
       $prsArr = $prs.ToArray()
       $prsArr | ConvertTo-Json -Depth 100 -Compress -AsArray
 
-  - name: gate-no-prs
-    type: Prompt
-    dependsOn: [fetch-my-prs]
-    systemPrompt: |
-      You are a gate checker. If the input is an empty JSON array, call orchestra_complete with status 'success' and reason 'No active PRs created by {{vars.authorName}} found. Nothing to check.'. Otherwise, pass the data through unchanged.
-    userPrompt: |
-      Check if there are any PRs to process:
-
-      {{fetch-my-prs.output}}
-
-      If the array is empty, call orchestra_complete. Otherwise, output the array as-is.
-
   - name: dispatch-candidates
     type: Orchestration
-    dependsOn: [gate-no-prs]
+    dependsOn: [fetch-my-prs]
     orchestration: pr-comment-dispatcher
-    forEach: "{{gate-no-prs.output}}"
+    forEach: "{{fetch-my-prs.output}}"
     itemParameter: prData
     parameters:
       mode: auto
@@ -229,7 +220,7 @@ steps:
 
   - name: create-action-view-entry
     type: Prompt
-    dependsOn: [gate-noteworthy-activity, gate-no-prs]
+    dependsOn: [gate-noteworthy-activity, fetch-my-prs]
     systemPrompt: |
       You are an ActionView entry generator for PR comment tracking runs. You create structured JSON entries. The entry type must be 'pr-comment-tracker-run' and source must be '{{orchestration.name}}'.
 
@@ -240,7 +231,7 @@ steps:
       Create an ActionView entry summarizing this PR comment tracking run.
 
       PR candidates:
-      {{gate-no-prs.output}}
+      {{fetch-my-prs.output}}
 
       Dispatcher results:
       {{gate-noteworthy-activity.output}}
@@ -268,14 +259,14 @@ steps:
 
   - name: generate-summary
     type: Prompt
-    dependsOn: [aggregate-dispatch, gate-no-prs, submit-action-view-entry]
+    dependsOn: [aggregate-dispatch, fetch-my-prs, submit-action-view-entry]
     systemPrompt: |
       You are a reporting assistant. Produce a clear, concise markdown summary of the PR comment tracking orchestration run.
     userPrompt: |
       Create a final markdown summary of this PR comment tracking run.
 
       PR candidates:
-      {{gate-no-prs.output}}
+      {{fetch-my-prs.output}}
 
       Dispatcher results:
       {{aggregate-dispatch.output}}
