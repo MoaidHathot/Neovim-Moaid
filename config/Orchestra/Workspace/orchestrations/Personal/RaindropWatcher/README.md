@@ -19,6 +19,36 @@ refreshes a single rolling `raindrop-watcher-status` entry that summarises
 inbox / dispatched / dead-lettered counts so you have a one-glance health
 indicator.
 
+## Core contract: in `AI-Inbox` = will be processed
+
+The tracker has exactly one philosophy: **anything in `AI-Inbox` gets
+(re)processed on the next tick.** There is exactly ONE thing that prevents
+dispatch -- in-flight protection: if a raindrop's state record says
+`queued` or `processing` and `ageMinutes <= stuckThresholdMinutes`, we're
+already processing it right now, so re-dispatching would race. Anything
+else dispatches:
+
+| Existing state                          | What happens                                      |
+|-----------------------------------------|---------------------------------------------------|
+| No state record                         | dispatch (reason: `new`)                          |
+| `completed`                             | dispatch (reason: `user-reprocess`), reset attempts to 0 |
+| `dead-lettered`                         | dispatch (reason: `user-recovery-from-dead-letter`), reset attempts to 0 |
+| `failed`, attempts < maxAttempts        | dispatch (reason: `retry-failed`), keep attempts  |
+| `failed`, attempts >= maxAttempts       | dead-letter (move to `AI-DeadLetter`, do NOT dispatch) |
+| `queued` / `processing`, age <= stuck   | SKIP (in-flight protection)                       |
+| `queued` / `processing`, age > stuck    | reclassify as failed, then re-apply the rules above |
+
+**The user's mental model can be exactly: "move it to inbox -> it gets
+processed."** Tags on the raindrop (`processed`, `dead-letter`, `failed`,
+`processing`) do not gate dispatch. The tracker automatically strips
+those tags from items it dispatches (the `strip-workflow-tags` step), so
+once a raindrop is dispatched its tags reflect the current cycle, not
+prior ones.
+
+If you want to force re-dispatch even while an item is mid-flight (rare,
+only useful when something is genuinely broken):
+`pwsh -File .\tools\scripts\reprocess-raindrop.ps1 -RaindropId <id>`.
+
 ## State lifetime (Zakira.Exchange records)
 
 ```
@@ -58,7 +88,10 @@ Tracker-tick guarantees, by design:
   as an explicit reprocess intent (the user must have moved it back
   manually, since the processor and the dead-letter mover normally take
   items OUT of `AI-Inbox`). The next tick re-dispatches with
-  `priorAttempts=0`. The same outcome is available one-click via the
+  `priorAttempts=0`. Tags on the raindrop (`processed`, `dead-letter`,
+  `failed`, `processing`) are stripped at dispatch by the
+  `strip-workflow-tags` step, so a re-dispatched item shows up with a
+  clean tag set. The same outcome is available one-click via the
   **Reprocess** action on every per-raindrop ActionView entry, or from
   the CLI via `tools/scripts/reprocess-raindrop.ps1`.
 

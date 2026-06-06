@@ -226,86 +226,85 @@ steps:
     type: Prompt
     dependsOn: [gate-empty, load-state]
     systemPrompt: |
-      You are a queue scheduler. You decide which raindrops to dispatch to
-      the processor in this tick, and which to permanently dead-letter. You
-      have access to orchestra_complete.
+      You are a queue scheduler. You have access to orchestra_complete.
 
-      Concepts:
-        - `now` is the current UTC time (ISO-8601).
-        - A record's "age in minutes" is (now - queuedAt|startedAt|0), using
-          the most recent of those timestamps when both exist. When the
-          record has no such timestamp, treat the item as ageMinutes=0.
+      ## CORE CONTRACT (read this twice)
 
-      Dispatch rules (apply per item, first matching rule wins):
+      Being in `AI-Inbox` IS the trigger for processing. Anything the user
+      drops or drags into `AI-Inbox` will be (re)processed on the next
+      tick. There is exactly ONE thing that prevents dispatch:
 
-        R1. No state record present
-              -> dispatch (status: queued, reason: new).
+        IN-FLIGHT PROTECTION
+        --------------------
+        If a raindrop's existing state record says status in
+        {queued, processing} AND its ageMinutes is <= stuckThresholdMinutes,
+        we are already processing it RIGHT NOW. Re-dispatching would race
+        with the in-flight processor. So we SKIP this tick and wait.
 
-        R2. Status == "completed"
-              -> the user moved this raindrop BACK into AI-Inbox (under
-                 normal operation the processor would have moved it OUT
-                 to AI-Processed; if it's appearing in `gate-empty.output`
-                 again, the only way it got back here is a manual move).
-                 Treat this as an explicit reprocess intent.
-                 -> RE-DISPATCH (reason: user-reprocess), priorAttempts = 0.
+      Everything else gets DISPATCHED. The state record is used only to
+      pick (a) what `reason` and `priorAttempts` to record, and (b) whether
+      to instead route the item to the dead-letter collection because the
+      retry budget is exhausted.
 
-        R2b. Status == "completed" AND noteHash changed
-              -> ALSO covered by R2 above. The note-change is just a
-                 secondary signal; the primary one is "completed but
-                 currently in AI-Inbox". Use reason "note-changed" in
-                 the output instead of "user-reprocess" when the hash
-                 actually changed (the bookkeeping helps the
-                 tracker-summary explain which case fired).
+      ## RULES (apply per item, first match wins)
 
-        R3. Status in {"queued","processing"} AND ageMinutes > stuckThresholdMinutes
-              -> RECLASSIFY-STUCK: treat the item as if status == "failed"
-                 with lastError = "stuck-in-flight: no progress for <N> min"
-                 and effective attempts = current attempts (do NOT bump here;
-                 the processor's mark-processing step will bump on re-dispatch).
-                 Then apply the failed-rules below.
-                 Record this in the `stuckReclassified` output array.
+      R1. IN-FLIGHT PROTECTION
+          status in {"queued","processing"} AND ageMinutes <= stuckThresholdMinutes
+          -> SKIP (reason: "in-flight").
 
-        R4. Status in {"queued","processing"} AND ageMinutes <= stuckThresholdMinutes
-              -> SKIP (reason: in-flight).
+      R2. STUCK RECLASSIFICATION (in-flight check expired)
+          status in {"queued","processing"} AND ageMinutes > stuckThresholdMinutes
+          -> Treat as failed (it must have died silently), then fall through
+             to R3/R4/R5/R6 below using the failed semantics. Record this
+             in the `stuckReclassified` output array for observability.
 
-        R5. Status == "failed" AND attempts < maxAttempts
-              -> RE-DISPATCH (reason: retry-failed).
+      R3. DEAD-LETTER (only path that does NOT dispatch)
+          status == "failed" AND attempts >= maxAttempts
+          -> Add to the `deadLetter` output array. The dead-letter-move step
+             will move the raindrop OUT of AI-Inbox into AI-DeadLetter and
+             publish a critical ActionView entry. Do NOT also dispatch.
 
-        R6. Status == "failed" AND attempts >= maxAttempts
-              -> DEAD-LETTER (record in the `deadLetter` output array; do NOT
-                 select for dispatch). The dead-letter-move step will move
-                 the raindrop into the dead-letter collection and publish a
-                 raindrop-dead-letter ActionView entry.
+      R4. RETRY FAILED
+          status == "failed" AND attempts < maxAttempts
+          -> DISPATCH (reason: "retry-failed"), priorAttempts = attempts
+             (continues the retry budget).
 
-        R7. Status == "dead-lettered"
-              -> the user moved this raindrop BACK from AI-DeadLetter into
-                 AI-Inbox (the dead-letter-move step put it in AI-DeadLetter
-                 and tagged it `dead-letter`; the only way it's back in
-                 AI-Inbox is a manual recovery).
-                 -> RE-DISPATCH (reason: user-recovery-from-dead-letter),
-                    priorAttempts = 0 (fresh start, not continuation of
-                    the retry budget that exhausted before).
+      R5. USER REPROCESS
+          status in {"completed", "dead-lettered"}
+          -> DISPATCH (reason: "user-reprocess" for completed,
+             "user-recovery-from-dead-letter" for dead-lettered),
+             priorAttempts = 0 (fresh start).
+          Rationale: the processor moves completed items OUT to
+          AI-Processed; dead-letter-move puts failed items in
+          AI-DeadLetter. The ONLY way a raindrop with one of these
+          statuses ends up back in AI-Inbox is if the user manually
+          moved it. That is an unambiguous reprocess intent.
 
-      Hard cap: never select more than `maxDispatchPerTick` items for dispatch
-      in one tick. If the cap is hit, surface the deferred ids in the
-      `deferred` array. Dead-letter is NOT subject to this cap.
+      R6. NEW
+          No state record present
+          -> DISPATCH (reason: "new"), priorAttempts = 0.
 
-      Compute the noteHash as SHA-256 of the raindrop's `note` field (UTF-8;
-      empty string when null).
+      ## HARD CAPS
 
-      Reprocess intent rationale: under normal operation, completed and
-      dead-lettered raindrops are NOT in AI-Inbox (the processor moves
-      them to AI-Processed; dead-letter-move moves them to AI-DeadLetter).
-      So if a raindrop appears in `gate-empty.output` (which is the
-      AI-Inbox listing) with status=completed or status=dead-lettered,
-      the user must have manually moved it back. That is an unambiguous
-      "please reprocess this" signal and we honor it. The companion
-      tools/scripts/reprocess-raindrop.ps1 script does the same thing
-      programmatically.
+      - At most `maxDispatchPerTick` items can be in `selected` per tick.
+        If the cap is hit, surface the remainder in the `deferred` array.
+      - The dead-letter path is NOT subject to the cap; all qualifying
+        items go into `deadLetter` every tick.
+
+      ## NOTEHASH
+
+      Compute the noteHash for every selected/dispatched item as SHA-256
+      of the raindrop's `note` field (UTF-8; empty string when null). This
+      gets recorded in Zakira so future ticks can tell whether the user
+      edited the note. Note: under the new rules, a note edit doesn't
+      change dispatch behavior (R5 fires regardless), but the hash is
+      still useful for debugging and auditing.
+
+      ## EARLY EXIT
 
       If after applying the rules nothing is selected AND nothing is to be
       dead-lettered, call orchestra_complete with status 'success' and
-      reason 'Nothing new to dispatch this tick.'
+      reason 'Nothing to dispatch this tick.'
 
     userPrompt: |
       Inputs:
@@ -388,6 +387,51 @@ steps:
     mcps: [zakira]
     timeoutSeconds: 300
 
+  - name: strip-workflow-tags
+    type: Script
+    shell: pwsh
+    dependsOn: [select-dispatchable]
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $cli = $args[0]
+      $selectionJson = $args[1]
+      $selection = $null
+      try { $selection = $selectionJson | ConvertFrom-Json } catch {}
+      if (-not $selection -or -not $selection.selected) {
+        @{ ok = $true; stripped = @(); note = 'no selected items' } | ConvertTo-Json -Compress
+        return
+      }
+      # Strip the workflow tags processor + tracker add over the item's
+      # lifetime. The tags don't gate any logic -- select-dispatchable is
+      # state-based -- but they confuse the user if they linger on a
+      # raindrop that is about to be re-processed. Best-effort: per-item
+      # failures don't fail the tick; we just log them.
+      $tagsToStrip = @('processed', 'dead-letter', 'failed', 'processing')
+      $stripped = @()
+      foreach ($item in @($selection.selected)) {
+        $rid = "$($item.raindropId)"
+        if (-not $rid) { continue }
+        $perItem = [ordered]@{ raindropId = $rid; removed = @(); errors = @() }
+        foreach ($tag in $tagsToStrip) {
+          try {
+            & dotnet run $cli -- remove-tag $rid $tag 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              $perItem.removed += $tag
+            }
+            # Don't care about non-zero exit; the API is idempotent and a
+            # missing tag is not an error.
+          } catch {
+            $perItem.errors += ("{0}: {1}" -f $tag, $_.Exception.Message)
+          }
+        }
+        $stripped += [pscustomobject]$perItem
+      }
+      @{ ok = $true; stripped = $stripped } | ConvertTo-Json -Depth 5 -Compress
+    arguments:
+      - "{{vars.raindropCli}}"
+      - "{{select-dispatchable.output}}"
+    timeoutSeconds: 300
+
   - name: dead-letter-move
     type: Script
     shell: pwsh
@@ -408,7 +452,7 @@ steps:
 
   - name: dispatch
     type: Prompt
-    dependsOn: [bootstrap-config, select-dispatchable, mark-queued, dead-letter-move]
+    dependsOn: [bootstrap-config, select-dispatchable, mark-queued, dead-letter-move, strip-workflow-tags]
     systemPrompt: |
       You are a fan-out dispatcher. You have the Orchestra control-plane MCP
       and you launch child orchestrations asynchronously. For every selected
