@@ -234,7 +234,7 @@ steps:
       order specified in the ask.
 
       Save the final markdown to a file via orchestra_save_file -- the
-      downstream step uses {{synthesize.files[0]}}.
+      downstream step uses \{{synthesize.files[0]}}.
     userPrompt: |
       Raindrop:
         title = {{param.title}}

@@ -1,0 +1,402 @@
+# yaml-language-server: $schema=../schemas/orchestration.schema.json
+name: terminate-danglng-orchestrations
+description: |
+  Daily sweep that terminates orphaned Orchestra Script-step processes (and
+  their entire descendant trees) without ever touching the currently active
+  Orchestra orchestrator or its in-flight scripts.
+
+  Background
+  ----------
+  Every Orchestra `Script` step is materialized as a temporary file
+  `%TEMP%\orchestra-<guid>.ps1` and executed via
+  `pwsh -NoProfile -File <that .ps1>`. Many of these scripts call native
+  Windows commands like `az` (which resolve to `az.cmd`), so PowerShell
+  wraps the call in `cmd.exe /c az.cmd ...`. If the Orchestra orchestrator
+  process dies (crash, terminal close, manual kill) while a step is mid-
+  flight, the `pwsh` + `cmd.exe` tree is orphaned and runs forever. Because
+  `cmd.exe` is sitting on a `.cmd` batch file, any Ctrl+C delivered to it
+  produces the infamous `Terminate batch job (Y/N)?` prompt — which can
+  become unanswerable if the owning terminal has already been closed.
+
+  Detection rule (conservative)
+  -----------------------------
+  A `pwsh.exe` process is treated as DANGLING if and only if ALL hold:
+    1. Its command line references a script path matching
+       `*\Temp\orchestra-<guid>.ps1` (case-insensitive). This is Orchestra's
+       own naming convention — never coincidental.
+    2. Its parent process ID no longer corresponds to a live process (the
+       owning orchestrator is gone). Active orchestrations have a live
+       parent and are LEFT UNTOUCHED.
+    3. It is not THIS process (we never kill ourselves).
+    4. Its creation time is at least `minAgeSeconds` ago, to absorb the
+       brief window between a sibling orchestration's `pwsh` spawn and its
+       parent re-attaching (extremely rare, but free insurance).
+
+  Termination
+  -----------
+  Each dangling tree is walked bottom-up (descendants first) and every
+  process is killed with `Stop-Process -Force`, which invokes the Win32
+  `TerminateProcess` API. This bypasses the `Terminate batch job (Y/N)?`
+  prompt entirely — `cmd.exe` never gets a chance to ask because it is
+  terminated outright.
+
+  Bonus cleanup
+  -------------
+  After the process sweep, any `orchestra-*.ps1` file in `%TEMP%` that has
+  no live `pwsh` process referencing it is also deleted (these are leaked
+  temp files from prior orchestrator crashes).
+version: 1.0.0
+tags: ["cleanup", "system"]
+defaultModel: claude-opus-4.7-1m-internal
+
+inputs:
+  dryRun:
+    type: boolean
+    description: |
+      When `true`, the orchestration reports what it WOULD terminate and
+      what temp files it WOULD delete, without making any changes. Useful
+      for inspection / first-run validation.
+    required: false
+    default: "false"
+  minAgeSeconds:
+    type: number
+    description: |
+      Minimum age (in seconds) a candidate `pwsh.exe` must have before it
+      is considered for termination. Protects against transient races
+      where a sibling orchestration's just-spawned script briefly has no
+      live parent reference. Default 60 is safely above any realistic
+      orchestrator re-attach window.
+    required: false
+    default: "60"
+
+trigger:
+  type: scheduler
+  cron: "0 22 * * *"
+
+steps:
+  # ── Step 1: Find and kill dangling Orchestra script trees ─────────────
+  # Strategy:
+  #   1. Snapshot all live processes once (CIM) — avoids race conditions
+  #      where a parent dies between the child-lookup and the parent-check.
+  #   2. From that snapshot, find every pwsh.exe whose CommandLine matches
+  #      the `orchestra-<guid>.ps1` temp pattern.
+  #   3. For each candidate, classify as DANGLING (parent gone, old
+  #      enough, not us) or ACTIVE (everything else — left alone).
+  #   4. For DANGLING entries, recursively collect descendants from the
+  #      same snapshot, then `Stop-Process -Force` bottom-up. Force-kill
+  #      uses Win32 `TerminateProcess`, which never produces the
+  #      "Terminate batch job (Y/N)?" prompt.
+  #   5. After the process sweep, delete any `orchestra-*.ps1` files in
+  #      %TEMP% that no live pwsh references (these are leftover temp
+  #      files from prior orchestrator crashes).
+  - name: sweep-dangling
+    type: Script
+    shell: pwsh
+    timeoutSeconds: 300
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      $dryRun        = ('{{param.dryRun}}' -ieq 'true')
+      $minAgeSeconds = [double]'{{param.minAgeSeconds}}'
+      $nowUtc        = (Get-Date).ToUniversalTime()
+      $tempDir       = $env:TEMP
+      $selfPid       = $PID
+
+      $report = [ordered]@{
+        summary       = $null
+        scannedAt     = $nowUtc.ToString('o')
+        tempDir       = $tempDir
+        dryRun        = $dryRun
+        minAgeSeconds = $minAgeSeconds
+        selfPid       = $selfPid
+        candidates    = @()
+        dangling      = @()
+        active        = @()
+        killed        = @()
+        killErrors    = @()
+        leakedFiles   = @()
+        deletedFiles  = @()
+        fileErrors    = @()
+      }
+
+      # ── Snapshot every live process once (single CIM call) ─────────────
+      # We build a hashtable keyed by ProcessId for O(1) parent lookups and
+      # child enumeration. CommandLine is required to recognize Orchestra
+      # scripts; CreationDate is required for the age guard.
+      $allProcs = Get-CimInstance Win32_Process |
+        Select-Object ProcessId, ParentProcessId, Name, CommandLine, CreationDate
+      $byPid = @{}
+      $childrenByPid = @{}
+      foreach ($p in $allProcs) {
+        $byPid[[int]$p.ProcessId] = $p
+        $parentId = [int]$p.ParentProcessId
+        if (-not $childrenByPid.ContainsKey($parentId)) {
+          $childrenByPid[$parentId] = New-Object System.Collections.Generic.List[object]
+        }
+        [void]$childrenByPid[$parentId].Add($p)
+      }
+
+      # ── Identify Orchestra pwsh candidates ─────────────────────────────
+      # Pattern matches the Orchestra naming convention exactly:
+      #   ...\Temp\orchestra-<32-hex>.ps1
+      # (with optional surrounding quotes). This is intentionally strict
+      # to avoid false positives on unrelated pwsh scripts.
+      $orchPattern = '(?i)\\Temp\\orchestra-[0-9a-f]{32}\.ps1'
+      $candidates = $allProcs | Where-Object {
+        $_.Name -ieq 'pwsh.exe' -and
+        $_.CommandLine -and
+        ($_.CommandLine -match $orchPattern)
+      }
+
+      foreach ($c in $candidates) {
+        $cPid    = [int]$c.ProcessId
+        $cPpid   = [int]$c.ParentProcessId
+        $cName   = $c.Name
+        $cCmd    = $c.CommandLine
+        $cStart  = if ($c.CreationDate) { $c.CreationDate.ToUniversalTime() } else { $null }
+        $ageSec  = if ($cStart) { ($nowUtc - $cStart).TotalSeconds } else { [double]::PositiveInfinity }
+
+        $parentAlive = $byPid.ContainsKey($cPpid)
+        $isSelf      = ($cPid -eq $selfPid)
+        $tooYoung    = ($ageSec -lt $minAgeSeconds)
+
+        # Extract the .ps1 path for the report (best-effort).
+        $scriptPath = $null
+        $pathMatch = [regex]::Match($cCmd, '(?i)([A-Z]:\\[^"]*?\\Temp\\orchestra-[0-9a-f]{32}\.ps1)')
+        if ($pathMatch.Success) { $scriptPath = $pathMatch.Groups[1].Value }
+
+        $entry = [ordered]@{
+          pid        = $cPid
+          ppid       = $cPpid
+          name       = $cName
+          startedUtc = if ($cStart) { $cStart.ToString('o') } else { $null }
+          ageSeconds = [Math]::Round($ageSec, 1)
+          scriptPath = $scriptPath
+          parentAlive = $parentAlive
+          isSelf     = $isSelf
+        }
+        $report.candidates += $entry
+
+        if ($isSelf) {
+          $entry2 = [ordered]@{ pid = $cPid; reason = 'is-self'; ageSeconds = $entry.ageSeconds }
+          $report.active += $entry2
+          continue
+        }
+        if ($parentAlive) {
+          $entry2 = [ordered]@{ pid = $cPid; reason = 'parent-alive'; ppid = $cPpid; ageSeconds = $entry.ageSeconds }
+          $report.active += $entry2
+          continue
+        }
+        if ($tooYoung) {
+          $entry2 = [ordered]@{ pid = $cPid; reason = "younger-than-${minAgeSeconds}s"; ageSeconds = $entry.ageSeconds }
+          $report.active += $entry2
+          continue
+        }
+
+        # Classified DANGLING. Collect the whole descendant tree from the
+        # snapshot (bottom-up order — children before parent).
+        $tree = New-Object System.Collections.Generic.List[object]
+        $stack = New-Object System.Collections.Generic.Stack[int]
+        $stack.Push($cPid)
+        $visited = @{}
+        while ($stack.Count -gt 0) {
+          $cur = $stack.Pop()
+          if ($visited.ContainsKey($cur)) { continue }
+          $visited[$cur] = $true
+          if ($childrenByPid.ContainsKey($cur)) {
+            foreach ($child in $childrenByPid[$cur]) {
+              [void]$tree.Add($child)
+              $stack.Push([int]$child.ProcessId)
+            }
+          }
+        }
+        # Bottom-up: descendants first (already in $tree), root last.
+        $rootProc = $byPid[$cPid]
+        if ($rootProc) { [void]$tree.Add($rootProc) }
+
+        $treeEntries = @()
+        foreach ($tp in $tree) {
+          $treeEntries += [ordered]@{
+            pid  = [int]$tp.ProcessId
+            ppid = [int]$tp.ParentProcessId
+            name = [string]$tp.Name
+          }
+        }
+
+        $danglingEntry = [ordered]@{
+          rootPid    = $cPid
+          ppid       = $cPpid
+          ageSeconds = $entry.ageSeconds
+          scriptPath = $scriptPath
+          tree       = $treeEntries
+        }
+        $report.dangling += $danglingEntry
+
+        if ($dryRun) {
+          foreach ($tp in $tree) {
+            $report.killed += [ordered]@{
+              pid    = [int]$tp.ProcessId
+              name   = [string]$tp.Name
+              rootPid = $cPid
+              action = 'would-kill'
+            }
+          }
+        } else {
+          foreach ($tp in $tree) {
+            $tpPid = [int]$tp.ProcessId
+            try {
+              # Re-check liveness — descendant may have already exited
+              # naturally after we built the snapshot.
+              $live = Get-Process -Id $tpPid -ErrorAction Stop
+              Stop-Process -Id $tpPid -Force -ErrorAction Stop
+              $report.killed += [ordered]@{
+                pid     = $tpPid
+                name    = $live.ProcessName
+                rootPid = $cPid
+                action  = 'killed'
+              }
+            } catch {
+              # Most common cause: the process exited on its own between
+              # the snapshot and our kill attempt — not an error worth
+              # surfacing prominently.
+              $report.killErrors += [ordered]@{
+                pid     = $tpPid
+                rootPid = $cPid
+                error   = $_.Exception.Message
+              }
+            }
+          }
+        }
+      }
+
+      # ── Phase 2: Orphan temp file sweep ───────────────────────────────
+      # After killing dangling trees, delete any orchestra-*.ps1 files in
+      # %TEMP% that no live pwsh process references. We rebuild the live-
+      # PID snapshot post-kill so files just freed up are eligible.
+      $stillAlive = Get-CimInstance Win32_Process |
+        Where-Object { $_.Name -ieq 'pwsh.exe' -and $_.CommandLine -and ($_.CommandLine -match $orchPattern) } |
+        ForEach-Object {
+          $m = [regex]::Match($_.CommandLine, '(?i)([A-Z]:\\[^"]*?\\Temp\\orchestra-[0-9a-f]{32}\.ps1)')
+          if ($m.Success) { $m.Groups[1].Value.ToLowerInvariant() }
+        }
+      $aliveSet = @{}
+      foreach ($p in $stillAlive) { if ($p) { $aliveSet[$p] = $true } }
+
+      if (Test-Path -LiteralPath $tempDir -PathType Container) {
+        $leaked = @(Get-ChildItem -LiteralPath $tempDir -Filter 'orchestra-*.ps1' -File -ErrorAction SilentlyContinue)
+        foreach ($f in $leaked) {
+          $key = $f.FullName.ToLowerInvariant()
+          if ($aliveSet.ContainsKey($key)) {
+            # Still owned by a live pwsh — leave alone.
+            continue
+          }
+          $leakInfo = [ordered]@{
+            file          = $f.Name
+            lastWriteUtc  = $f.LastWriteTimeUtc.ToString('o')
+            sizeBytes     = $f.Length
+          }
+          $report.leakedFiles += $leakInfo
+          if ($dryRun) {
+            $report.deletedFiles += [ordered]@{
+              file   = $f.Name
+              action = 'would-delete'
+            }
+          } else {
+            try {
+              Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
+              $report.deletedFiles += [ordered]@{
+                file   = $f.Name
+                action = 'deleted'
+              }
+            } catch {
+              $report.fileErrors += [ordered]@{
+                file  = $f.Name
+                error = $_.Exception.Message
+              }
+            }
+          }
+        }
+      }
+
+      # ── Summary ───────────────────────────────────────────────────────
+      $mode = if ($dryRun) { 'DRY RUN' } else { 'LIVE' }
+      $killedActual = @($report.killed | Where-Object { $_.action -eq 'killed' }).Count
+      $killedWould  = @($report.killed | Where-Object { $_.action -eq 'would-kill' }).Count
+      $delActual    = @($report.deletedFiles | Where-Object { $_.action -eq 'deleted' }).Count
+      $delWould     = @($report.deletedFiles | Where-Object { $_.action -eq 'would-delete' }).Count
+
+      $report.summary = [ordered]@{
+        mode                = $mode
+        candidates          = $report.candidates.Count
+        active              = $report.active.Count
+        danglingTrees       = $report.dangling.Count
+        processesKilled     = $killedActual
+        processesWouldKill  = $killedWould
+        killErrors          = $report.killErrors.Count
+        leakedFilesFound    = $report.leakedFiles.Count
+        filesDeleted        = $delActual
+        filesWouldDelete    = $delWould
+        fileErrors          = $report.fileErrors.Count
+      }
+
+      $banner = if ($dryRun) {
+        "**MODE: DRY RUN** — no processes terminated, no files deleted. " +
+        "$($report.dangling.Count) dangling tree(s) found ($killedWould process(es) would be killed); " +
+        "$($report.leakedFiles.Count) leaked temp file(s) found ($delWould would be deleted)."
+      } else {
+        $errSuffix = if ($report.killErrors.Count + $report.fileErrors.Count -gt 0) {
+          " ($($report.killErrors.Count) kill error(s), $($report.fileErrors.Count) file error(s) — see report)"
+        } else { '' }
+        "**MODE: LIVE** — terminated $killedActual process(es) across $($report.dangling.Count) dangling tree(s); " +
+        "deleted $delActual leaked temp file(s)$errSuffix."
+      }
+
+      $lines = @()
+      $lines += $banner
+      $lines += ''
+      $lines += '## Statistics'
+      $lines += ''
+      $lines += '| Metric                                    | Count |'
+      $lines += '|-------------------------------------------|------:|'
+      $lines += "| Orchestra pwsh candidates scanned         | $($report.candidates.Count) |"
+      $lines += "| Active (kept — parent alive / self / new) | $($report.active.Count) |"
+      $lines += "| Dangling trees identified                 | $($report.dangling.Count) |"
+      $lines += "| Processes killed                          | $killedActual" + $(if ($dryRun) { " (would: $killedWould)" } else { '' }) + ' |'
+      $lines += "| Kill errors                               | $($report.killErrors.Count) |"
+      $lines += "| Leaked temp .ps1 files found              | $($report.leakedFiles.Count) |"
+      $lines += "| Temp files deleted                        | $delActual" + $(if ($dryRun) { " (would: $delWould)" } else { '' }) + ' |'
+      $lines += "| File-delete errors                        | $($report.fileErrors.Count) |"
+      $lines += ''
+      $lines += '## Sweep Report'
+      $lines += ''
+      $lines += '```json'
+      $lines += ($report | ConvertTo-Json -Depth 10)
+      $lines += '```'
+
+      ($lines -join "`n")
+
+  # ── Step 2: Render a human-friendly summary ────────────────────────────
+  - name: format-summary
+    type: Transform
+    dependsOn: [sweep-dangling]
+    template: |
+      # Dangling Orchestra Processes — Daily Sweep
+
+      **Run ID:**     {{orchestration.runId}}
+      **Started at:** {{orchestration.startedAt}}
+      **Dry run:**    {{param.dryRun}}
+      **Min age:**    {{param.minAgeSeconds}} second(s)
+
+      {{sweep-dangling.output}}
+
+      ---
+      Notes
+      -----
+      - A process is **dangling** only when its parent (the Orchestra
+        orchestrator that spawned it) is no longer alive. Active script
+        steps under a live orchestrator are never touched.
+      - Termination uses `Stop-Process -Force` (Win32 `TerminateProcess`),
+        which never produces the `Terminate batch job (Y/N)?` prompt
+        because `cmd.exe` is killed outright rather than signalled.
+      - Leaked `orchestra-*.ps1` temp files are removed only after the
+        process sweep, and only when no live `pwsh` references them.

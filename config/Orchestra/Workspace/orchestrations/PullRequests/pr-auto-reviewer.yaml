@@ -173,7 +173,7 @@ steps:
       # ── Transform to the downstream output contract ──────────────────────
       # Emits the same JSON-array shape `az repos pr list` used to produce, so
       # the downstream `filter-prs` step (and everything keyed off
-      # {{fetch-assigned-prs.output}}) keeps working without any change.
+      # \{{fetch-assigned-prs.output}}) keeps working without any change.
       $prs = New-Object System.Collections.Generic.List[object]
       foreach ($p in @($list)) {
         if ($null -eq $p) { continue }

@@ -226,7 +226,7 @@ steps:
       Otherwise fall back to the default ask provided in the userPrompt.
 
       Save the final markdown to a file using orchestra_save_file so that
-      downstream steps can reference it via {{synthesize.files[0]}}.
+      downstream steps can reference it via \{{synthesize.files[0]}}.
     userPrompt: |
       Raindrop:
         title = {{param.title}}
