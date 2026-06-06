@@ -85,6 +85,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # --- 2) Publish a raindrop-error ActionView entry ----------------------------
+$reprocessScript = Join-Path $PSScriptRoot 'reprocess-raindrop.ps1'
 $errorEntryId = "raindrop-error-$raindropId"  # stable per-raindrop -> latest failure replaces prior, no accumulation
 $entry = @{
     schemaVersion = '1'
@@ -110,6 +111,9 @@ $entry = @{
         @{ label = 'Open in raindrop.io'; style = 'default'; command = @{
             type = 'cli'; program = 'cmd'; args = @('/c','start','','https://app.raindrop.io/my/0/item/' + $raindropId + '/edit')
         }; onSuccess = 'keep' }
+        @{ label = 'Reprocess (move back to AI-Inbox)'; style = 'default'; confirmMessage = 'Move this raindrop back to AI-Inbox and rerun the full analysis on the next tracker tick? The Zakira state record will be cleared.'; command = @{
+            type = 'cli'; program = 'pwsh'; args = @('-NoProfile','-File',$reprocessScript,'-RaindropId',$raindropId)
+        }; onSuccess = 'archive' }
     )
 }
 $tmpFile = Join-Path $env:TEMP "raindrop-error-$raindropId-$([guid]::NewGuid().ToString('N')).json"

@@ -250,6 +250,24 @@ steps:
           - link 'Open original' to the raindrop URL
         actions:
           - 'Open original' (cli, onSuccess=keep)
+          - 'Reprocess'     -- include this action VERBATIM (substituting the templated values shown):
+              {
+                "label": "Reprocess (move back to AI-Inbox)",
+                "style": "default",
+                "confirmMessage": "Move this raindrop back to AI-Inbox and rerun the full analysis on the next tracker tick?",
+                "command": {
+                  "type": "cli",
+                  "program": "pwsh",
+                  "args": [
+                    "-NoProfile",
+                    "-File",
+                    "{{orchestration.sourceDirectory}}/tools/scripts/reprocess-raindrop.ps1",
+                    "-RaindropId",
+                    "{{param.raindropId}}"
+                  ]
+                },
+                "onSuccess": "archive"
+              }
           - 'Dismiss'       (default, onSuccess=archive)
 
       Save the JSON via orchestra_save_file. Output ONLY the raw JSON.

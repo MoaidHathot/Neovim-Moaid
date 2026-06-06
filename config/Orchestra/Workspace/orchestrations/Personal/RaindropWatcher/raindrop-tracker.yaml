@@ -241,13 +241,23 @@ steps:
         R1. No state record present
               -> dispatch (status: queued, reason: new).
 
-        R2. Status == "completed" AND noteHash unchanged
-              -> SKIP (reason: completed-unchanged).
+        R2. Status == "completed"
+              -> the user moved this raindrop BACK into AI-Inbox (under
+                 normal operation the processor would have moved it OUT
+                 to AI-Processed; if it's appearing in `gate-empty.output`
+                 again, the only way it got back here is a manual move).
+                 Treat this as an explicit reprocess intent.
+                 -> RE-DISPATCH (reason: user-reprocess), priorAttempts = 0.
 
-        R3. Status == "completed" AND noteHash changed
-              -> RE-DISPATCH (reason: note-changed).
+        R2b. Status == "completed" AND noteHash changed
+              -> ALSO covered by R2 above. The note-change is just a
+                 secondary signal; the primary one is "completed but
+                 currently in AI-Inbox". Use reason "note-changed" in
+                 the output instead of "user-reprocess" when the hash
+                 actually changed (the bookkeeping helps the
+                 tracker-summary explain which case fired).
 
-        R4. Status in {"queued","processing"} AND ageMinutes > stuckThresholdMinutes
+        R3. Status in {"queued","processing"} AND ageMinutes > stuckThresholdMinutes
               -> RECLASSIFY-STUCK: treat the item as if status == "failed"
                  with lastError = "stuck-in-flight: no progress for <N> min"
                  and effective attempts = current attempts (do NOT bump here;
@@ -255,22 +265,26 @@ steps:
                  Then apply the failed-rules below.
                  Record this in the `stuckReclassified` output array.
 
-        R5. Status in {"queued","processing"} AND ageMinutes <= stuckThresholdMinutes
+        R4. Status in {"queued","processing"} AND ageMinutes <= stuckThresholdMinutes
               -> SKIP (reason: in-flight).
 
-        R6. Status == "failed" AND attempts < maxAttempts
+        R5. Status == "failed" AND attempts < maxAttempts
               -> RE-DISPATCH (reason: retry-failed).
 
-        R7. Status == "failed" AND attempts >= maxAttempts
+        R6. Status == "failed" AND attempts >= maxAttempts
               -> DEAD-LETTER (record in the `deadLetter` output array; do NOT
                  select for dispatch). The dead-letter-move step will move
                  the raindrop into the dead-letter collection and publish a
                  raindrop-dead-letter ActionView entry.
 
-        R8. Status == "dead-lettered"
-              -> SKIP (reason: already-dead-lettered). The raindrop should
-                 no longer be in AI-Inbox; if it appears here, the last
-                 dead-letter-move failed and will be retried.
+        R7. Status == "dead-lettered"
+              -> the user moved this raindrop BACK from AI-DeadLetter into
+                 AI-Inbox (the dead-letter-move step put it in AI-DeadLetter
+                 and tagged it `dead-letter`; the only way it's back in
+                 AI-Inbox is a manual recovery).
+                 -> RE-DISPATCH (reason: user-recovery-from-dead-letter),
+                    priorAttempts = 0 (fresh start, not continuation of
+                    the retry budget that exhausted before).
 
       Hard cap: never select more than `maxDispatchPerTick` items for dispatch
       in one tick. If the cap is hit, surface the deferred ids in the
@@ -278,6 +292,16 @@ steps:
 
       Compute the noteHash as SHA-256 of the raindrop's `note` field (UTF-8;
       empty string when null).
+
+      Reprocess intent rationale: under normal operation, completed and
+      dead-lettered raindrops are NOT in AI-Inbox (the processor moves
+      them to AI-Processed; dead-letter-move moves them to AI-DeadLetter).
+      So if a raindrop appears in `gate-empty.output` (which is the
+      AI-Inbox listing) with status=completed or status=dead-lettered,
+      the user must have manually moved it back. That is an unambiguous
+      "please reprocess this" signal and we honor it. The companion
+      tools/scripts/reprocess-raindrop.ps1 script does the same thing
+      programmatically.
 
       If after applying the rules nothing is selected AND nothing is to be
       dead-lettered, call orchestra_complete with status 'success' and
@@ -308,7 +332,7 @@ steps:
             "noteHash": "<sha256 hex>",
             "tags": ["..."],
             "addedAt": "<created>",
-            "reason": "<new|note-changed|retry-failed|stuck-retry>",
+            "reason": "<new|note-changed|retry-failed|stuck-retry|user-reprocess|user-recovery-from-dead-letter>",
             "priorAttempts": <int>
           }
         ],

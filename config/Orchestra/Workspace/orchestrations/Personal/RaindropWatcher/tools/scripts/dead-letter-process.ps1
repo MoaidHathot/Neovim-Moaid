@@ -121,6 +121,7 @@ foreach ($it in $items) {
 
     # --- 3) Publish a raindrop-dead-letter ActionView entry -----------------
     $deadLetterEntryId = "raindrop-dead-letter-$rid"  # stable per-raindrop -> idempotent
+    $reprocessScript = Join-Path $PSScriptRoot 'reprocess-raindrop.ps1'
     $tmpFile = Join-Path $env:TEMP "raindrop-deadletter-$rid-$([guid]::NewGuid().ToString('N')).json"
     try {
         $entry = @{
@@ -141,7 +142,7 @@ foreach ($it in $items) {
                     'Last error'        = $lastError
                     'Dead-lettered at'  = $nowIso
                 } }
-                @{ type = 'alert'; level = 'error'; title = 'Manual intervention required'; message = "This raindrop was moved to the dead-letter collection after $attempts failed attempt(s). Investigate the failures (see prior raindrop-error entries), fix the underlying issue, and either move the raindrop back into AI-Inbox to retry or delete it." }
+                @{ type = 'alert'; level = 'error'; title = 'Manual intervention required'; message = "This raindrop was moved to the dead-letter collection after $attempts failed attempt(s). Investigate the failures (see prior raindrop-error entries), fix the underlying issue, and either click Reprocess to retry from scratch or delete it manually." }
                 @{ type = 'link'; label = 'Open original'; url = $url }
             )
             actions = @(
@@ -151,6 +152,9 @@ foreach ($it in $items) {
                 @{ label = 'Open dead-letter collection'; style = 'default'; command = @{
                     type = 'cli'; program = 'cmd'; args = @('/c','start','','https://app.raindrop.io/my/' + $deadLetterCollectionId)
                 }; onSuccess = 'keep' }
+                @{ label = 'Reprocess (move back to AI-Inbox, reset attempts)'; style = 'primary'; confirmMessage = 'Move this raindrop back to AI-Inbox, clear its Zakira state, and rerun analysis from scratch on the next tracker tick? Use this after you have fixed the underlying issue that caused the failures.'; command = @{
+                    type = 'cli'; program = 'pwsh'; args = @('-NoProfile','-File',$reprocessScript,'-RaindropId',$rid)
+                }; onSuccess = 'archive' }
             )
         }
         $entry | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $tmpFile -Encoding UTF8

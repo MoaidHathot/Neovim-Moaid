@@ -53,6 +53,14 @@ Tracker-tick guarantees, by design:
   ActionView entry, it now throws so the error surfaces in the hook log
   (rather than silently leaving the state inconsistent). The stuck-
   detection rule above is the second line of defense for this case.
+- **Reprocess on manual move-back.** A raindrop that appears in
+  `AI-Inbox` with `status=completed` or `status=dead-lettered` is treated
+  as an explicit reprocess intent (the user must have moved it back
+  manually, since the processor and the dead-letter mover normally take
+  items OUT of `AI-Inbox`). The next tick re-dispatches with
+  `priorAttempts=0`. The same outcome is available one-click via the
+  **Reprocess** action on every per-raindrop ActionView entry, or from
+  the CLI via `tools/scripts/reprocess-raindrop.ps1`.
 
 ## Multi-machine story (dotfiles-first)
 
@@ -100,7 +108,10 @@ RaindropWatcher/
 |       +- fetch-article.ps1             # cheap HTTP fetch + ad-filtered image candidate extraction
 |       +- save-recipe.ps1               # write recipe md to recipes dir
 |       +- save-article-images.ps1       # download chosen article images into <recipesDir>/<slug>-images/
-|       +- hook-mark-failed.ps1          # orchestration.failure hook (now throws on internal failure)
+|       +- capture-targeted-frames.ps1   # CLI-driven targeted frame capture (replaces MCP approach)
+|       +- submit-actionview-upsert.ps1  # delete-then-add ActionView entry by stable id
+|       +- reprocess-raindrop.ps1        # one-shot reprocess helper (move back + clear state + dismiss AV entries)
+|       +- hook-mark-failed.ps1          # orchestration.failure hook (throws on internal failure)
 |       +- dead-letter-process.ps1       # moves dead-letter items, marks Zakira, publishes ActionView entry
 |       +- publish-rolling-status.ps1    # tick-end: replaces the single rolling raindrop-watcher-status entry
 +- skills/
@@ -324,16 +335,29 @@ pwsh -File tests/test-raindrop-cli-tokens.ps1
   your "is the watcher healthy?" glance. Severity escalates to `medium`
   whenever anything was dead-lettered or stuck-reclassified this tick.
 
-- **Manual retry of a permanently-failed raindrop**: a dead-lettered
-  raindrop lives in `AI-DeadLetter`. To retry it:
-  1. Move it back to `AI-Inbox` (drag in raindrop.io, or via the CLI:
-     `dotnet run tools/raindrop.cs -- move <id> --to-collection <inboxId>`).
-  2. Delete (or edit) its Zakira.Exchange record so the tracker treats it
-     as new:
+- **Reprocessing a raindrop (completed OR dead-lettered)**: three options,
+  pick whichever is convenient.
+  1. **One-click**: each per-raindrop success entry, the `raindrop-error`
+     entry, and the `raindrop-dead-letter` entry all carry a **Reprocess**
+     action. It runs `tools/scripts/reprocess-raindrop.ps1` to move the
+     raindrop back to `AI-Inbox`, strip workflow tags, clear the Zakira
+     state record, and dismiss stale ActionView entries; the next tracker
+     tick treats it as a brand-new item.
+  2. **CLI**: the same helper script directly:
      ```powershell
-     dnx Zakira.Exchange --yes -- --db $env:XDG_CONFIG_HOME/orchestra/zakira.db `
-         delete --category raindrop-watcher-state --key <id>
+     pwsh -File .\tools\scripts\reprocess-raindrop.ps1 -RaindropId <id>
      ```
+     Flags: `-SkipMove`, `-SkipStateDelete`, `-SkipActionViewDismiss` if
+     you want to do only part of the cleanup.
+  3. **Manual drag-back**: drag the raindrop in raindrop.io's UI from
+     `AI-Processed` (or `AI-DeadLetter`) back to `AI-Inbox`. The tracker
+     auto-detects this on the next tick. The detection rule: a raindrop
+     with `status=completed` or `status=dead-lettered` that is currently
+     in `AI-Inbox` can only have gotten there via a manual move (the
+     processor itself moves completed items OUT to `AI-Processed`, and
+     dead-letter-move puts failed items in `AI-DeadLetter`). The tracker
+     treats this as explicit reprocess intent with `priorAttempts=0`
+     (fresh start, not a continuation of any previous retry budget).
 
 - **Idempotency on retries**: every per-raindrop ActionView entry is
   assigned a deterministic id (`raindrop-<raindropId>-<short-type>`,
