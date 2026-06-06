@@ -44,19 +44,6 @@ variables:
 defaultStepTimeoutSeconds: 1800
 timeoutSeconds: 7200
 
-mcps:
-  - name: zakira-replay
-    type: local
-    command: dnx
-    arguments:
-      - Zakira.Replay
-      - "--yes"
-      - "--"
-      - mcp
-      - serve
-      - "--transport"
-      - stdio
-
 steps:
   - name: zakira-analyze
     type: Command
@@ -159,51 +146,43 @@ steps:
       - "{{zakira-analyze.output}}"
     timeoutSeconds: 120
 
-  - name: targeted-frame-capture
+  - name: pick-targeted-frames
     type: Prompt
     dependsOn: [read-artifacts]
     systemPrompt: |
       You are a visual evidence curator for a conference/session summary
-      pipeline. You have the Zakira.Replay MCP server in scope (transport:
-      stdio). It exposes ad-hoc frame-capture capabilities; use whichever
-      tool corresponds to ad-hoc frame capture (likely named `frames` or
-      similar -- list_tools first to confirm the exact name and arg shape).
-
-      Your job: scan the transcript and chapter list for moments where a
-      still image meaningfully helps the reader recall WHAT was on screen.
-      Reuse the same `runId` so frames land alongside the baseline ones.
+      pipeline. Your job is to scan the transcript and chapter list for
+      moments where a still image meaningfully helps the reader recall
+      WHAT was on screen, and output a JSON list of timestamps + reasons.
+      A downstream Script step will actually capture those frames via
+      Zakira.Replay's `frames` CLI.
 
       What counts as a valuable moment:
         - Speaker explicitly directs attention to the screen ("as you can
           see on this slide", "look at this chart", "here is the demo").
         - A diagram, architecture sketch, or block diagram is shown.
-        - Code or terminal output is on screen (not as a CLIP, but the
-          single best representative frame).
+        - Code or terminal output is on screen (pick a representative
+          frame, not many).
         - A live demo screen / GUI is shown.
         - Speaker arrives at a key conclusion accompanied by a slide.
         - A panel or speaker line-up shot (when speakers are introduced).
 
       Hard caps (BALANCE, not spam):
-        - Total additional frames captured: at most {{vars.targetedFrameCap}}.
+        - Pick at most {{vars.targetedFrameCap}} timestamps.
         - Skip any moment within ~15 seconds of an existing baseline frame.
-        - Each request MUST include a one-sentence `reason`.
+        - Every pick MUST include a one-sentence `reason`.
 
-      Output a SINGLE JSON object:
+      Output a SINGLE JSON object on stdout (no commentary, no fences):
 
-      {
-        "ok": true,
-        "runId": "<runId from input>",
-        "captured": [
-          { "timestamp": "hh:mm:ss", "reason": "...", "path": "...", "fileUri": "..." }
-        ],
-        "skipped": [
-          { "timestamp": "hh:mm:ss", "reason": "..." }
-        ],
-        "budget": "captured N of {{vars.targetedFrameCap}}"
-      }
+        {
+          "ok": true,
+          "picks": [
+            { "timestamp": "hh:mm:ss", "reason": "<one short sentence>" }
+          ]
+        }
 
-      Do NOT call any non-MCP tool. Do NOT invent paths. Output ONLY the
-      JSON object, no commentary.
+      Timestamps must be in `hh:mm:ss` form. If no transcript moments are
+      worth a frame, output { "ok": true, "picks": [] }.
     userPrompt: |
       Raindrop:
         title = {{param.title}}
@@ -212,9 +191,24 @@ steps:
       Zakira.Replay artifact pack:
       {{read-artifacts.output}}
 
-      Capture targeted frames per the system prompt. Output ONLY the JSON.
-    mcps: [zakira-replay]
-    timeoutSeconds: 1200
+      Output ONLY the JSON object.
+    timeoutSeconds: 600
+
+  - name: targeted-frame-capture
+    type: Script
+    shell: pwsh
+    dependsOn: [zakira-analyze, pick-targeted-frames]
+    scriptFile: "./tools/scripts/capture-targeted-frames.ps1"
+    arguments:
+      - "-PicksJson"
+      - "{{pick-targeted-frames.output}}"
+      - "-Source"
+      - "{{param.url}}"
+      - "-ZakiraAnalyzeJson"
+      - "{{zakira-analyze.output}}"
+      - "-MaxCap"
+      - "{{vars.targetedFrameCap}}"
+    timeoutSeconds: 1800
 
   - name: synthesize
     type: Prompt

@@ -36,19 +36,6 @@ variables:
 defaultStepTimeoutSeconds: 1800
 timeoutSeconds: 5400
 
-mcps:
-  - name: zakira-replay
-    type: local
-    command: dnx
-    arguments:
-      - Zakira.Replay
-      - "--yes"
-      - "--"
-      - mcp
-      - serve
-      - "--transport"
-      - stdio
-
 steps:
   - name: zakira-analyze
     type: Command
@@ -103,7 +90,7 @@ steps:
       - "{{zakira-analyze.output}}"
     timeoutSeconds: 120
 
-  - name: targeted-frame-capture
+  - name: pick-targeted-frames
     type: Prompt
     dependsOn: [read-artifacts]
     systemPrompt: |
@@ -111,32 +98,27 @@ steps:
       pipeline. The baseline run did NOT extract any frames, so this is the
       one chance to grab visuals -- but the budget is tight ({{vars.targetedFrameCap}}).
 
-      You have the Zakira.Replay MCP server (transport: stdio). Use whichever
-      tool corresponds to ad-hoc frame capture (`frames` or similar). Reuse
-      the same `runId` so the frames land in the existing artifact directory.
+      Output a JSON list of timestamps + one-sentence reasons. A downstream
+      Script step will capture the frames via Zakira.Replay's `frames` CLI.
 
-      Only capture a frame if the transcript clearly indicates that what's
+      Only pick a timestamp if the transcript clearly indicates that what's
       on screen is essential to the meaning ("look at this graph", "here is
       the screenshot of the bug", "this is the meme I was talking about").
-      When in doubt, do NOT capture -- this processor is intentionally
-      light-touch.
+      When in doubt, do NOT pick -- this processor is intentionally light-touch.
 
-      Each captured frame MUST have a one-sentence reason.
+      Every pick MUST have a one-sentence reason.
 
-      Output a SINGLE JSON object:
+      Output a SINGLE JSON object on stdout (no commentary, no fences):
 
-      {
-        "ok": true,
-        "runId": "<runId>",
-        "captured": [
-          { "timestamp": "hh:mm:ss", "reason": "...", "path": "...", "fileUri": "..." }
-        ],
-        "skipped": [],
-        "budget": "captured N of {{vars.targetedFrameCap}}"
-      }
+        {
+          "ok": true,
+          "picks": [
+            { "timestamp": "hh:mm:ss", "reason": "<one short sentence>" }
+          ]
+        }
 
-      If no transcript moments are clearly worth a frame, output captured=[]
-      and move on. Do NOT call any non-MCP tool. Output ONLY the JSON.
+      Timestamps must be in `hh:mm:ss` form. If no transcript moments are
+      worth a frame, output { "ok": true, "picks": [] }.
     userPrompt: |
       Raindrop:
         title = {{param.title}}
@@ -145,9 +127,24 @@ steps:
       Artifact pack:
       {{read-artifacts.output}}
 
-      Decide per the system prompt. Output ONLY the JSON.
-    mcps: [zakira-replay]
-    timeoutSeconds: 600
+      Output ONLY the JSON.
+    timeoutSeconds: 300
+
+  - name: targeted-frame-capture
+    type: Script
+    shell: pwsh
+    dependsOn: [zakira-analyze, pick-targeted-frames]
+    scriptFile: "./tools/scripts/capture-targeted-frames.ps1"
+    arguments:
+      - "-PicksJson"
+      - "{{pick-targeted-frames.output}}"
+      - "-Source"
+      - "{{param.url}}"
+      - "-ZakiraAnalyzeJson"
+      - "{{zakira-analyze.output}}"
+      - "-MaxCap"
+      - "{{vars.targetedFrameCap}}"
+    timeoutSeconds: 1200
 
   - name: synthesize
     type: Prompt

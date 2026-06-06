@@ -128,12 +128,22 @@ Two-stage frame capture for **video** processors (recipe / session / generic):
 1. **Baseline** -- `Zakira.Replay analyze` with strategy/preset tuned per
    intent (scene + ocr + vision for recipe; lecture preset + ocr + vision
    for session; transcript-only with `--frames 0` for generic).
-2. **Targeted** -- a `targeted-frame-capture` Prompt step holds the
-   Zakira.Replay MCP server in scope (`mcp serve --transport stdio`). The
-   LLM scans the transcript and asks the MCP for additional frames at
-   moments judged genuinely visual (technique demos, product close-ups,
-   slide references). Bounded caps: recipe=20, session=12, generic=5.
-   Each requested frame must include a one-sentence justification.
+2. **Targeted** -- a `pick-targeted-frames` Prompt step scans the
+   transcript and emits a JSON list of `{timestamp, reason}` picks.
+   A `targeted-frame-capture` Script step then calls
+   `Zakira.Replay frames --at <ts1,ts2,...> --run-id <baseline-runId>
+   --allow-media-download --max-edge 1280 --output-format json` once,
+   so the captured frames land alongside the baseline ones inside the
+   same artifact directory. Per-intent caps (enforced both in the prompt
+   and in the Script): recipe=20, session=12, generic=5. Every pick
+   must include a one-sentence justification.
+
+   We deliberately drive this via the CLI (not Zakira.Replay's MCP)
+   because Copilot's tool-name validator (`^[a-zA-Z0-9_-]{1,128}$`)
+   rejects MCP tool names containing dots, which Zakira.Replay's MCP
+   uses. CLI-driven is also deterministic (no LLM-tool-discovery
+   uncertainty) and lets the Script step batch all picks into a single
+   CLI invocation.
 
 For **article-recipe**: `fetch-article.ps1` extracts ad-filtered `<img>`
 candidates from the raw HTML (drops tracking pixels, ad networks,
@@ -296,8 +306,10 @@ pwsh -File tests/test-raindrop-cli-tokens.ps1
   failure hook itself fails.
 
 - **Visual evidence (videos)**: each video processor runs a baseline
-  `Zakira.Replay analyze` pass and then a targeted-frame-capture pass
-  through Zakira.Replay's MCP. Caps: recipe=20, session=12, generic=5
+  `Zakira.Replay analyze` pass, then a `pick-targeted-frames` Prompt
+  picks important transcript moments, then `targeted-frame-capture`
+  (Script) batches them into a single `Zakira.Replay frames` CLI call
+  pinned to the baseline runId. Caps: recipe=20, session=12, generic=5
   additional frames per video. Tune via the `targetedFrameCap` variable
   in each processor YAML.
 

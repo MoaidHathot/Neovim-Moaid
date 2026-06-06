@@ -64,22 +64,6 @@ variables:
 defaultStepTimeoutSeconds: 1800
 timeoutSeconds: 7200
 
-mcps:
-  # Zakira.Replay's MCP server -- used by the targeted-frame-capture step
-  # to request ad-hoc frame captures at specific timestamps without rerunning
-  # the full analyze pipeline. The transport is stdio (default).
-  - name: zakira-replay
-    type: local
-    command: dnx
-    arguments:
-      - Zakira.Replay
-      - "--yes"
-      - "--"
-      - mcp
-      - serve
-      - "--transport"
-      - stdio
-
 steps:
   - name: zakira-analyze
     type: Command
@@ -154,27 +138,22 @@ steps:
       - "{{zakira-analyze.output}}"
     timeoutSeconds: 120
 
-  - name: targeted-frame-capture
+  - name: pick-targeted-frames
     type: Prompt
     dependsOn: [read-artifacts]
     systemPrompt: |
       You are a visual evidence curator for a cooking-video recipe extraction
-      pipeline. You have the Zakira.Replay MCP server in scope (transport:
-      stdio). It exposes ad-hoc frame-capture capabilities; use whichever
-      tool corresponds to ad-hoc frame capture (likely named `frames` or
-      similar -- list_tools first to confirm the exact name and arg shape).
-
-      Your job: scan the transcript for moments where a still image is
-      VALUABLE to a cook trying to reproduce this recipe later, then call
-      the frame-capture tool to grab those frames into the existing
-      Zakira.Replay run directory. Reuse the same `runId` so frames land
-      next to the baseline ones (do NOT create a new run).
+      pipeline. Your job is to scan the transcript for moments where a still
+      image is VALUABLE to a cook trying to reproduce this recipe later, and
+      output a JSON list of timestamps with one-sentence reasons. A downstream
+      Script step will actually capture those frames via Zakira.Replay's
+      `frames` CLI.
 
       What counts as a valuable moment (call out one per timestamp):
         - "Hero shot" of a specific product / brand / ingredient on screen
           ("the brand of yeast I use is...").
         - Hands-on technique demo ("knead like this...", "fold the egg
-          whites in like so..."). Capture mid-motion.
+          whites in like so..."). Pick the mid-motion timestamp.
         - State / texture cue ("look for this color", "should feel like
           this", "should be the consistency of...").
         - Visual measurement ("fill it to here").
@@ -184,56 +163,49 @@ steps:
         - Plating / finished dish.
 
       Hard caps (BALANCE, not spam):
-        - Total additional frames captured: at most {{vars.targetedFrameCap}}.
+        - Pick at most {{vars.targetedFrameCap}} timestamps.
         - Skip any moment within ~10 seconds of an existing baseline scene
-          frame (consult baselineFrames in the input -- the file names
-          typically encode timestamps; if unclear, just spread your picks
-          across the timeline).
-        - Each request MUST include a one-sentence `reason` in your output
-          explaining why this frame helps a cook. If you cannot articulate
-          a reason, do not capture.
+          frame (consult `baselineFrames` in the input).
+        - Every pick MUST include a one-sentence `reason`.
 
-      Output a SINGLE JSON object:
+      Output a SINGLE JSON object on stdout (no commentary, no fences):
 
-      {
-        "ok": true,
-        "runId": "<runId from input>",
-        "captured": [
-          {
-            "timestamp": "hh:mm:ss",
-            "reason": "<one short sentence>",
-            "path": "<absolute path returned by the MCP tool>",
-            "fileUri": "<file:// URI for the path>"
-          }
-        ],
-        "skipped": [
-          { "timestamp": "hh:mm:ss", "reason": "<why skipped>" }
-        ],
-        "budget": "captured N of {{vars.targetedFrameCap}}"
-      }
+        {
+          "ok": true,
+          "picks": [
+            { "timestamp": "hh:mm:ss", "reason": "<one short sentence>" }
+          ]
+        }
 
-      If the MCP tool errors or no transcript timestamps look valuable,
-      output:
-        { "ok": true, "runId": "<id>", "captured": [], "skipped": [],
-          "budget": "captured 0 of {{vars.targetedFrameCap}}" }
-
-      Do NOT call any non-MCP tool. Do NOT invent paths. Output ONLY the
-      JSON object, no commentary.
+      Timestamps must be in `hh:mm:ss` form (no fractional seconds). If no
+      transcript moments are worth a frame, output { "ok": true, "picks": [] }.
     userPrompt: |
       Raindrop:
         title = {{param.title}}
         url   = {{param.url}}
 
-      Zakira.Replay artifact pack (use `runId` and `artifactDirectory` for
-      the MCP `frames` calls; consult baselineFrames before requesting new
-      ones to avoid near-duplicates):
-
+      Zakira.Replay artifact pack (consult baselineFrames before picking to
+      avoid near-duplicates):
       {{read-artifacts.output}}
 
-      Pick the valuable moments per the system prompt and capture them via
-      the MCP. Output ONLY the result JSON.
-    mcps: [zakira-replay]
-    timeoutSeconds: 1200
+      Output ONLY the JSON object described in the system prompt.
+    timeoutSeconds: 600
+
+  - name: targeted-frame-capture
+    type: Script
+    shell: pwsh
+    dependsOn: [zakira-analyze, pick-targeted-frames]
+    scriptFile: "./tools/scripts/capture-targeted-frames.ps1"
+    arguments:
+      - "-PicksJson"
+      - "{{pick-targeted-frames.output}}"
+      - "-Source"
+      - "{{param.url}}"
+      - "-ZakiraAnalyzeJson"
+      - "{{zakira-analyze.output}}"
+      - "-MaxCap"
+      - "{{vars.targetedFrameCap}}"
+    timeoutSeconds: 1800
 
   - name: synthesize
     type: Prompt
