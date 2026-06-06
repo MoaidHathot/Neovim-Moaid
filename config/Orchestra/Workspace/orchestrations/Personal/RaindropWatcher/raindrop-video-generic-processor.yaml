@@ -46,10 +46,18 @@ steps:
       - "--"
       - analyze
       - "{{param.url}}"
-      - "--frames"
-      - "0"
+      # Light baseline so the user always sees SOME visual evidence even
+      # if the targeted-pick step decides nothing is essential. ~0.5 frames
+      # per minute -> 5-6 frames for a typical 10-15 min video. --allow-media-download
+      # is needed for sources yt-dlp can't directly resolve (e.g., some
+      # YouTube videos with cookie/region issues).
       - "--frame-strategy"
       - interval
+      - "--frames-per-minute"
+      - "0.5"
+      - "--max-ai-frames"
+      - "12"
+      - "--allow-media-download"
       - "--cache"
       - "--output-format"
       - json
@@ -78,12 +86,30 @@ steps:
         if ($s.Length -le $max) { return $s }
         return $s.Substring(0, $max) + "`n`n...[truncated $($s.Length - $max) chars]"
       }
+
+      # Enumerate baseline frames present on disk so the pick step can
+      # avoid duplicating timestamps and the synth/AV steps can reference
+      # them. Even video-generic now captures a small baseline set.
+      $framesDir = Join-Path $artifactDir 'frames'
+      $baselineFrames = @()
+      if (Test-Path -LiteralPath $framesDir) {
+        $files = Get-ChildItem -LiteralPath $framesDir -File -Recurse -Include *.jpg,*.jpeg,*.png,*.webp -ErrorAction SilentlyContinue | Select-Object -First 30
+        foreach ($f in $files) {
+          $baselineFrames += [pscustomobject]@{
+            file = $f.Name
+            path = $f.FullName
+            fileUri = ([System.Uri]::new($f.FullName)).AbsoluteUri
+          }
+        }
+      }
+
       $pack = @{
         runId = $payload.runId
         artifactDirectory = $artifactDir
         manifest   = (Cap (ReadFileOrEmpty 'manifest.json') 20000)
         transcript = (Cap (ReadFileOrEmpty 'transcript.md') 80000)
         metadata   = (Cap (ReadFileOrEmpty 'metadata.json') 20000)
+        baselineFrames = $baselineFrames
       }
       $pack | ConvertTo-Json -Depth 8 -Compress
     arguments:
@@ -94,19 +120,35 @@ steps:
     type: Prompt
     dependsOn: [read-artifacts]
     systemPrompt: |
-      You are an optional visual evidence curator for a cheap video-summary
-      pipeline. The baseline run did NOT extract any frames, so this is the
-      one chance to grab visuals -- but the budget is tight ({{vars.targetedFrameCap}}).
+      You are a visual evidence curator. The video has a small baseline
+      set of interval-sampled frames already (see `baselineFrames` in the
+      input). Your job is to ADD up to {{vars.targetedFrameCap}} more
+      frames that improve the visual story: moments the speaker explicitly
+      directs attention to the screen, moments where seeing the screen is
+      genuinely more informative than just hearing the audio.
 
-      Output a JSON list of timestamps + one-sentence reasons. A downstream
-      Script step will capture the frames via Zakira.Replay's `frames` CLI.
+      Be GENEROUS, not conservative. The goal is for the user to see
+      meaningful stills next to the summary. Almost every video has at
+      least a few moments that benefit from a frame:
 
-      Only pick a timestamp if the transcript clearly indicates that what's
-      on screen is essential to the meaning ("look at this graph", "here is
-      the screenshot of the bug", "this is the meme I was talking about").
-      When in doubt, do NOT pick -- this processor is intentionally light-touch.
+        - Speaker says "look at this", "see this", "here", "you can see..."
+        - On-screen text / labels / numbers / code / UI
+        - A chart, diagram, or graph being referenced
+        - A product / device being shown or held up
+        - A demo or example being walked through
+        - A reaction shot or notable visual moment
 
-      Every pick MUST have a one-sentence reason.
+      If the transcript is vague (just narration with no visual cues),
+      still pick 2-3 timestamps spread across the duration so the user
+      gets representative frames -- one early, one middle, one late.
+      Picking ZERO timestamps is reserved for true edge cases (e.g., a
+      static talking-head with no visual content at all). Default behavior
+      is to pick.
+
+      Each pick MUST include a one-sentence `reason`. Pick timestamps
+      that are at least ~15 seconds away from a baselineFrames timestamp
+      so you don't duplicate (the file names typically encode the
+      timestamp, e.g., `frame-003-02-15.jpg` is the 2:15 mark).
 
       Output a SINGLE JSON object on stdout (no commentary, no fences):
 
@@ -117,8 +159,7 @@ steps:
           ]
         }
 
-      Timestamps must be in `hh:mm:ss` form. If no transcript moments are
-      worth a frame, output { "ok": true, "picks": [] }.
+      Timestamps must be in `hh:mm:ss` form.
     userPrompt: |
       Raindrop:
         title = {{param.title}}
@@ -155,9 +196,13 @@ steps:
       transcript timestamp. Never invent claims. Use the user's note as the
       analysis request when non-empty, else fall back to the default ask.
 
-      If the targeted-frame-capture step captured any frames, embed them
-      inline at the corresponding timestamp in the summary using markdown
-      image syntax with the `fileUri` value: `![reason](file:///...)`.
+      Inline visuals: the artifact pack includes `baselineFrames` (small set
+      of interval-sampled stills) and the targeted-frame-capture output
+      includes `captured` (LLM-picked stills). When either is non-empty,
+      embed a handful of the most relevant frames inline in the summary
+      using markdown image syntax with each frame's `fileUri`:
+      `![reason or caption](file:///...)`. Aim for 2-4 inline frames total;
+      do not embed every frame.
 
       Save the final markdown via orchestra_save_file.
     userPrompt: |
@@ -190,7 +235,7 @@ steps:
 
   - name: create-action-view-entry
     type: Prompt
-    dependsOn: [synthesize, targeted-frame-capture, fetch-action-view-schema]
+    dependsOn: [read-artifacts, synthesize, targeted-frame-capture, fetch-action-view-schema]
     systemPrompt: |
       You produce ActionView entries that match the entry schema. Type must
       be 'raindrop-video-generic'; source must be '{{orchestration.name}}'.
@@ -209,6 +254,9 @@ steps:
       Synthesized summary:
       {{synthesize.output}}
 
+      Read-artifacts pack (for baselineFrames and artifactDirectory):
+      {{read-artifacts.output}}
+
       Targeted frame capture:
       {{targeted-frame-capture.output}}
 
@@ -224,9 +272,17 @@ steps:
         content blocks:
           - keyValue 'Source' with: URL, Added at, Original tags, Note
           - section 'Summary' containing a markdown block with the synthesized summary
-          - section 'Visual evidence' containing a markdown block listing each `captured` frame
-              as "### <timestamp> -- <reason>" + `![<reason>](<fileUri>)`.
-              Omit this section if `captured` is empty.
+          - section 'Visual evidence' -- ALWAYS include this section, never omit it.
+            Populate the markdown body using both the baseline frames AND the targeted captures:
+              * If `baselineFrames` (from read-artifacts) is non-empty: show them first under a sub-heading "### Baseline frames"
+                with each as `![<filename>](<fileUri>)` (one per line, 4-8 at most).
+              * If `captured` (from targeted-frame-capture) is non-empty: show them under "### Targeted frames"
+                with each as "**<timestamp>** -- <reason>" followed by `![<reason>](<fileUri>)`.
+              * If BOTH are empty: include the section anyway with a small italic note explaining why,
+                e.g. "_No visual frames were captured for this video._ Possible causes: source media could not
+                be resolved by Zakira.Replay (yt-dlp / inline-media probes failed), or the transcript had no
+                visual moments worth a targeted capture. Check the run directory at the path in
+                `read-artifacts.output.artifactDirectory` for diagnostic logs."
           - link 'Open original' to the raindrop URL
         actions:
           - 'Open original' (cli, onSuccess=keep)
@@ -265,9 +321,12 @@ steps:
 
   - name: result-envelope
     type: Prompt
-    dependsOn: [zakira-analyze, targeted-frame-capture, synthesize, submit-action-view-entry]
+    dependsOn: [zakira-analyze, read-artifacts, targeted-frame-capture, synthesize, submit-action-view-entry]
     systemPrompt: |
-      Output ONLY a JSON envelope describing the outcome.
+      Output ONLY a JSON envelope describing the outcome. Be FACTUAL.
+      Do NOT invent causes for missing data -- only report what the
+      step outputs literally say. If a count is 0, report 0; do not
+      speculate why unless the step output itself states a reason.
     userPrompt: |
       Build a JSON envelope like:
 
@@ -276,12 +335,14 @@ steps:
         "processor": "{{orchestration.name}}",
         "raindropId": "{{param.raindropId}}",
         "zakiraReplayRunId": "<runId from zakira-analyze output>",
-        "targetedFramesCaptured": <count from targeted-frame-capture output `captured` length>,
+        "baselineFramesAvailable": <count from read-artifacts output `baselineFrames` array length, 0 if missing>,
+        "targetedFramesCaptured": <count from targeted-frame-capture output `captured` array length, 0 if missing>,
         "actionViewEntryId": "<id parsed from submit-action-view-entry output, or null>",
-        "summary": "<one-sentence summary line>"
+        "summary": "<one factual sentence: processor name + raindrop title + counts. E.g. 'raindrop-video-generic-processor processed \"<title>\" with N baseline + M targeted frames.' Do NOT add explanations for low counts unless an error message in one of the inputs explicitly states one.>"
       }
 
       Zakira analyze output:   {{zakira-analyze.output}}
+      Read-artifacts output:   {{read-artifacts.output}}
       Targeted frame capture:  {{targeted-frame-capture.output}}
       ActionView submission:   {{submit-action-view-entry.output}}
 

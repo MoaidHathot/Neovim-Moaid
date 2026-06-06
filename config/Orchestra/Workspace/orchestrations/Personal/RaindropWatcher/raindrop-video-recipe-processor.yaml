@@ -81,6 +81,7 @@ steps:
       - "--cache"
       - "--max-ai-frames"
       - "80"
+      - "--allow-media-download"
       - "--output-format"
       - json
       - "--correlation-id"
@@ -142,18 +143,23 @@ steps:
     type: Prompt
     dependsOn: [read-artifacts]
     systemPrompt: |
-      You are a visual evidence curator for a cooking-video recipe extraction
-      pipeline. Your job is to scan the transcript for moments where a still
-      image is VALUABLE to a cook trying to reproduce this recipe later, and
-      output a JSON list of timestamps with one-sentence reasons. A downstream
-      Script step will actually capture those frames via Zakira.Replay's
-      `frames` CLI.
+      You are a visual evidence curator for a cooking-video recipe
+      extraction pipeline. Your job is to scan the transcript and pick
+      timestamps for ADDITIONAL frames (the baseline scene-detection set
+      is already in `baselineFrames`). The output drives a downstream
+      Script that calls Zakira.Replay's `frames` CLI.
+
+      Be GENEROUS, not conservative -- recipes are intensely visual, and
+      a cook reading the saved recipe later WILL want photos of the
+      product, the technique, and the finished dish. Aim to USE the
+      budget of {{vars.targetedFrameCap}} picks; only pick fewer if the
+      video is genuinely short or non-visual.
 
       What counts as a valuable moment (call out one per timestamp):
-        - "Hero shot" of a specific product / brand / ingredient on screen
-          ("the brand of yeast I use is...").
-        - Hands-on technique demo ("knead like this...", "fold the egg
-          whites in like so..."). Pick the mid-motion timestamp.
+        - "Hero shot" of a specific product / brand / ingredient on
+          screen ("the brand of yeast I use is...").
+        - Hands-on technique demo ("knead like this", "fold the egg
+          whites in like so"). Pick the mid-motion timestamp.
         - State / texture cue ("look for this color", "should feel like
           this", "should be the consistency of...").
         - Visual measurement ("fill it to here").
@@ -162,10 +168,10 @@ steps:
           heat").
         - Plating / finished dish.
 
-      Hard caps (BALANCE, not spam):
+      Hard caps:
         - Pick at most {{vars.targetedFrameCap}} timestamps.
-        - Skip any moment within ~10 seconds of an existing baseline scene
-          frame (consult `baselineFrames` in the input).
+        - Skip any moment within ~10 seconds of an existing baselineFrames
+          timestamp (the file names typically encode the timestamp).
         - Every pick MUST include a one-sentence `reason`.
 
       Output a SINGLE JSON object on stdout (no commentary, no fences):
@@ -177,8 +183,9 @@ steps:
           ]
         }
 
-      Timestamps must be in `hh:mm:ss` form (no fractional seconds). If no
-      transcript moments are worth a frame, output { "ok": true, "picks": [] }.
+      Timestamps must be in `hh:mm:ss` form. If the video is so short or
+      non-visual that no extra picks would help, output a small set (1-2)
+      of evenly-spaced timestamps anyway so the user gets some visuals.
     userPrompt: |
       Raindrop:
         title = {{param.title}}
@@ -281,7 +288,7 @@ steps:
 
   - name: create-action-view-entry
     type: Prompt
-    dependsOn: [synthesize, targeted-frame-capture, save-recipe-file, fetch-action-view-schema]
+    dependsOn: [read-artifacts, synthesize, targeted-frame-capture, save-recipe-file, fetch-action-view-schema]
     systemPrompt: |
       You produce ActionView entries that match the entry schema. The entry
       type must be 'raindrop-recipe' and source must be '{{orchestration.name}}'.
@@ -304,6 +311,9 @@ steps:
       Recipe save result (JSON):
       {{save-recipe-file.output}}
 
+      Read-artifacts pack (for baselineFrames and artifactDirectory):
+      {{read-artifacts.output}}
+
       Targeted frame capture results (use for the Visual evidence section):
       {{targeted-frame-capture.output}}
 
@@ -319,9 +329,16 @@ steps:
         content blocks:
           - keyValue 'Source' with: URL, Added at, Source medium = "video", Saved to (path from save-recipe-file)
           - section 'Recipe' containing a markdown block with the entire recipe body (which already embeds inline images)
-          - section 'Visual evidence' containing a markdown block that lists each item from `captured` (targeted frames):
-              "### <timestamp> -- <reason>" followed by an inline image markdown line `![<reason>](<fileUri>)`.
-              Omit this section entirely when `captured` is empty.
+          - section 'Visual evidence' -- ALWAYS include this section, never omit it.
+            Populate the markdown body using both `baselineFrames` and `captured`:
+              * If `baselineFrames` is non-empty: show them first under sub-heading "### Scene-detected frames"
+                with each as `![<filename>](<fileUri>)`.
+              * If `captured` is non-empty: show them under "### Targeted frames"
+                with each as "**<timestamp>** -- <reason>" followed by `![<reason>](<fileUri>)`.
+              * If BOTH are empty: include the section with a small italic note explaining why,
+                e.g. "_No visual frames were captured._ Possible causes: source media could not
+                be resolved by Zakira.Replay (yt-dlp / inline-media probes failed), or the transcript had no
+                visual moments the targeted-frame-capture step judged worth a still."
           - link 'Open original video' to the raindrop URL
           - link 'Open saved recipe' to the file:// URI of the saved recipe path
         actions:
@@ -362,11 +379,14 @@ steps:
 
   - name: result-envelope
     type: Prompt
-    dependsOn: [zakira-analyze, targeted-frame-capture, synthesize, save-recipe-file, submit-action-view-entry]
+    dependsOn: [zakira-analyze, read-artifacts, targeted-frame-capture, synthesize, save-recipe-file, submit-action-view-entry]
     systemPrompt: |
       You produce a single small JSON envelope describing the outcome of
       this processor run, so the parent raindrop-processor can persist a
-      tidy state record. Output ONLY the JSON.
+      tidy state record. Output ONLY the JSON. Be FACTUAL -- do NOT invent
+      causes for missing data; only report what the step outputs literally
+      say. If a count is 0, report 0; do not speculate why unless an input
+      step output explicitly states a reason.
     userPrompt: |
       Build a JSON envelope like:
 
@@ -375,13 +395,15 @@ steps:
         "processor": "{{orchestration.name}}",
         "raindropId": "{{param.raindropId}}",
         "zakiraReplayRunId": "<runId from zakira-analyze output>",
-        "targetedFramesCaptured": <count from targeted-frame-capture output `captured` length>,
+        "baselineFramesAvailable": <count from read-artifacts output `baselineFrames` array length, 0 if missing>,
+        "targetedFramesCaptured": <count from targeted-frame-capture output `captured` array length, 0 if missing>,
         "savedRecipePath": "<savedPath from save-recipe-file output>",
         "actionViewEntryId": "<id parsed from submit-action-view-entry output, or null>",
-        "summary": "<one-sentence summary line>"
+        "summary": "<one factual sentence: processor + raindrop title + counts. E.g. 'raindrop-video-recipe-processor extracted \"<title>\" with N baseline + M targeted frames; recipe saved to <path>.' Do NOT add explanations for low counts unless an input step's output explicitly states one.>"
       }
 
       Zakira analyze output:        {{zakira-analyze.output}}
+      Read-artifacts output:        {{read-artifacts.output}}
       Targeted frame capture:       {{targeted-frame-capture.output}}
       Recipe save output:           {{save-recipe-file.output}}
       ActionView submission:        {{submit-action-view-entry.output}}

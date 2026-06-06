@@ -61,6 +61,7 @@ steps:
       - "--cache"
       - "--max-ai-frames"
       - "60"
+      - "--allow-media-download"
       - "--output-format"
       - json
       - "--correlation-id"
@@ -152,24 +153,32 @@ steps:
     systemPrompt: |
       You are a visual evidence curator for a conference/session summary
       pipeline. Your job is to scan the transcript and chapter list for
-      moments where a still image meaningfully helps the reader recall
-      WHAT was on screen, and output a JSON list of timestamps + reasons.
-      A downstream Script step will actually capture those frames via
-      Zakira.Replay's `frames` CLI.
+      timestamps where an ADDITIONAL frame meaningfully helps the reader
+      recall WHAT was on screen (the baseline slide-detection set is
+      already in `baselineFrames`). A downstream Script captures the
+      picks via Zakira.Replay's `frames` CLI.
+
+      Be GENEROUS, not conservative. Almost every session has demo
+      moments, slide references, or visual punchlines worth picking.
+      Aim to USE the budget of {{vars.targetedFrameCap}} picks; only
+      pick fewer if the session is genuinely talking-head with no
+      visual content.
 
       What counts as a valuable moment:
-        - Speaker explicitly directs attention to the screen ("as you can
-          see on this slide", "look at this chart", "here is the demo").
+        - Speaker explicitly directs attention to the screen ("as you
+          can see on this slide", "look at this chart", "here is the
+          demo").
         - A diagram, architecture sketch, or block diagram is shown.
         - Code or terminal output is on screen (pick a representative
-          frame, not many).
+          frame).
         - A live demo screen / GUI is shown.
         - Speaker arrives at a key conclusion accompanied by a slide.
-        - A panel or speaker line-up shot (when speakers are introduced).
+        - A panel or speaker line-up shot.
 
-      Hard caps (BALANCE, not spam):
+      Hard caps:
         - Pick at most {{vars.targetedFrameCap}} timestamps.
-        - Skip any moment within ~15 seconds of an existing baseline frame.
+        - Skip any moment within ~15 seconds of an existing baselineFrames
+          timestamp.
         - Every pick MUST include a one-sentence `reason`.
 
       Output a SINGLE JSON object on stdout (no commentary, no fences):
@@ -181,8 +190,7 @@ steps:
           ]
         }
 
-      Timestamps must be in `hh:mm:ss` form. If no transcript moments are
-      worth a frame, output { "ok": true, "picks": [] }.
+      Timestamps must be in `hh:mm:ss` form.
     userPrompt: |
       Raindrop:
         title = {{param.title}}
@@ -191,7 +199,7 @@ steps:
       Zakira.Replay artifact pack:
       {{read-artifacts.output}}
 
-      Output ONLY the JSON object.
+      Output ONLY the JSON.
     timeoutSeconds: 600
 
   - name: targeted-frame-capture
@@ -305,9 +313,16 @@ steps:
                           (omit the section entirely if there are no chapters)
           - section 'Key Quotes' containing a markdown block of timestamped quotes (linked via deep-links when possible)
           - section 'Action items' containing a markdown checklist
-          - section 'Visual evidence' containing a markdown block that lists each item from `captured` (targeted frames):
-              "### <timestamp> -- <reason>" followed by `![<reason>](<fileUri>)`.
-              Omit this section when `captured` is empty.
+          - section 'Visual evidence' -- ALWAYS include this section, never omit it.
+            Populate the markdown body using both `baselineFrames` (from read-artifacts) and `captured` (from targeted-frame-capture):
+              * If `baselineFrames` is non-empty: show them first under sub-heading "### Slide-detected frames"
+                with each as `![<filename>](<fileUri>)` (cap at 8).
+              * If `captured` is non-empty: show them under "### Targeted frames"
+                with each as "**<timestamp>** -- <reason>" followed by `![<reason>](<fileUri>)`.
+              * If BOTH are empty: include the section with a small italic note explaining why,
+                e.g. "_No visual frames were captured._ Possible causes: source media could not
+                be resolved by Zakira.Replay (yt-dlp / inline-media probes failed), or the transcript had no
+                visual moments the targeted-frame-capture step judged worth a still."
           - link 'Open original' to the raindrop URL
         actions:
           - 'Open original'   (cli command opening the URL in browser, onSuccess=keep)
@@ -347,11 +362,14 @@ steps:
 
   - name: result-envelope
     type: Prompt
-    dependsOn: [zakira-analyze, targeted-frame-capture, synthesize, create-action-view-entry, submit-action-view-entry]
+    dependsOn: [zakira-analyze, read-artifacts, targeted-frame-capture, synthesize, create-action-view-entry, submit-action-view-entry]
     systemPrompt: |
       You produce a single small JSON envelope describing the outcome of
       this processor run, so the parent raindrop-processor can persist a
-      tidy state record. Output ONLY the JSON.
+      tidy state record. Output ONLY the JSON. Be FACTUAL -- do NOT invent
+      causes for missing data; only report what the step outputs literally
+      say. If a count is 0, report 0; do not speculate why unless an input
+      step output explicitly states a reason.
     userPrompt: |
       Build a JSON envelope like:
 
@@ -360,12 +378,14 @@ steps:
         "processor": "{{orchestration.name}}",
         "raindropId": "{{param.raindropId}}",
         "zakiraReplayRunId": "<runId from zakira-analyze output>",
-        "targetedFramesCaptured": <count from targeted-frame-capture output `captured` length>,
+        "baselineFramesAvailable": <count from read-artifacts output `baselineFrames` array length, 0 if missing>,
+        "targetedFramesCaptured": <count from targeted-frame-capture output `captured` array length, 0 if missing>,
         "actionViewEntryId": "<id parsed from submit-action-view-entry output, or null>",
-        "summary": "<one-sentence summary line>"
+        "summary": "<one factual sentence: processor + raindrop title + counts. Do NOT add explanations for low counts unless an input step's output explicitly states one.>"
       }
 
       Zakira analyze output:    {{zakira-analyze.output}}
+      Read-artifacts output:    {{read-artifacts.output}}
       Targeted frame capture:   {{targeted-frame-capture.output}}
       ActionView submission:    {{submit-action-view-entry.output}}
       Synth headline: take the first line of {{synthesize.output}}
