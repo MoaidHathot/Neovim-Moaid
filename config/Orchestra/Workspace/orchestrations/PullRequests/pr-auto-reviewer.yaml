@@ -114,16 +114,29 @@ steps:
         # which prompts interactively (via stdin) when missing -- that prompt receives
         # EOF in a piped-stdin orchestration context and crashes az with EOFError.
         $repoBase = "$orgUrl/$project/_apis/git/repositories/$repository"
-        $repoRaw = & az rest `
-          --method get `
-          --uri $repoBase `
-          --uri-parameters "api-version=7.1-preview.1" `
-          --resource $adoResource `
-          -o json 2>&1
-        if ($LASTEXITCODE -ne 0) {
-          throw "az rest repository lookup failed (exit $LASTEXITCODE): $(($repoRaw -join "`n"))"
+        # Route stderr to a temp file rather than merging it into stdout with 2>&1.
+        # az ignores $env:PYTHONIOENCODING on Windows and unconditionally emits
+        # `WARNING: Unable to encode the output with cp1252 encoding...` whenever
+        # the HTTP response contains a non-ASCII character. With 2>&1 that warning
+        # contaminates the JSON parser's input ('W' is invalid JSON). Keeping the
+        # streams separate gives us clean stdout for parsing and preserves stderr
+        # for the throw path so real errors still surface with full context.
+        $repoStderr = [System.IO.Path]::GetTempFileName()
+        try {
+          $repoRaw = & az rest `
+            --method get `
+            --uri $repoBase `
+            --uri-parameters "api-version=7.1-preview.1" `
+            --resource $adoResource `
+            -o json 2>$repoStderr
+          if ($LASTEXITCODE -ne 0) {
+            $stderr = Get-Content -Raw -LiteralPath $repoStderr -ErrorAction SilentlyContinue
+            throw "az rest repository lookup failed (exit $LASTEXITCODE). stderr: $stderr"
+          }
+          $repoObj = (($repoRaw | ForEach-Object { [string]$_ }) -join "`n") | ConvertFrom-Json -Depth 100
+        } finally {
+          Remove-Item -LiteralPath $repoStderr -ErrorAction SilentlyContinue
         }
-        $repoObj = ($repoRaw -join "`n") | ConvertFrom-Json -Depth 100
         $repoId = [string]$repoObj.id
         if ([string]::IsNullOrWhiteSpace($repoId)) {
           throw "Could not resolve repository ID for '$project/$repository' in org '$organization'."
@@ -143,18 +156,25 @@ steps:
       # cmd interprets `&` as a command separator).
       $listBase = "$orgUrl/$project/_apis/git/repositories/$repoId/pullrequests"
       # '$top' is single-quoted so PowerShell doesn't try to interpolate $top.
-      $raw = & az rest `
-        --method get `
-        --uri $listBase `
-        --uri-parameters "api-version=7.1-preview.1" "searchCriteria.status=active" '$top=200' `
-        --resource $adoResource `
-        -o json 2>&1
-      if ($LASTEXITCODE -ne 0) {
-        $errText = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
-        throw "az rest pullrequests list failed (exit $LASTEXITCODE): $errText"
+      # stderr is routed to a temp file (see the comment on the repo lookup
+      # above for why merging via 2>&1 corrupts ConvertFrom-Json).
+      $listStderr = [System.IO.Path]::GetTempFileName()
+      try {
+        $raw = & az rest `
+          --method get `
+          --uri $listBase `
+          --uri-parameters "api-version=7.1-preview.1" "searchCriteria.status=active" '$top=200' `
+          --resource $adoResource `
+          -o json 2>$listStderr
+        if ($LASTEXITCODE -ne 0) {
+          $stderr = Get-Content -Raw -LiteralPath $listStderr -ErrorAction SilentlyContinue
+          throw "az rest pullrequests list failed (exit $LASTEXITCODE). stderr: $stderr"
+        }
+        $jsonString = ($raw | ForEach-Object { [string]$_ }) -join "`n"
+        $envelope = $jsonString | ConvertFrom-Json -Depth 100
+      } finally {
+        Remove-Item -LiteralPath $listStderr -ErrorAction SilentlyContinue
       }
-      $jsonString = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
-      $envelope = $jsonString | ConvertFrom-Json -Depth 100
       # The REST API wraps results in { value: [...], count: N }; unwrap so the
       # downstream foreach body (originally written against the unwrapped array
       # that `az repos pr list` returns) keeps working unchanged.

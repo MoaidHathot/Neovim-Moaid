@@ -42,39 +42,37 @@ After that, browser-capture runs against `*.sharepoint.com` use the DPAPI-encryp
 
 ### Single session — CLI
 
+SharePoint Stream is **not** in `KnownHosts` (auth setups vary too much for blanket auto-detection), so you must pass `--capture-mode browser` explicitly. The 0.14 defaults (`--frames 15 --frame-strategy interval`, captions auto) cover the rest.
+
 Transcript-only (no media download):
 
 ```pwsh
-zakira-replay transcribe "https://contoso-my.sharepoint.com/personal/me/_layouts/15/stream.aspx?id=/personal/me/Recordings/Meeting.mp4" `
+dnx Zakira.Replay transcribe "https://contoso-my.sharepoint.com/personal/me/_layouts/15/stream.aspx?id=/personal/me/Recordings/Meeting.mp4" `
   --capture-mode browser
 ```
 
 Frames from a single-file MP4 upload (requires opt-in download):
 
 ```pwsh
-zakira-replay analyze "https://contoso-my.sharepoint.com/.../stream.aspx?id=..." `
-  --capture-mode browser --frames 7 --frame-strategy interval `
-  --allow-media-download
+dnx Zakira.Replay analyze "https://contoso-my.sharepoint.com/.../stream.aspx?id=..." `
+  --capture-mode browser --allow-media-download
 ```
 
 Frames from a chunked-stream meeting recording (in-browser seek + screenshot, no download):
 
 ```pwsh
-zakira-replay analyze "https://contoso-my.sharepoint.com/.../stream.aspx?id=..." `
-  --capture-mode browser --frames 7 --frame-strategy interval `
-  --smart-crop  # removes Teams gallery sidebar before hashing/OCR
+dnx Zakira.Replay analyze "https://contoso-my.sharepoint.com/.../stream.aspx?id=..." `
+  --capture-mode browser --smart-crop  # removes Teams gallery sidebar before hashing/OCR
 ```
 
 ### Single session — MCP
 
 ```json
 {
-  "tool": "analyze.start",
+  "tool": "analyze-start",
   "arguments": {
     "source": "https://contoso-my.sharepoint.com/.../stream.aspx?id=...",
     "captureMode": "browser",
-    "frames": 7,
-    "frameStrategy": "interval",
     "smartCrop": true
   }
 }
@@ -83,7 +81,7 @@ zakira-replay analyze "https://contoso-my.sharepoint.com/.../stream.aspx?id=..."
 ### Spot frames
 
 ```pwsh
-zakira-replay frames "https://contoso-my.sharepoint.com/.../stream.aspx?id=..." `
+dnx Zakira.Replay frames "https://contoso-my.sharepoint.com/.../stream.aspx?id=..." `
   --at "00:10:00,00:25:00" --allow-media-download
 ```
 

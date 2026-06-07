@@ -181,28 +181,42 @@ steps:
             '--id', $runId,
             '-o','json'
           )
-          $raw = & az @azArgs 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            $errText = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
-            $terminalState = "failure"
-            $currentResult = "unavailable"
-            $summary = "az pipelines runs show failed for $project run $runId (exit $LASTEXITCODE): $errText"
-          } else {
-            $jsonString = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
-            $build = $jsonString | ConvertFrom-Json -Depth 100
-            $currentStatus = [string]$build.status
-            $currentResult = [string]$build.result
-            $finishTime = ConvertTo-IsoUtcString $build.finishTime
-            if ($currentStatus -eq "completed") {
-              switch -Regex ($currentResult) {
-                '^succeeded$'              { $terminalState = "success"; break }
-                '^(failed|canceled|partiallySucceeded)$' { $terminalState = "failure"; break }
-                default                    { $terminalState = "failure" }
-              }
+          # Route stderr to a temp file rather than merging it into stdout with
+          # 2>&1. az ignores $env:PYTHONIOENCODING on Windows and unconditionally
+          # emits `WARNING: Unable to encode the output with cp1252 encoding...`
+          # whenever the HTTP response contains a non-ASCII character (e.g. a
+          # build queued by an identity with a diacritic). With 2>&1 that
+          # warning contaminates the JSON parser's input ('W' is invalid JSON).
+          # Keeping the streams separate gives us clean stdout for parsing and
+          # preserves stderr for the failure branch so real errors still surface
+          # with full context in the per-run summary.
+          $stderrFile = [System.IO.Path]::GetTempFileName()
+          try {
+            $raw = & az @azArgs 2>$stderrFile
+            if ($LASTEXITCODE -ne 0) {
+              $stderr = Get-Content -Raw -LiteralPath $stderrFile -ErrorAction SilentlyContinue
+              $terminalState = "failure"
+              $currentResult = "unavailable"
+              $summary = "az pipelines runs show failed for $project run $runId (exit $LASTEXITCODE). stderr: $stderr"
             } else {
-              $terminalState = "active"
+              $jsonString = ($raw | ForEach-Object { [string]$_ }) -join "`n"
+              $build = $jsonString | ConvertFrom-Json -Depth 100
+              $currentStatus = [string]$build.status
+              $currentResult = [string]$build.result
+              $finishTime = ConvertTo-IsoUtcString $build.finishTime
+              if ($currentStatus -eq "completed") {
+                switch -Regex ($currentResult) {
+                  '^succeeded$'              { $terminalState = "success"; break }
+                  '^(failed|canceled|partiallySucceeded)$' { $terminalState = "failure"; break }
+                  default                    { $terminalState = "failure" }
+                }
+              } else {
+                $terminalState = "active"
+              }
+              $summary = "Build $runId $currentStatus/$currentResult finished=$finishTime"
             }
-            $summary = "Build $runId $currentStatus/$currentResult finished=$finishTime"
+          } finally {
+            Remove-Item -LiteralPath $stderrFile -ErrorAction SilentlyContinue
           }
         }
 

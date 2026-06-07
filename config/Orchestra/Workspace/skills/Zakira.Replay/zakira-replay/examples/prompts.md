@@ -10,7 +10,7 @@ Summarize this video and include timestamps for the main claims: https://example
 
 Agent behavior:
 
-- Start `analyze.start` with `frames: 7`, `frameStrategy: "scene"`, and `cache: true`.
+- Call `analyze-start` with `cache: true`. The 0.14 defaults (`frames: 15`, `frameStrategy: "interval"`, `captureMode: "auto"`) cover most general use; override only when the question demands it.
 - Add `ocr: true` and `vision: true` if slides, UI, code, or diagrams matter.
 - Poll until succeeded.
 - Read `manifest.json`, `evidence.json`, and `transcript.md`.
@@ -36,8 +36,8 @@ Agent behavior:
 MCP search flow:
 
 ```json
-{"name":"index.build","arguments":{"runDirectory":"<artifact-directory>","backend":"sqlite-onnx"}}
-{"name":"index.query","arguments":{"target":"<artifact-directory>","query":"model evaluation","backend":"sqlite-onnx","top":5}}
+{"name":"index-build","arguments":{"runDirectory":"<artifact-directory>","backend":"sqlite-onnx"}}
+{"name":"index-query","arguments":{"target":"<artifact-directory>","query":"model evaluation","backend":"sqlite-onnx","top":5}}
 ```
 
 ## Analyze Visual Content
@@ -50,7 +50,7 @@ Review the dashboard shown in this demo and list the visible metrics: https://ex
 
 Agent behavior:
 
-- Use `frames: 12`, `frameStrategy: "scene"`, `ocr: true`, `vision: true`, and `cache: true`.
+- Use `frames: 12`, `ocr: true`, `vision: true`, and `cache: true`. Add `frameStrategy: "scene"` if the source is a direct-URL stream (YouTube, local file) — **avoid `"scene"` on HLS sources like Microsoft Build / Medius** since scene-cut detection pulls the entire stream.
 - Inspect `ocr/combined.md`, `vision/combined.md`, and frame images.
 - Separate visible text from inferred meaning.
 
@@ -66,17 +66,16 @@ Agent behavior:
 
 - Use `ocrProvider: "local"` to run RapidOCR (PP-OCRv5 latin) entirely on-device via ONNX. No LLM, no network at run-time after the models are installed.
 - The user must run `zakira-replay deps install ocr` once before the first local-OCR run; without the models the run emits `OCR_LOCAL_MODELS_MISSING`.
-- Combine with `frameStrategy: "scene"` and `frames: 30` for slide-heavy content.
+- Bump `frames: 30` for slide-heavy content (default is 15). Add `frameStrategy: "scene"` only when the source isn't an HLS stream.
 - Tradeoff to mention: lower fidelity than a frontier vision model on complex layouts; no `tables[]` reconstruction.
 
 ```json
 {
-  "name": "analyze.start",
+  "name": "analyze-start",
   "arguments": {
     "source": "https://example.com/conference-talk",
     "visionInstruction": "Extract slide text and code blocks.",
     "frames": 30,
-    "frameStrategy": "scene",
     "ocr": true,
     "ocrProvider": "local",
     "cache": true
@@ -100,7 +99,7 @@ Agent behavior:
 
 ```json
 {
-  "name": "analyze.start",
+  "name": "analyze-start",
   "arguments": {
     "source": "C:\\meetings\\team-sync.mp4",
     "visionInstruction": "Extract the slide content.",
@@ -131,7 +130,7 @@ Agent behavior:
 
 ```json
 {
-  "name": "analyze.start",
+  "name": "analyze-start",
   "arguments": {
     "source": "https://corp.example.com/training/abc",
     "visionInstruction": "Extract slide content from this internal training video.",
@@ -160,18 +159,16 @@ Summarize this Ignite session: https://medius.studios.ms/Embed/video-12345
 
 Agent behavior:
 
-- The user must first sign in to Medius interactively via `zakira-replay auth login ignite-2026 --url https://medius.studios.ms/`.
-- Then pass `captureMode: "browser"` and `authProfile: "ignite-2026"`. Captions arrive automatically through the network interceptor; no need for any Medius-specific code path.
+- The user must first sign in to Medius interactively via `zakira-replay auth login ignite-2026 --url https://medius.studios.ms/` (or use the dedicated Edge profile via `auth init-edge-profile`).
+- Then pass `authProfile: "ignite-2026"`. In 0.14+ `captureMode` defaults to `auto` and Medius hosts auto-route to browser + inline-media sidestep, so neither `captureMode` nor `preferInlineMedia` is required. Captions arrive automatically through `MediusTranscriptInterceptor`.
 
 ```json
 {
-  "name": "analyze.start",
+  "name": "analyze-start",
   "arguments": {
     "source": "https://medius.studios.ms/Embed/video-12345",
     "visionInstruction": "Extract slide titles, bullets, code blocks, and demo content.",
     "frames": 30,
-    "frameStrategy": "scene",
-    "captureMode": "browser",
     "authProfile": "ignite-2026",
     "ocr": true,
     "vision": true,
@@ -199,7 +196,7 @@ Agent behavior:
 
 ```json
 {
-  "name": "analyze.start",
+  "name": "analyze-start",
   "arguments": {
     "source": "https://microsofteur-my.sharepoint.com/personal/.../stream.aspx?id=...",
     "visionInstruction": "Extract slide content and visual evidence from this Teams meeting.",
@@ -259,7 +256,7 @@ Create chapter markers for this video and include supporting evidence.
 Agent behavior:
 
 - Analyze the video with transcript extraction.
-- Call `chapters.build` with the completed run directory.
+- Call `chapters-build` with the completed run directory.
 - Read `chapters/chapters.json` and cite chapter evidence timestamps. Generate any per-chapter labels yourself; chapters carry pure time spans plus evidence references, no titles or prose summaries.
 
 ## When LLM-Backed OCR Hangs
@@ -283,7 +280,7 @@ Agent behavior:
 
 ```json
 {
-  "name": "analyze.start",
+  "name": "analyze-start",
   "arguments": {
     "source": "C:/corp/training/onboarding.mp4",
     "visionInstruction": "Extract slide content from this internal training video.",
@@ -319,7 +316,7 @@ https://example.com/recipe-video
 
 Agent behavior:
 
-- Step 1: full `analyze` (or `analyze.start`) with `frames: 0` to get the transcript and chapter material cheaply, then `chapters.build` so each step in the recipe has a timestamp.
+- Step 1: full `analyze` (or `analyze-start`) with `frames: 0` to get the transcript and chapter material cheaply, then `chapters-build` so each step in the recipe has a timestamp.
 - Step 2: read `transcript.md` + `chapters/chapters.json` and identify a meaningful timestamp for each step (e.g. "deglaze the pan" at 04:12, "add the cream" at 06:35).
 - Step 3: call `frames` with the chosen timestamps. The full pipeline does not need to re-run; this captures stills only.
 

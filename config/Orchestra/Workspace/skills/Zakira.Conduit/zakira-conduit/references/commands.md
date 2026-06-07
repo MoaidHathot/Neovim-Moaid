@@ -10,9 +10,9 @@ These work on every subcommand:
 |---|---|
 | `-m, --manifest <path>` | Override manifest discovery. Path is absolute or relative to the current directory. |
 | `-o, --output text\|json` | Output format. `text` is human-friendly (default). `json` emits machine-readable JSON on stdout; logs are still routed to stderr so `... \| jq` works. |
-| `--verbosity q\|m\|n\|d\|diag` | Verbosity level. Default `normal`. |
+| `--verbosity q\|m\|n\|d\|diag` | Verbosity level. Default `minimal` (warnings + errors only). Use `n[ormal]` to see per-entry operational logs, `d[etailed]` for wire-level debug. |
 | `-v, --verbose` | Shortcut for `--verbosity detailed`. |
-| `-q, --quiet` | Shortcut for `--verbosity quiet`. |
+| `-q, --quiet` | Shortcut for `--verbosity quiet` (errors only). |
 
 ## Exit codes
 

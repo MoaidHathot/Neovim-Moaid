@@ -326,51 +326,147 @@ steps:
     timeoutSeconds: 120
 
   - name: filter-already-processed
-    type: Prompt
+    type: Script
     dependsOn: [normalize-meetings-array]
-    systemPrompt: |
-      You are a state checker for meeting action-items extraction. Use
-      Zakira.Exchange to decide which of the enriched meetings still
-      need processing.
+    shell: pwsh
+    script: |
+      # Deterministic state filter for meeting-action-items. Replaces the prior
+      # LLM-based Prompt step that intermittently emitted a human status
+      # sentence ("1 meeting needs processing, 0 skipped.") instead of the JSON
+      # object the downstream `dispatch-processor` forEach
+      # (forEachPath=meetingsToProcess) consumes -- which caused the dispatcher
+      # to fail with "'m' is invalid after a single JSON value".
+      #
+      # Behavior preserved verbatim:
+      #   - Per-meeting lookup against Zakira.Exchange (same DB, same category).
+      #   - status='processed' (no freshness window; action-items extraction is
+      #     a process-once-and-done operation).
+      #   - forceReprocess='true' bypasses the lookup for every meeting.
+      #   - Full enriched meeting object passes through unchanged into
+      #     meetingsToProcess so the dispatcher has the complete payload.
+      #
+      # Early-completion (the prior "All recent meetings already processed."
+      # short-circuit) is deferred to the downstream gate-noteworthy-activity
+      # step: an empty meetingsToProcess yields a 0/0 dispatch rollup, and
+      # gate-noteworthy-activity's existing "not noteworthy" branch calls
+      # orchestra_complete with no ActionView entry created. The user-visible
+      # behavior (no notification on a no-op run) is identical.
+      $ErrorActionPreference = 'Stop'
 
-      Rules:
-      1. The canonical Zakira key is already computed on each meeting as
-         `zakiraKey`. Use it verbatim — do not invent or transform keys.
-      2. For each meeting, call Zakira.Exchange `get_memory` with the
-         exact `zakiraKey`.
-      3. If `forceReprocess` (passed via the user prompt) is the string
-         'true', mark every meeting as `needs-processing` regardless of
-         stored state.
-      4. Otherwise:
-         - If a memory exists with status 'processed', mark the meeting
-           as `skip` and include the stored processedAt in the result.
-         - Otherwise mark as `needs-processing`.
-      5. If ALL meetings are `skip`, call orchestra_complete with status
-         'success' and reason 'All recent meetings already processed.'
-      6. Output a single JSON object:
-         {
-           "meetingsToProcess": [ <enriched meeting object>, ... ],
-           "meetingsSkipped": [
-             { "zakiraKey": "...", "title": "...", "startTime": "...", "processedAt": "..." },
-             ...
-           ]
-         }
-      7. Preserve every original field on each meeting object you pass
-         through into `meetingsToProcess`. The downstream dispatcher
-         needs the full payload.
-    userPrompt: |
-      Enriched meetings (each has a canonical `zakiraKey`):
-      {{normalize-meetings-array.output}}
+      $normalizedRaw     = $args[0]
+      $forceReprocessRaw = if ($args.Count -gt 1) { [string]$args[1] } else { 'false' }
+      $dbPath            = if ($args.Count -gt 2) { [string]$args[2] } else { '' }
+      $category          = if ($args.Count -gt 3) { [string]$args[3] } else { '' }
 
-      forceReprocess flag: {{param.forceReprocess}}
+      if ([string]::IsNullOrWhiteSpace($normalizedRaw)) {
+        throw 'normalize-meetings-array output is empty.'
+      }
+      if ([string]::IsNullOrWhiteSpace($dbPath)) {
+        throw 'Zakira database path argument is empty.'
+      }
+      if ([string]::IsNullOrWhiteSpace($category)) {
+        throw 'Zakira category argument is empty.'
+      }
 
-      Look up Zakira.Exchange for each `zakiraKey` and produce the
-      split JSON object described above.
-    outputHandlerPrompt: |
-      Extract one valid JSON object only with the keys
-      `meetingsToProcess` and `meetingsSkipped`. Strip markdown fences,
-      prose, and trailing whitespace. Output only the JSON object.
-    mcps: [zakira]
+      $forceReprocess = [string]::Equals($forceReprocessRaw.Trim(), 'true', [StringComparison]::OrdinalIgnoreCase)
+
+      $meetings = ConvertFrom-Json -InputObject $normalizedRaw -NoEnumerate -ErrorAction Stop
+
+      $toProcess = New-Object System.Collections.Generic.List[object]
+      $skipped   = New-Object System.Collections.Generic.List[object]
+
+      foreach ($m in @($meetings)) {
+        if ($null -eq $m) { continue }
+        $zakiraKey = [string]$m.zakiraKey
+        if ([string]::IsNullOrWhiteSpace($zakiraKey)) {
+          # The normalize-meetings-array step guarantees every emitted meeting
+          # carries a canonical zakiraKey; if we see one without, fail open
+          # (re-process) rather than silently drop it.
+          [void]$toProcess.Add($m)
+          continue
+        }
+
+        if ($forceReprocess) {
+          [void]$toProcess.Add($m)
+          continue
+        }
+
+        # `Zakira.Exchange get <category> <key>` returns exit 0 on hit and exit 1
+        # on "not found". Any other non-zero exit is a real error -- we treat it
+        # as "needs processing" so a transient Zakira hiccup never silently
+        # drops a meeting (re-extracting action items is idempotent; missing
+        # extraction is not).
+        $cliOutput = & dnx Zakira.Exchange --yes -- `
+          --db $dbPath `
+          get $category $zakiraKey 2>&1
+        $cliExit = $LASTEXITCODE
+
+        if ($cliExit -ne 0) {
+          [void]$toProcess.Add($m)
+          continue
+        }
+
+        # The CLI prints a human-formatted record. The `Data:` field carries the
+        # stored payload, which may be either a single-line compact JSON document
+        # OR a multi-line pretty-printed one (depends on the writer -- the
+        # raindrop-watcher entries are pretty-printed, the pr-code-review ones
+        # are compact). To cover both, we capture everything from the `  Data:`
+        # line up to (but not including) the next field marker (Author / Reason /
+        # Tags / Custom / Created / Last Modified), then strip the `Data: `
+        # prefix from the resulting span. The CLI's field markers always begin
+        # at indent 2 followed by the literal field name + colon, so they cannot
+        # collide with JSON content (which starts with `{`, `[`, or `"`).
+        $dataIdx = -1
+        for ($i = 0; $i -lt $cliOutput.Count; $i++) {
+          if ([string]$cliOutput[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        $dataJson = $null
+        if ($dataIdx -ge 0) {
+          $endIdx = $cliOutput.Count
+          for ($j = $dataIdx + 1; $j -lt $cliOutput.Count; $j++) {
+            if ([string]$cliOutput[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+              $endIdx = $j; break
+            }
+          }
+          $span = ($cliOutput[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+          $dataJson = ($span -replace '^\s*Data:\s*', '').Trim()
+        }
+
+        $shouldSkip = $false
+        $processedAtRaw = $null
+        if ($dataJson) {
+          try {
+            $rec = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop
+            $status = [string]$rec.status
+            $processedAtRaw = [string]$rec.processedAt
+            if ([string]::Equals($status, 'processed', [StringComparison]::OrdinalIgnoreCase)) {
+              $shouldSkip = $true
+            }
+          } catch { }
+        }
+
+        if ($shouldSkip) {
+          [void]$skipped.Add([pscustomobject]@{
+            zakiraKey   = $zakiraKey
+            title       = [string]$m.title
+            startTime   = [string]$m.startTime
+            processedAt = $processedAtRaw
+          })
+        } else {
+          [void]$toProcess.Add($m)
+        }
+      }
+
+      [pscustomobject]@{
+        meetingsToProcess = $toProcess.ToArray()
+        meetingsSkipped   = $skipped.ToArray()
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{normalize-meetings-array.output}}"
+      - "{{param.forceReprocess}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraCategory}}"
+    timeoutSeconds: 300
 
   - name: dispatch-processor
     type: Orchestration

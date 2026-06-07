@@ -86,7 +86,7 @@ When the source is a URL (not a local file), open `skills/zakira-replay/sources/
 
 ## Recommended Analysis Commands
 
-General evidence extraction (relies on the new defaults: `--frame-strategy scene`, `--ocr-provider local`, `--max-ai-frames 50`, `--scene-safety-cap 5000`, deterministic run-id):
+General evidence extraction (relies on the new defaults: `--frame-strategy interval`, `--frames 15`, `--capture-mode auto`, `--ocr-provider local`, `--max-ai-frames 50`, `--scene-safety-cap 5000`, deterministic run-id):
 
 ```powershell
 zakira-replay analyze "<url-or-file>" --ocr --vision --cache
@@ -138,8 +138,8 @@ zakira-replay analyze "<url-or-file>" --ocr --vision --stt --cache
 Authenticated videos:
 
 ```powershell
-zakira-replay analyze "<url>" --browser-auth edge --frames 7 --frame-strategy scene --ocr --vision --cache
-zakira-replay analyze "<url>" --cookies "<cookies.txt>" --frames 7 --cache
+zakira-replay analyze "<url>" --browser-auth edge --ocr --vision --cache
+zakira-replay analyze "<url>" --cookies "<cookies.txt>" --cache
 ```
 
 Always quote URLs in PowerShell, especially YouTube URLs containing `&`.
@@ -148,7 +148,7 @@ Always quote URLs in PowerShell, especially YouTube URLs containing `&`.
 
 Every command — including the subcommand groups (`runs`, `index`, `chapters`, `align`, `queue`, …) — accepts these recursive flags from the root command:
 
-- `--output-format text|json|ndjson`: switch the command's stdout format. `text` (default) is the human-readable one-line-per-thing format. `json` emits the same structured payload as the corresponding MCP tool. `ndjson` is reserved for future streaming results. Replaces every per-command `--json` flag from the 0.8.x surface.
+- `--output-format text|json|ndjson`: switch the command's stdout format. `text` (default) is the human-readable one-line-per-thing format. `json` emits the same structured payload as the corresponding MCP tool. `ndjson` is currently treated identically to `json` for one-shot commands; reserved for future per-event streaming results. Replaces every per-command `--json` flag from the 0.8.x surface. **All long-running pipeline commands honour this flag** (`analyze`, `transcribe`, `clip`, `batch run`, `queue enqueue`, `queue run`, plus the existing `info`, `doctor`, `frames`, `runs list|show`, `index query`, `queue status`); in JSON mode stdout is a single parseable envelope and progress lines route to stderr.
 - `--log-file <path>`: optional path to write structured log output to. Stderr still receives the human-readable progress lines.
 - `--log-level info|debug|trace`: minimum log level. `info` is the default.
 - `--correlation-id <string>`: propagated to evidence and logs so agent runs can be cross-referenced with an external workflow. Useful when the CLI is invoked from a larger orchestrator that already has a trace ID.
@@ -158,21 +158,24 @@ The 0.8.x per-command `--json` flag no longer exists; use `--output-format json`
 ```powershell
 zakira-replay doctor --output-format json
 zakira-replay info --output-format json
+zakira-replay analyze "<url-or-file>" --ocr --vision --cache --output-format json
 zakira-replay queue status --queue-id research --output-format json
 ```
 
+In JSON mode, the `analyze` / `transcribe` / `frames` (legacy mode) commands emit one envelope on stdout: `{runId, reused, artifactDirectory, manifestPath, evidencePath, transcriptPath, audioPath, ocrPath, visionPath, frameCount, title, webpageUrl, duration, source, warnings[]}`. Absolute paths everywhere; missing artifacts (e.g. `--no-transcript` skipped transcript) are emitted as `null` rather than omitted. Progress lines move to stderr so stdout can be piped straight into `jq` / `JSON.parse`. `clip`, `batch run`, `queue enqueue`, and `queue run` emit their own per-command envelopes with the same contract. See the README "`--output-format json` envelopes" section for the full property set.
+
 ## Option Selection
 
-Defaults that ship out-of-the-box: `--frame-strategy scene` (no `--frames` cap, bounded by `frames.sceneSafetyCap=5000`), `--ocr-provider local` (offline RapidOCR; first OCR run auto-downloads ~30 MB models from ModelScope unless `ocr.local.autoDownload=false`), `--max-ai-frames 50` (per-slide OCR/vision cap), `--frames 500` (only used when `--frame-strategy interval`), `frames.perMinute=12` (duration-aware floor for interval strategy). The auto-generated run-id is deterministic per source URL: `<slug>-<sha8>` so re-running the same source reuses the same run folder and `--cache` short-circuits cleanly.
+Defaults that ship out-of-the-box (post-0.14 "Just Works" baseline): `--capture-mode auto` (tries yt-dlp first, falls back to browser; known browser-only hosts — Microsoft Build / Medius / mediastream — skip the yt-dlp probe entirely), `--frame-strategy interval` with `--frames 15`, `--ocr-provider local` (offline RapidOCR; first OCR run auto-downloads ~30 MB models from ModelScope unless `ocr.local.autoDownload=false`), `--max-ai-frames 50` (per-slide OCR/vision cap), `frames.perMinute=12` (duration-aware floor for interval strategy), prefer-inline-media auto-enabled for known Medius/Build hosts. The auto-generated run-id is deterministic per source URL: `<session-slug>-<sha8>` for known sources (e.g. `brk230-1ccc2f93`) or `<source-slug>-<sha8>` otherwise, so re-running the same source reuses the same run folder and `--cache` short-circuits cleanly. Verbosity defaults to "concise" — final summary + `warning`/`error` only; pass `--verbose`/`-v` for full progress + `info` warnings, `--quiet`/`-q` for errors only.
 
 Use these defaults unless the user says otherwise:
 
 - `--preset <name>`: opinionated defaults bundles for the most common scenarios. `meeting` enables `--ocr --vision --diarize --stt --audio`. `lecture` enables `--ocr --vision --audio`. `demo` enables `--ocr --vision --frame-strategy scene`. `interview` enables `--diarize --audio --stt --frames 0`. `raw` (or omitting `--preset`) leaves every flag at its individual default. Explicit flags always win, so `--preset meeting --frame-strategy interval` keeps the meeting bundle and overrides the frame strategy.
 - `--cache`: include by default for LLM-backed work; use `--force` only when intentionally recomputing.
-- `--frames 500` is the new general-analysis default for the `interval` strategy. Override down for cheap exploration (`--frames 30`) or up for very dense sampling (`--frames 5000` paired with `--frame-strategy interval`). When `--frame-strategy scene` is in effect (the default), `--frames` is ignored.
+- `--frames 15` is the new general-analysis default. Override down for cheap exploration (`--frames 5`) or up for dense sampling (`--frames 500` paired with `--frame-strategy interval`). When `--frame-strategy scene` is used, `--frames` becomes the cap, not the target.
 - `--frames 0 --frame-strategy interval`: transcript-only (no frames extracted).
-- `--frame-strategy scene` (default): presentations, demos, UI walkthroughs, slide videos, conference talks, anything with discrete visual changes. Returns one frame per detected scene change, slide-grouping deduplicates. Total frame count scales with content, capped at `frames.sceneSafetyCap` (default 5000).
-- `--frame-strategy interval`: dense uniform sampling, useful when you need a predictable count or when scene-detection produces too few frames (rare with the new default cap).
+- `--frame-strategy interval` (default): predictable N-frame sampling, bandwidth-light. Best for general analysis, slide-heavy talks at coarse granularity, and anything where you want a stable frame count regardless of content.
+- `--frame-strategy scene`: presentations, demos, UI walkthroughs, anything with discrete visual changes where you want one frame per scene cut. **Avoid on long HLS sources** (Microsoft Build keynotes, Medius wrappers) — ffmpeg has to decode every frame, so the full stream is pulled (~6–8 GB on a 3-hour keynote).
 - `--frame-strategy every-frame`: only when the user explicitly needs capped frame-by-frame inspection.
 - `--ocr`: enable when slides, code, dashboards, diagrams, documents, or burned-in captions may be visible.
 - `--ocr-provider <name>`: choose the OCR backend. `local` (default) runs RapidOCR (PP-OCRv5) entirely on-device via ONNX — no LLM, no network at run-time after the one-time model download. Defaults to the **latin** language pack; switch packs for non-Latin scripts via `zakira-replay deps install ocr --language <pack>` + `zakira-replay config set ocr.local.languagePack <pack>` (or `ZAKIRA_REPLAY_OCR_LANGUAGE_PACK`). Supported packs: `latin`, `chinese`, `english`, `korean`, `cyrillic`, `arabic`, `devanagari`, `greek`, `telugu`, `tamil`. `copilot` routes the image through the configured LLM (GitHub Copilot, OpenAI, Azure OpenAI, or Ollama) using vision-capable chat models — prefer this for complex layouts, mixed scripts, or when `tables[]` reconstruction matters (the local provider leaves `tables[]` empty in this release). The first local-OCR run auto-downloads ~30 MB of models (set `ocr.local.autoDownload=false` to disable; pre-install with `zakira-replay deps install ocr [--language <pack>]`).
@@ -185,7 +188,7 @@ zakira-replay doctor    # confirm vision-models: found
 ```
 - `--vision`: enable when visual content matters.
 - `--smart-crop` / `--smart-crop-profile <profile>`: enable smart-crop preprocessing that removes meeting-platform UI chrome (Teams/Zoom/WebEx controls bar, participant gallery sidebar, black letterbox bars, bottom navigation) before perceptual hashing, OCR, and vision. Profiles: `auto` (default), `teams`, `zoom`, `webex`, `generic` (all share the same algorithm in this release), or `off` to disable. Use this when the source is a meeting recording — it dramatically improves slide-grouping stability (the persistent gallery sidebar otherwise dilutes the dHash) and removes meeting-app vocabulary from OCR text. Set `crop.enabled=true` in config to make it the default for all runs.
-- `--capture-mode {auto|ytdlp|browser}`: choose the frame-capture backend. `ytdlp` (default) uses yt-dlp + ffmpeg — works for ~1000 sites yt-dlp supports plus local files. `browser` drives Playwright-controlled Chromium (pinned to Edge) to navigate, click play, JS-seek, and screenshot — required for SharePoint/Medius/Teams recordings and any source yt-dlp can't reach. `auto` tries yt-dlp first and falls back to `browser` on failure, emitting `CAPTURE_BROWSER_FALLBACK` so orchestrators can branch on which path was used. For authenticated sources, combine with `--cookies-from-browser edge` (yt-dlp-side) or rely on the dedicated Edge profile (browser side). **Browser-mode silent capabilities:** (1) network listener watches for any `.vtt`/`.srt` responses the page fetches, persists them under `captions/browser-NNNN.vtt`, indexes them in `captions/discovered.json`, and uses the best-language match to populate `transcript.md`; (2) `track.mode = "showing"` is set on all `<video>.textTracks` so players that gate cue loading on CC-activation actually fetch their cues — emits `CAPTURE_BROWSER_CAPTIONS_ACTIVATED` (info); (3) when the network interceptor sees no `.vtt`/`.srt` responses, cues are harvested directly from `videoElement.textTracks[i].cues` and serialised to synthetic VTT — emits `CAPTURE_BROWSER_CAPTIONS_HARVESTED_FROM_DOM` (info); (4) **SharePoint Stream-specific path**: when the Stream player exposes its `_api/v2.X/.../media/transcripts` metadata, Zakira follows each `temporaryDownloadUrl` via the authenticated context, tries multiple URL variants (`?isformatjson=true&transcriptkey=<id>` first to coax out the rich Teams transcript JSON with `speakerDisplayName`), converts to VTT with `<v Speaker>` voice spans, and persists under `captions/stream-NNNN-<lang>.{vtt,json}`. Activates automatically for `*.sharepoint.com/.../stream.aspx?id=...` URLs; emits `CAPTURE_STREAM_TRANSCRIPT_DISCOVERED` and `CAPTURE_STREAM_TRANSCRIPT_DOWNLOADED` (info); (5) when `--stt` is requested but no captions are obtained AND no audio source exists, the browser observes media responses during playback and re-downloads the best single-file candidate via the authenticated context for ffmpeg + Whisper — DASH/HLS fragmented streams emit `CAPTURE_BROWSER_MEDIA_NO_CANDIDATE` and STT is skipped with a clear reason.
+- `--capture-mode {auto|ytdlp|browser}`: choose the frame-capture backend. `auto` (**default in 0.14+**) tries yt-dlp + ffmpeg first and falls back to `browser` on failure, emitting `CAPTURE_BROWSER_FALLBACK` so orchestrators can branch on which path was used; for known browser-only hosts (`medius.studios.ms`, `medius.microsoft.com`, `medius*.event.microsoft.com`, `build.microsoft.com`, `mediastream.microsoft.com`) the yt-dlp probe is skipped entirely and capture goes straight to browser + inline-media sidestep. `ytdlp` forces yt-dlp + ffmpeg — works for ~1000 sites yt-dlp supports plus local files; use when you want to fail fast rather than fall back. `browser` forces Playwright-controlled Chromium (pinned to Edge) to navigate, click play, JS-seek, and screenshot — required for SharePoint/Stream/Teams recordings and any source yt-dlp can't reach. For authenticated sources, combine with `--cookies-from-browser edge` (yt-dlp-side) or rely on the dedicated Edge profile (browser side). **Browser-mode silent capabilities:** (1) network listener watches for any `.vtt`/`.srt` responses the page fetches, persists them under `captions/browser-NNNN.vtt`, indexes them in `captions/discovered.json`, and uses the best-language match to populate `transcript.md`; (2) `track.mode = "showing"` is set on all `<video>.textTracks` so players that gate cue loading on CC-activation actually fetch their cues — emits `CAPTURE_BROWSER_CAPTIONS_ACTIVATED` (info); (3) when the network interceptor sees no `.vtt`/`.srt` responses, cues are harvested directly from `videoElement.textTracks[i].cues` and serialised to synthetic VTT — emits `CAPTURE_BROWSER_CAPTIONS_HARVESTED_FROM_DOM` (info); (4) **SharePoint Stream-specific path**: when the Stream player exposes its `_api/v2.X/.../media/transcripts` metadata, Zakira follows each `temporaryDownloadUrl` via the authenticated context, tries multiple URL variants (`?isformatjson=true&transcriptkey=<id>` first to coax out the rich Teams transcript JSON with `speakerDisplayName`), converts to VTT with `<v Speaker>` voice spans, and persists under `captions/stream-NNNN-<lang>.{vtt,json}`. Activates automatically for `*.sharepoint.com/.../stream.aspx?id=...` URLs; emits `CAPTURE_STREAM_TRANSCRIPT_DISCOVERED` and `CAPTURE_STREAM_TRANSCRIPT_DOWNLOADED` (info); (5) when `--stt` is requested but no captions are obtained AND no audio source exists, the browser observes media responses during playback and re-downloads the best single-file candidate via the authenticated context for ffmpeg + Whisper — DASH/HLS fragmented streams emit `CAPTURE_BROWSER_MEDIA_NO_CANDIDATE` and STT is skipped with a clear reason.
 - `--capture-debug` (or `capture.browser.debug=true` in config): opt-in diagnostic dump under `runs/<run-id>/debug/`. Writes `network.log` (JSONL of every browser response with URL, status, content-type, size, headers, timestamp), `metadata-responses/<seq>-<sha8>.<ext>` (full bodies for JSON/XML/text/JavaScript responses under `capture.browser.debugMaxBodyBytes`, default 1 MB), `metadata-responses/index.json` (URL → body map), `texttracks-state.json` (post-activation snapshot of `<video>.textTracks`), and `network.har` (industry-standard HAR via Playwright). Strictly side-channel \u2014 doesn't affect capture behaviour. Use when reverse-engineering a new player or diagnosing why a transcript is missing for a Stream-shaped URL.
 - `--auth-profile <name>`: load a previously-saved Playwright **StorageState JSON** profile into the browser context. **Legacy path \u2014 prefer the dedicated Edge profile (`auth init-edge-profile`)** for SharePoint Stream, Microsoft Stream, and any Microsoft SSO source. Reasons: persistent-context Edge keeps cookies DPAPI-encrypted (per-user, per-machine) while StorageState writes plaintext JSON that is portable to any attacker machine; persistent-context cookies refresh in place during use while StorageState files expire fast (1\u20132 hours typical for Microsoft). When both `--auth-profile` and an initialised `edgeUserDataDir` are set, persistent-context wins and `CAPTURE_PROFILE_CONFLICT` (info) records the override. Use `--auth-profile` only when persistent-context is impossible (no dedicated Edge profile, locked-down environment) or for non-Microsoft sites where you already have a StorageState snapshot. Pipeline emits `AUTH_PROFILE_NOT_FOUND` (error) when the named profile does not exist on disk and `AUTH_PROFILE_STALE` (info) when the profile's file mtime is older than `auth.staleThresholdMinutes` (default 60). Staleness is informational \u2014 capture proceeds; if downstream extraction looks like it landed on a login page, suggest the user re-run `auth login <name>` or migrate to `auth init-edge-profile`.
 - `--stt`: enable when captions may be absent or poor. Captions/sidecars are tried first; STT only runs if transcript extraction fails.
@@ -223,6 +226,13 @@ After `analyze`, capture:
 - Any `Warnings:` lines (formatted as `[severity] CODE: message`)
 
 If the command reports `Reused run`, inspect existing artifacts before deciding whether `--force` is needed.
+
+For agent-driven invocations, prefer `--output-format json` and parse the single envelope on stdout — every path is absolute, and the `reused`, `frameCount`, `evidencePath`, `transcriptPath`, `audioPath`, `ocrPath`, `visionPath`, and `warnings[]` fields let you decide what to read next without scraping the human-readable progress text. Progress lines route to stderr in JSON mode so stdout stays parseable:
+
+```powershell
+$env = zakira-replay analyze "<url-or-file>" --ocr --vision --cache --output-format json | ConvertFrom-Json
+# $env.manifestPath, $env.evidencePath, $env.transcriptPath, $env.warnings, …
+```
 
 ## Artifact Reading Order
 
@@ -416,7 +426,7 @@ Do not reach for `frames --at`/`--from`/`--to` when you actually need transcript
 Use queue commands when many videos need local processing:
 
 ```powershell
-zakira-replay queue enqueue "<url-or-file>" --queue-id research --job-id <job-id> --frames 7 --cache
+zakira-replay queue enqueue "<url-or-file>" --queue-id research --job-id <job-id> --cache
 zakira-replay queue run --queue-id research --concurrency 2 --retries 2
 zakira-replay queue status --queue-id research --output-format json
 ```
@@ -433,10 +443,9 @@ A batch manifest accepts every shared analyze option as a top-level default and 
 For an agent building a "book of a conference" workflow (e.g. all Microsoft Build sessions), the recommended pattern is queue-based:
 
 ```powershell
-# 1) Enqueue every session — captions + frames via the inline-media sidestep, no downloads.
+# 1) Enqueue every session — host-aware defaults handle browser/inline-media/captions/strategy.
 zakira-replay queue enqueue "https://build.microsoft.com/en-US/sessions/KEY01?source=sessions" `
-    --queue-id build-2026 --capture-mode browser --frames 5 --frame-strategy interval `
-    --caption-languages en --prefer-inline-media
+    --queue-id build-2026
 # ...repeat per session...
 
 # 2) Drain in parallel.
@@ -453,7 +462,7 @@ zakira-replay index query build-2026 "Maia 200 announcement" --top 10 --output-f
 
 For requests like "watch this and summarize topics and work items":
 
-1. Run slide/demo-heavy analysis with `--stt --ocr --vision --frames 30 --frame-strategy scene --cache` unless the user requests cheaper settings.
+1. Run slide/demo-heavy analysis with `--stt --ocr --vision --frames 30 --cache` unless the user requests cheaper settings. Add `--frame-strategy scene` only when the source isn't an HLS stream (so for YouTube and local files, yes; for Microsoft Build / Medius, no — scene mode pulls the entire stream).
 2. Build chapters with `zakira-replay chapters build`.
 3. Build semantic search with `zakira-replay index build --backend sqlite-onnx` when available.
 4. Read `chapters/chapters.md`, `evidence.json`, `transcript.md`, and `ocr/combined.md`.
@@ -517,7 +526,7 @@ zakira-replay mcp serve --transport http --port 8765
 zakira-replay mcp serve --transport sse --port 8765
 ```
 
-The MCP surface mirrors the CLI groups (`analyze`, `analyze.start`, `queue.enqueue`, `index.build`, `chapters.build`, `align`, `frames`, `clip`, `discover`, `doctor`) and additionally exposes `replay://` resources (`replay://runs`, `replay://runs/{id}/{manifest|evidence|transcript|chapters|aligned/by-…|frames/{frameId}/{ocr|vision}}`, `replay://jobs/{jobId}/logs`). See the companion `zakira-replay-mcp` skill for the full agent contract.
+The MCP surface mirrors the CLI groups (`analyze`, `analyze-start`, `queue-enqueue`, `index-build`, `chapters-build`, `align`, `frames`, `clip`, `discover`, `doctor`) and additionally exposes `replay://` resources (`replay://runs`, `replay://runs/{id}/{manifest|evidence|transcript|chapters|aligned/by-…|frames/{frameId}/{ocr|vision}}`, `replay://jobs/{jobId}/logs`). See the companion `zakira-replay-mcp` skill for the full agent contract.
 
 For shell-completion scripts (Bash, Zsh, PowerShell, Fish):
 

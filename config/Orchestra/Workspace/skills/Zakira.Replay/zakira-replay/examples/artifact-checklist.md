@@ -103,8 +103,8 @@ Two shapes, both created interactively via the CLI (cannot be created from MCP):
 - Two newer top-level `manifest.json` fields agents should read alongside the warnings:
   - `manifest.secondaryTranscripts[]` — when `secondaryCaptionLanguages` was requested, each entry is `{ language, markdownPath, sourcePath }` for an additional-language transcript persisted as `transcript.<lang>.md`.
   - `manifest.sessionMetadata` — deterministic page-derived metadata for sources captured via the browser path (Microsoft Build, Medius, Stream, any page with JSON-LD / OpenGraph). Carries `title`, `description`, `sessionCode`, `track`, `level`, `publishedAt`, `speakers[]`, `products[]`, `tags[]`, `sourceUrl`, plus per-strategy provenance under `sources[]`. Use this in lieu of inventing speaker names or session ids when summarising.
-- After `chapters.build`, each `Chapter` and `ChapterEvidence` carries a `deepLink` (time-anchored URL — `?t=Ns` for YouTube, `?nav=t=…` for SharePoint Stream, `#t=N` for everything else). Include these in answers when the user might want to jump back into the source.
-- After `index.query` (including against a cross-run conference index built with `index.build-conference`), each `SearchMatch` carries `deepLink`, `runId`, and `sourceUrl` so the agent can attribute hits and hand the user a link they can open.
+- After `chapters-build`, each `Chapter` and `ChapterEvidence` carries a `deepLink` (time-anchored URL — `?t=Ns` for YouTube, `?nav=t=…` for SharePoint Stream, `#t=N` for everything else). Include these in answers when the user might want to jump back into the source.
+- After `index-query` (including against a cross-run conference index built with `index-build-conference`), each `SearchMatch` carries `deepLink`, `runId`, and `sourceUrl` so the agent can attribute hits and hand the user a link they can open.
 - Treat missing captions, missing media URL, failed OCR, failed vision, fallback downloads, undersampled frame coverage, and stale auth profiles as confidence modifiers — none of them prevent the run from completing, but all of them affect what claims the orchestrator can make.
 
 ## Response Quality

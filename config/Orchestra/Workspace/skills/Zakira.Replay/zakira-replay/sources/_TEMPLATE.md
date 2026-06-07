@@ -37,7 +37,7 @@ zakira-replay analyze "<example URL>" `
 
 ```json
 {
-  "tool": "analyze.start",
+  "tool": "analyze-start",
   "arguments": {
     "source": "<example URL>",
     "captureMode": "<ytdlp|browser|auto>"
