@@ -34,7 +34,7 @@
       const providers = zebar.createProviderGroup({
         glazewm: { type: 'glazewm' },
         dateLocal: { type: 'date', formatting: 'EEE d MMM HH:mm' },
-        dateIL: { type: 'date', formatting: 'EEE d MMM HH:mm', timezone: 'israel' },
+        dateSeattle: { type: 'date', formatting: 'EEE d MMM HH:mm', timezone: 'America/Los_Angeles' },
       });
 
       createRoot(document.getElementById('root')).render(<App />);
@@ -76,7 +76,7 @@
 			</div>
 
 			<div className="right">
-			  <span className="non-important">{output.dateIL?.formatted}</span>
+			  <span className="non-important">{output.dateSeattle?.formatted}</span>
               {output.glazewm && (
                 <>
                   {output.glazewm.bindingModes.map(bindingMode => (
