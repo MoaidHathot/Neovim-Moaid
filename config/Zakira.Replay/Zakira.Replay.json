@@ -1,4 +1,7 @@
 {
+  "runs": {
+    "directory": "C:\\temp\\Zakira.Replay\\runs"
+  },
   "dependencies": {
     "autoDownload": true,
     "portableDirectory": "%LOCALAPPDATA%\\Zakira.Replay\\portable",
@@ -90,8 +93,5 @@
     "minDurationOffSeconds": 0.5,
     "threads": 1,
     "autoDownload": true
-  },
-  "runs": {
-    "directory": "C:\\Users\\moaidhathot\\AppData\\Local\\Zakira.Replay\\runs"
   }
 }
