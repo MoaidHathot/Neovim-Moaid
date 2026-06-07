@@ -19,6 +19,12 @@
       "heroImage": null
     }
   },
-  "secrets": {}
+  "secrets": {},
+  "fileAccess": {
+    "allowedRoots": [
+      "C:/temp/Zakira.Replay",
+      "C:/temp/ActionView"
+    ]
+  }
 }
 
