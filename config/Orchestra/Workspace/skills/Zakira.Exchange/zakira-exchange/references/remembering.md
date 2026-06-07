@@ -139,6 +139,21 @@ The store may be shared between agents and humans. Before overwriting
 3. Update `reason` to reflect the new state if the rationale changed.
 4. Update `author` so the audit trail reflects who last touched it.
 
+### Optimistic concurrency: catching racing writers
+
+When you know another agent or human might be editing the same entry,
+pass `expectedLastModifiedAt` on `edit_memory`:
+
+1. `get_memory` to fetch the current entry; note `lastModifiedAt`.
+2. Prepare your edits as usual.
+3. `edit_memory(..., expectedLastModifiedAt = <the value from step 1>)`.
+4. If the call returns a **conflict**, the response includes the
+   entry's *current* `lastModifiedAt`. Re-fetch, decide whether to
+   merge or override, then retry with the new `expectedLastModifiedAt`.
+
+Without `expectedLastModifiedAt`, `edit_memory` is last-write-wins -
+fine when you're the only writer, dangerous when you're not.
+
 ## Worked example: capturing an architecture decision
 
 User says: "Let's standardise on Postgres for new services going forward

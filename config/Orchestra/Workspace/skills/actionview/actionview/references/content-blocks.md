@@ -2,22 +2,24 @@
 
 The `entry.content` array is rendered top-to-bottom by the dashboard. Each item is an object with a `type` discriminator. Pick the block type that matches the data; don't shoehorn structured data into a `markdown` block.
 
+See the table at the bottom of this document for the full type list.
+
 ## `markdown`
 
-Prose, summaries, AI analysis. The `body` is rendered with GitHub-flavored markdown.
+Prose, summaries, AI analysis. GitHub-flavored markdown, plus math (`$inline$` and `$$block$$` via KaTeX) and task lists (`- [ ]`).
 
 ```json
 {
   "type": "markdown",
-  "body": "## Summary\n\nThis PR adds a Redis-backed cache, reducing p95 from 120ms to 15ms.\n\n### Risk\n\nLow-medium. Watch for race conditions in `Update()`."
+  "body": "## Summary\n\nThis PR adds a Redis-backed cache, reducing p95 from 120ms to 15ms.\n\n- [x] Cache key strategy reviewed\n- [ ] Load test in staging"
 }
 ```
 
-JSON requires `\n` for line breaks — never paste raw newlines.
+Embedded `![alt](url)` images render as click-to-enlarge thumbnails. JSON requires `\n` for line breaks.
 
 ## `code`
 
-Code snippets and diffs.
+Code snippets with copy button, line-number / wrap toggles, and per-line annotations.
 
 ```json
 {
@@ -25,97 +27,320 @@ Code snippets and diffs.
   "language": "csharp",
   "filename": "src/Services/UserPreferenceCacheService.cs",
   "highlight": [5, 17],
-  "body": "public class UserPreferenceCacheService\n{\n    private static readonly TimeSpan CacheTTL = TimeSpan.FromMinutes(5);\n    // ...\n}"
-}
-```
-
-Fields: `language` (highlighter hint), `filename` (header above the block), `highlight` (1-based line numbers to mark).
-
-## `table`
-
-Tabular data. Always use this for changed-files lists, test results, etc. — never a markdown table.
-
-```json
-{
-  "type": "table",
-  "label": "Changed Files",
-  "columns": ["File", "Changes", "Status"],
-  "rows": [
-    ["src/Services/UserPreferenceCacheService.cs", "+98", "Added"],
-    ["src/Services/UserPreferenceService.cs", "+12 / -8", "Modified"]
+  "showLineNumbers": true,
+  "wordWrap": true,
+  "body": "public class UserPreferenceCacheService\n{\n    private static readonly TimeSpan CacheTTL = TimeSpan.FromMinutes(5);\n}",
+  "annotations": [
+    { "line": 3, "level": "warning", "body": "Hard-coded TTL. Move to appsettings.", "author": "ai-reviewer" }
   ]
 }
 ```
 
-All cells are strings.
+`annotations[].body` is markdown. Use this instead of a separate `alert` block after the code.
+
+## `diff`
+
+Real diff view. **Use this instead of `code` with `language: "diff"`** — it gives you add/remove gutters, per-hunk collapse, and a unified/split toggle.
+
+```json
+{
+  "type": "diff",
+  "oldFilename": "src/Cache.cs",
+  "newFilename": "src/Cache.cs",
+  "mode": "unified",
+  "body": "@@ -10,3 +10,5 @@\n private TimeSpan CacheTTL = TimeSpan.FromMinutes(5);\n+\n+public void Invalidate(string key) => _cache.Remove(key);\n"
+}
+```
+
+`mode` is `"unified"` (default) or `"split"`. `body` is a unified diff string; the parser accepts both a full patch and a bare hunk body.
+
+## `json`
+
+Foldable, syntax-colored JSON tree with copy.
+
+```json
+{
+  "type": "json",
+  "label": "Webhook payload",
+  "body": { "user_id": "u_42", "action": "login_failed", "attempts": 5 }
+}
+```
+
+## `table`
+
+Tabular data with optional `sortable: true` and `filterable: true`. Cells may be strings or rich-cell objects (see "Rich cells" below).
+
+```json
+{
+  "type": "table",
+  "label": "Test Results",
+  "columns": ["Test", "Status", "Duration"],
+  "sortable": true,
+  "filterable": true,
+  "rows": [
+    ["AuthHandlerTests.LoginSucceeds", { "type": "status", "level": "success", "label": "Passed" }, "12ms"],
+    ["CacheTests.SetAndGet",           { "type": "status", "level": "error",   "label": "Failed" }, "8ms"]
+  ]
+}
+```
 
 ## `keyValue`
 
-Header-style metadata. Renders as a two-column grid.
+Header metadata. Values use the rich-cell shape — a Commit SHA can be a `copy` cell, a file path a `link`, status a `status` pill.
 
 ```json
 {
   "type": "keyValue",
-  "label": "Pull Request Details",
+  "label": "Pull Request",
   "pairs": {
-    "Repository": "acme/backend",
-    "Branch": "feature/cache → main",
-    "Author": "@danielk",
-    "Files Changed": "7"
+    "Repository": { "type": "link", "url": "https://github.com/acme/backend", "label": "acme/backend" },
+    "Branch": "feature/cache",
+    "Commit": { "type": "copy", "value": "a3f8c2d9e1f0", "display": "a3f8c2d" },
+    "Status": { "type": "status", "level": "success", "label": "Approved" }
   }
 }
 ```
 
-Values are strings.
-
 ## `link`
 
-External link rendered as a button or link element.
+One link via `url` + optional `body` description, **or** many via `links[]`.
 
 ```json
 {
   "type": "link",
-  "label": "View on GitHub",
-  "url": "https://github.com/acme/backend/pull/482",
-  "body": "Open pull request in browser"
+  "label": "References",
+  "links": [
+    { "url": "https://github.com/acme/backend/pull/482", "label": "PR #482", "icon": "pr", "body": "Add cache layer" },
+    { "url": "https://ci.example.com/jobs/1847", "label": "CI Job #1847", "icon": "dashboard" }
+  ]
 }
 ```
 
-`body` is the link's display description; `label` is the heading.
+Built-in icon names (Lucide): `pr`, `ticket`, `bug`, `runbook`, `docs`, `dashboard`, `file`, `web`. Unknown icon names fall back to a generic link icon; GitHub URLs auto-pick a PR icon.
+
+## `alert`
+
+Colored callout. Markdown body, optional `dismissible` (persists in localStorage), can carry its own `actions[]`.
+
+```json
+{
+  "type": "alert",
+  "level": "warning",
+  "label": "Heads up",
+  "body": "Hard-coded TTL on line 5. See the [runbook](https://wiki.example.com/cache-ttl) for the standard value.",
+  "dismissible": true
+}
+```
 
 ## `image`
 
-Embeds an image as a medium thumbnail. Clicking opens a full-size lightbox modal (close with X, backdrop click, or Esc).
+Single image with click-to-enlarge lightbox, optional annotations, optional `timestampUrl` (overrides the lightbox - useful for video-frame images that should jump back to the source).
 
 ```json
 {
   "type": "image",
-  "label": "Frame at 02:45",
-  "url": "https://example.com/frames/frame-02-45.jpg",
-  "alt": "Speaker discussing the 128 GB unified memory advantage",
-  "caption": "RTX Spark presentation, ~02:45 mark"
+  "url": "https://example.com/frames/00-45.jpg",
+  "alt": "Speaker introducing the chip specs",
+  "caption": "00:45 - intro",
+  "maxWidth": 400,
+  "imageAnnotations": [
+    { "shape": "arrow", "x": 60, "y": 30, "label": "look here", "level": "warning" },
+    { "shape": "box",   "x": 10, "y": 50, "width": 30, "height": 25, "label": "broken", "level": "error" }
+  ]
 }
 ```
 
-| Field | Description |
-|-------|-------------|
-| `url` | Image source. Accepts `http(s)://`, `data:`, and `file://` URLs. |
-| `alt` | Alt text. Shown if the image fails to load, used by assistive tech, and shown as the lightbox's accessible label. |
-| `caption` | Optional caption rendered beneath the thumbnail and inside the lightbox. |
-| `label` | Optional heading above the image (same as other blocks). |
-| `maxWidth` | Optional thumbnail max width in CSS pixels. Lightbox always uses the full viewport. |
+## `gallery`
 
-### Embedding images inside markdown
-
-Standard markdown image syntax inside a `markdown` block also renders as a clickable thumbnail with the same lightbox behavior:
+Many images sharing one lightbox carousel (prev/next + zoom + keyboard arrows). Replaces stacks of separate markdown images.
 
 ```json
-{ "type": "markdown", "body": "![Lineup](https://example.com/lineup.jpg)" }
+{
+  "type": "gallery",
+  "label": "Frames",
+  "images": [
+    { "url": "...frame-001.jpg", "alt": "intro",   "caption": "00:10", "timestampUrl": "https://youtu.be/...?t=10" },
+    { "url": "...frame-002.jpg", "alt": "spec",    "caption": "01:15", "timestampUrl": "https://youtu.be/...?t=75" },
+    { "url": "...frame-003.jpg", "alt": "lineup",  "caption": "02:45", "timestampUrl": "https://youtu.be/...?t=165" }
+  ]
+}
 ```
 
-### Local files (`file://`)
+If `timestampUrl` is set, clicking the thumbnail opens that URL in a new tab instead of the lightbox.
 
-Browsers refuse to load `file://` URLs from an `http://` origin, so ActionView serves local files through `/api/files` instead. This is **off by default**: the dashboard user must opt the file's directory in via `fileAccess.allowedRoots` in their `actionview.json`.
+## `video`
+
+YouTube / Vimeo / direct file. Optional `startTime` / `endTime` clipping and `chapters[]`.
+
+```json
+{
+  "type": "video",
+  "url": "https://www.youtube.com/watch?v=0-VG9QBm8S8",
+  "startTime": 165,
+  "chapters": [
+    { "at": 0,   "label": "Intro" },
+    { "at": 165, "label": "Spec sheet" },
+    { "at": 245, "label": "The real pitch is agents" }
+  ]
+}
+```
+
+`provider` is auto-detected from the URL. For local MP4s, point `url` at a `file://` path under `fileAccess.allowedRoots`.
+
+## `file`
+
+Downloadable attachment. Served via `/api/files` for `file://` URLs (gated by allowlist), or directly for `http(s)://`.
+
+```json
+{
+  "type": "file",
+  "url": "file:///C:/temp/incident/logs.zip",
+  "filename": "incident-2024-0891-logs.zip",
+  "fileSize": 4823100,
+  "mimeType": "application/zip"
+}
+```
+
+## `timeline`
+
+Chronological events. Bread and butter for incident RCAs.
+
+```json
+{
+  "type": "timeline",
+  "label": "Incident Timeline",
+  "events": [
+    { "at": "12:00", "label": "Alert fired", "level": "warning", "body": "Error rate spiked from 0.1% to 4.7%." },
+    { "at": "12:05", "label": "Rollback initiated", "level": "info" },
+    { "at": "12:30", "label": "Resolved", "level": "success", "body": "Error rate returned to baseline." }
+  ]
+}
+```
+
+`at` is a free-form string; `body` is markdown; `level` is one of `info` (default), `warning`, `error`, `success`.
+
+## `tabs`
+
+Group nested content into tabs. Use to reduce wall-of-text on long entries (incident RCAs, AI research with many sections).
+
+```json
+{
+  "type": "tabs",
+  "tabs": [
+    { "label": "Summary",  "content": [{ "type": "markdown", "body": "..." }] },
+    { "label": "Timeline", "badge": "12", "content": [{ "type": "timeline", "events": [] }] },
+    { "label": "Logs",     "content": [{ "type": "json", "body": {} }] }
+  ]
+}
+```
+
+## `stat`
+
+Big-number metric with optional delta, trend, unit, and sparkline. Common in monitoring summaries.
+
+```json
+{
+  "type": "stat",
+  "label": "Error rate",
+  "value": "2.3",
+  "unit": "%",
+  "delta": "+0.5%",
+  "trend": "up",
+  "sparkline": [1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.3],
+  "caption": "Last 24h"
+}
+```
+
+## `chart`
+
+Line / bar / area / pie chart. Reach for `stat` first; use `chart` when you actually need a time series.
+
+```json
+{
+  "type": "chart",
+  "label": "Requests per second",
+  "chartType": "line",
+  "xAxis": ["00:00", "06:00", "12:00", "18:00", "24:00"],
+  "series": [
+    { "name": "us-east-1", "data": [120, 180, 320, 280, 140] },
+    { "name": "eu-west-1", "data": [80, 90, 210, 230, 110] }
+  ]
+}
+```
+
+## `diagram`
+
+Mermaid diagram. `body` is the Mermaid source.
+
+```json
+{
+  "type": "diagram",
+  "body": "flowchart LR\n  Alert --> Triage --> Rollback --> Resolved"
+}
+```
+
+The Mermaid library is lazy-loaded the first time a diagram block renders, so the initial bundle isn't paying for it.
+
+## `beforeAfter`
+
+Image slider revealing before/after.
+
+```json
+{
+  "type": "beforeAfter",
+  "label": "Login page redesign",
+  "beforeUrl": "https://example.com/before.png",
+  "afterUrl":  "https://example.com/after.png",
+  "beforeLabel": "v1.4",
+  "afterLabel":  "v1.5"
+}
+```
+
+## `section`
+
+Collapsible group of nested blocks with optional scoped actions. Supports `defaultCollapsed: true` for heavy sections and an optional `badge` shown next to the title. State (expanded/collapsed) is persisted per-user in localStorage.
+
+```json
+{
+  "type": "section",
+  "title": "Sources",
+  "badge": "11 sources",
+  "defaultCollapsed": true,
+  "content": [
+    { "type": "table", "columns": ["#", "Source", "Type"], "rows": [["1", "PIR", "Official"]] }
+  ]
+}
+```
+
+## `divider`
+
+Horizontal rule. No fields beyond `type`.
+
+```json
+{ "type": "divider" }
+```
+
+## Rich cells
+
+A "rich cell" appears in a `table` row or as a value in a `keyValue` block. It can be a plain string, or a typed object:
+
+| Cell type | Shape | Renders as |
+|---|---|---|
+| string | `"hello"` | Plain text |
+| `text` | `{ type:"text", value, mono? }` | Plain text, optionally monospaced |
+| `link` | `{ type:"link", url, label?, icon? }` | Clickable link with icon |
+| `status` | `{ type:"status", level, label }` | Colored pill (info/warning/error/success) |
+| `badge` | `{ type:"badge", label, color? }` | Neutral or custom-colored badge |
+| `code` | `{ type:"code", value, language? }` | Inline `<code>` |
+| `copy` | `{ type:"copy", value, display? }` | Display + copy-to-clipboard icon |
+| `markdown` | `{ type:"markdown", value }` | Inline markdown |
+| `image` | `{ type:"image", url, alt? }` | Small inline thumbnail |
+
+Tables and keyValue blocks are the right place for structured data even when the cells need richness - don't fall back to a markdown block just to get `<code>` formatting for IDs.
+
+## Local files (`file://`)
+
+`image`, `video`, `file`, `gallery`, and `beforeAfter` URLs may use `file://` to reference local files. Browsers refuse to load these from an `http://` origin, so ActionView serves them via `/api/files`. This is **off by default**: the dashboard user must opt the file's directory in via `fileAccess.allowedRoots` in their `actionview.json`.
 
 ```json
 {
@@ -126,88 +351,18 @@ Browsers refuse to load `file://` URLs from an `http://` origin, so ActionView s
 }
 ```
 
-The client rewrites `file:///C:/temp/Zakira.Replay/runs/.../frame.jpg` to `/api/files?path=C:%2Ftemp%2F...%2Fframe.jpg` automatically. Anything outside the allowlist is refused with HTTP 403. Symlinks whose targets escape the allowlist are also rejected.
-
-### Producer / consumer split
-
-`fileAccess.allowedRoots` lives on the **consumer** (the user running ActionView), not the producer. As a producer of entries you have three honest options:
-
-1. **Use `http(s)://` URLs** — zero coordination. The image is fetched directly by the browser. Best when the image is already on a web server (CDN, blob storage, GitHub raw).
-2. **Use `data:` URIs** — embed the bytes directly in the entry JSON (`data:image/jpeg;base64,...`). Zero coordination, but inflates entry size; keep to small thumbnails.
-3. **Use `file://` URLs** — only works if the producer and consumer share a filesystem, and the directory is in the consumer's `allowedRoots`. Document the path your tool writes to (e.g., "this orchestrator writes frames under `C:/temp/ActionView/runs/...`; add it to your `fileAccess.allowedRoots`") so users can opt in once and stop thinking about it.
-
-Producers should not assume any specific allowlist is configured. If a `file://` image fails to load the consumer sees a broken thumbnail and a 403 in the network log — fail-gracefully by always including an `alt` so the meaning is preserved.
-
-## `alert`
-
-Callout box with a level.
-
-```json
-{
-  "type": "alert",
-  "level": "warning",
-  "body": "Hard-coded TTL on line 5. Consider moving to appsettings."
-}
-```
-
-`level`: `info` | `warning` | `error` | `success`.
-
-## `section`
-
-Collapsible group with its own nested `content[]` and optional `actions[]`. Use this for grouping a code snippet + alert + per-section button (e.g., "Post Comment about this finding").
-
-```json
-{
-  "type": "section",
-  "title": "Key Change: Cache Implementation",
-  "content": [
-    { "type": "code", "language": "csharp", "body": "..." },
-    { "type": "alert", "level": "warning", "body": "Hard-coded TTL." }
-  ],
-  "actions": [
-    {
-      "label": "Post Comment",
-      "style": "primary",
-      "parameters": [
-        { "name": "body", "label": "Comment", "type": "multiline",
-          "default": "Consider moving CacheTTL to appsettings.", "required": true }
-      ],
-      "command": { "type": "http", "method": "POST", "url": "...", "body": { "body": "{{param.body}}" } },
-      "onSuccess": "keep"
-    }
-  ]
-}
-```
-
-Section actions are scoped — they target a specific finding rather than the whole entry. They are addressed by `sectionIndex` (0-based among section blocks at the entry's top level).
-
-## `divider`
-
-Horizontal rule. No fields beyond `type`.
-
-```json
-{ "type": "divider" }
-```
-
-## `json`
-
-Raw JSON pretty-printed for inspection.
-
-```json
-{
-  "type": "json",
-  "label": "Raw event payload",
-  "body": { "user_id": "u_42", "action": "login_failed", "attempts": 5 }
-}
-```
+Producers shouldn't assume any specific allowlist is configured. Either use `http(s)://` URLs (zero coordination), embed small images as `data:` URIs, or document the path your tool writes to so the user can opt in once. Always set an `alt` so the meaning is preserved if the image fails to load.
 
 ## Plugin / custom block types
 
-Unknown `type` values are delegated to the dashboard's plugin system. Stick to the built-ins listed above unless the user has installed a custom renderer.
+Unknown `type` values are delegated to the dashboard's plugin system. Stick to the built-ins unless the user has installed a custom renderer.
 
 ## Composition tips
 
-- Put a `keyValue` block first for metadata at a glance.
+- Use `keyValue` first for metadata at a glance - with `copy` cells for IDs, `link` cells for paths, `status` cells for state.
 - Follow with a `markdown` summary.
-- Use `section`s to group findings with their own actions (one section per AI suggestion in a PR review, for example — the user can post just that suggestion).
-- End with a `link` block to the source system.
+- Use real `diff` blocks for code changes, not `code` with `language: "diff"`.
+- Use `code` `annotations[]` for per-line review comments instead of placing `alert` blocks adjacent to a code block.
+- Group related findings into `section` blocks (each with their own `actions[]`). For long entries with multiple aspects, `tabs` reduces wall-of-text.
+- For multiple images, use `gallery` instead of stacked markdown `![]()` syntax.
+- End with a `link` block (single or multi) to the source system.

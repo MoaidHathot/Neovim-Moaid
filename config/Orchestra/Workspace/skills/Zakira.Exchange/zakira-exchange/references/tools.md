@@ -34,12 +34,20 @@ first call.
 | `top`      | no       | Max results. Default 10.                             |
 | `author`   | no       | Filter by author (applied after fusion).             |
 | `tags`     | no       | Comma-separated; matches any (applied after fusion). |
+| `mode`     | no       | Keyword-side combinator: `any` (default, OR), `all` (AND), or `phrase` (exact contiguous phrase). Vector side always runs. |
 
 \* Hidden in const-category mode.
 
 Returns an ordered list of entries with their fused score. Higher first.
 Each entry is embedded as a single unit (`key | data | tags | reason`)
 so all of those fields contribute to recall.
+
+Picking a mode:
+- Default to `any`. Hybrid recall is already broad enough for most tasks.
+- Switch to `all` when `any` gives noisy results and you know every
+  token of your query should appear.
+- Use `phrase` only when you want an exact contiguous match
+  (e.g., a known function name or a quoted phrase from prior context).
 
 ---
 
@@ -105,15 +113,16 @@ text.
 Update an existing entry. **Only the fields you pass are changed.**
 Omitting a field keeps its current value.
 
-| Parameter  | Required | Notes                              |
-| ---------- | -------- | ---------------------------------- |
-| `category` | yes\*    | The entry's category.              |
-| `key`      | yes      | The entry's key.                   |
-| `data`     | no       | New content (replaces).            |
-| `author`   | no       | Last editor.                       |
-| `reason`   | no       | Updated rationale.                 |
-| `tags`     | no       | **Replaces** the full tag list.    |
-| `custom`   | no       | **Replaces** the full custom object. |
+| Parameter                 | Required | Notes                              |
+| ------------------------- | -------- | ---------------------------------- |
+| `category`                | yes\*    | The entry's category.              |
+| `key`                     | yes      | The entry's key.                   |
+| `data`                    | no       | New content (replaces).            |
+| `author`                  | no       | Last editor.                       |
+| `reason`                  | no       | Updated rationale.                 |
+| `tags`                    | no       | **Replaces** the full tag list.    |
+| `custom`                  | no       | **Replaces** the full custom object. |
+| `expectedLastModifiedAt`  | no       | ISO 8601 (UTC) timestamp from a prior `get_memory`. When provided, the edit only applies if the entry's current `lastModifiedAt` still matches; otherwise the call returns a **conflict** with the current value. Omit for last-write-wins. |
 
 \* Hidden in const-category mode.
 
@@ -123,6 +132,11 @@ Re-embeds the entry whenever any embedded field changes.
 > tag or custom key without losing the others, fetch with `get_memory`
 > first, merge in your changes, then call `edit_memory` with the merged
 > value.
+
+> When you're collaborating with another agent or human, pass
+> `expectedLastModifiedAt` to detect concurrent edits. On conflict,
+> re-fetch with `get_memory`, decide whether to merge or override, then
+> retry with the new `expectedLastModifiedAt`.
 
 ---
 

@@ -57,6 +57,21 @@ Write queries as **questions or noun phrases**, not single words:
 Single words have too many false neighbours in vector space and too
 many BM25 hits to be useful.
 
+### Tightening recall with `mode`
+
+`search_memories` accepts an optional `mode` parameter for the keyword
+(FTS5) portion of the hybrid search. The vector portion is unaffected.
+
+| `mode`  | FTS5 behaviour                         | When to reach for it                                            |
+| ------- | -------------------------------------- | --------------------------------------------------------------- |
+| `any`   | OR-of-tokens (broadest, default)       | Default. Hybrid recall is already broad.                        |
+| `all`   | AND-of-tokens (every token required)   | `any` returned too much noise and you know all tokens must hit. |
+| `phrase`| Exact contiguous phrase                | You want a known function name, quoted snippet, or exact title. |
+
+Start in `any`. Only tighten when results are noisy; tightening too
+early risks missing relevant entries that don't share all of your
+tokens.
+
 ## If the first search misses
 
 A missed search doesn't mean the memory isn't there. Try in order:

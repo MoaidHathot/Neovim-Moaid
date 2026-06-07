@@ -55,16 +55,37 @@ Full schema: [references/entry-anatomy.md](references/entry-anatomy.md).
 
 ## Body shape
 
-`content` is an ordered array of typed blocks. Common types:
+`content` is an ordered array of typed blocks. Built-in types (all also work nested inside `section` and `tabs`):
 
-- `markdown` — prose, summaries, AI analysis. Embedded `![alt](url)` images render as click-to-enlarge thumbnails.
-- `code` — diffs, file snippets (with `language` and optional `highlight` lines)
-- `table` — changed files, test results
-- `keyValue` — header metadata (repo, branch, author)
-- `link` — "View on GitHub" etc.
-- `image` — standalone image with caption + lightbox; supports `http(s)`, `data:`, and (with allowlist) `file://` URLs.
-- `alert` — info/warning/error/success callouts
-- `section` — a collapsible group with its own nested content + actions
+**Prose & code**
+- `markdown` — prose, summaries, AI analysis. GFM + math (`$$ ... $$`) + task lists. Embedded `![alt](url)` images render as click-to-enlarge thumbnails.
+- `code` — diffs, file snippets. Copy button, wrap/line-no toggles, per-line `annotations[]` (review-style inline comments).
+- `diff` — first-class unified or split diff view with add/remove gutters and per-hunk collapse. Body is a unified-diff string.
+- `json` — foldable JSON tree with copy button.
+
+**Tabular & metadata**
+- `table` — sortable, filterable. Cells may be plain strings or rich-cell objects (`link`, `status`, `badge`, `code`, `copy`, `markdown`, `image`).
+- `keyValue` — header metadata. Values use the same rich-cell shapes (so a Commit SHA can be a `copy` cell, a file path a `link`, status a `status` pill).
+- `link` — one URL (`url`) or many (`links[]`) with optional `body` description and `icon`.
+
+**Visual**
+- `image` — thumbnail + lightbox. Supports `imageAnnotations[]` (arrows/boxes/text overlays) and `timestampUrl` (open external link instead of lightbox).
+- `gallery` — grid of images sharing one lightbox carousel (prev/next + zoom + keyboard arrows).
+- `video` — YouTube / Vimeo / file with optional `startTime`/`endTime` clipping and `chapters[]`.
+- `file` — downloadable attachment via `/api/files`.
+- `beforeAfter` — image slider with `beforeUrl` / `afterUrl`.
+
+**Dashboards & flow**
+- `timeline` — chronological events (RCA bread and butter).
+- `tabs` — group nested content into tabs.
+- `stat` — big-number with optional `delta`, `trend`, `unit`, `sparkline`.
+- `chart` — line / bar / area / pie via `series` + `xAxis`.
+- `diagram` — Mermaid diagram (body is Mermaid source).
+
+**Layout**
+- `section` — collapsible group with `defaultCollapsed` + `badge` and own nested `content[]` + `actions[]`.
+- `alert` — info/warning/error/success callout. Markdown body, optional `dismissible`, can carry its own `actions[]`.
+- `divider` — horizontal rule.
 
 Examples for each: [references/content-blocks.md](references/content-blocks.md).
 
