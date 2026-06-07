@@ -83,6 +83,61 @@ External link rendered as a button or link element.
 
 `body` is the link's display description; `label` is the heading.
 
+## `image`
+
+Embeds an image as a medium thumbnail. Clicking opens a full-size lightbox modal (close with X, backdrop click, or Esc).
+
+```json
+{
+  "type": "image",
+  "label": "Frame at 02:45",
+  "url": "https://example.com/frames/frame-02-45.jpg",
+  "alt": "Speaker discussing the 128 GB unified memory advantage",
+  "caption": "RTX Spark presentation, ~02:45 mark"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `url` | Image source. Accepts `http(s)://`, `data:`, and `file://` URLs. |
+| `alt` | Alt text. Shown if the image fails to load, used by assistive tech, and shown as the lightbox's accessible label. |
+| `caption` | Optional caption rendered beneath the thumbnail and inside the lightbox. |
+| `label` | Optional heading above the image (same as other blocks). |
+| `maxWidth` | Optional thumbnail max width in CSS pixels. Lightbox always uses the full viewport. |
+
+### Embedding images inside markdown
+
+Standard markdown image syntax inside a `markdown` block also renders as a clickable thumbnail with the same lightbox behavior:
+
+```json
+{ "type": "markdown", "body": "![Lineup](https://example.com/lineup.jpg)" }
+```
+
+### Local files (`file://`)
+
+Browsers refuse to load `file://` URLs from an `http://` origin, so ActionView serves local files through `/api/files` instead. This is **off by default**: the dashboard user must opt the file's directory in via `fileAccess.allowedRoots` in their `actionview.json`.
+
+```json
+{
+  "fileAccess": {
+    "allowedRoots": ["C:/temp/Zakira.Replay", "/var/lib/myapp/frames"],
+    "maxFileSizeBytes": 20971520
+  }
+}
+```
+
+The client rewrites `file:///C:/temp/Zakira.Replay/runs/.../frame.jpg` to `/api/files?path=C:%2Ftemp%2F...%2Fframe.jpg` automatically. Anything outside the allowlist is refused with HTTP 403. Symlinks whose targets escape the allowlist are also rejected.
+
+### Producer / consumer split
+
+`fileAccess.allowedRoots` lives on the **consumer** (the user running ActionView), not the producer. As a producer of entries you have three honest options:
+
+1. **Use `http(s)://` URLs** — zero coordination. The image is fetched directly by the browser. Best when the image is already on a web server (CDN, blob storage, GitHub raw).
+2. **Use `data:` URIs** — embed the bytes directly in the entry JSON (`data:image/jpeg;base64,...`). Zero coordination, but inflates entry size; keep to small thumbnails.
+3. **Use `file://` URLs** — only works if the producer and consumer share a filesystem, and the directory is in the consumer's `allowedRoots`. Document the path your tool writes to (e.g., "this orchestrator writes frames under `C:/temp/ActionView/runs/...`; add it to your `fileAccess.allowedRoots`") so users can opt in once and stop thinking about it.
+
+Producers should not assume any specific allowlist is configured. If a `file://` image fails to load the consumer sees a broken thumbnail and a 403 in the network log — fail-gracefully by always including an `alt` so the meaning is preserved.
+
 ## `alert`
 
 Callout box with a level.

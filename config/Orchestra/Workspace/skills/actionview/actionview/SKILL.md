@@ -57,11 +57,12 @@ Full schema: [references/entry-anatomy.md](references/entry-anatomy.md).
 
 `content` is an ordered array of typed blocks. Common types:
 
-- `markdown` — prose, summaries, AI analysis
+- `markdown` — prose, summaries, AI analysis. Embedded `![alt](url)` images render as click-to-enlarge thumbnails.
 - `code` — diffs, file snippets (with `language` and optional `highlight` lines)
 - `table` — changed files, test results
 - `keyValue` — header metadata (repo, branch, author)
 - `link` — "View on GitHub" etc.
+- `image` — standalone image with caption + lightbox; supports `http(s)`, `data:`, and (with allowlist) `file://` URLs.
 - `alert` — info/warning/error/success callouts
 - `section` — a collapsible group with its own nested content + actions
 
@@ -141,3 +142,4 @@ See [references/templates.md](references/templates.md).
 - **OnSuccess defaults to `archive`.** If the user should keep seeing the entry after acting (e.g., the section's "Post Comment" doesn't end the review), set `"onSuccess": "keep"`.
 - **Don't bake user-editable content into command args.** If the user needs to edit a value, declare a `parameter` with `default` set to your draft — never hard-code the draft into `args`/`body` strings.
 - **Pick a meaningful `source`.** It appears in the UI and is filterable. Use the producing tool's name (e.g., `"github-pr-bot"`, `"datadog-alerts"`).
+- **Local images need a consumer-side allowlist.** `file://` URLs in `image` blocks or markdown bodies only render if the directory holding the file is listed in the user's `actionview.json` under `fileAccess.allowedRoots`. If you're publishing entries that point at host-local files, either (a) write the images into a directory you know is already allowlisted, (b) document the path the user needs to add, or (c) prefer `http(s)://` / `data:` URLs to avoid the coordination entirely. See [references/content-blocks.md](references/content-blocks.md#image).

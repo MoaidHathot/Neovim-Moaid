@@ -15,6 +15,7 @@ mcps:
     arguments:
       - "@playwright/mcp@latest"
       - "--headless"
+      - "--browser=msedge"
 
 steps:
   - name: load-watchlist
