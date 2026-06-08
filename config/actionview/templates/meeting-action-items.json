@@ -119,6 +119,13 @@
             "label": "Meeting Link",
             "required": false,
             "description": "Calendar event webLink for quick navigation."
+          },
+          {
+            "type": "section",
+            "title": "Full Report",
+            "titleAliases": ["Full Markdown", "Full Notes", "Full Action Items Report"],
+            "required": false,
+            "description": "Collapsed-by-default section containing the verbatim markdown report that was saved to disk under actionItemsDir. Mirrors the obsidian-friendly note so the user does not need to open the file. Body is injected by the orchestration's inject-full-markdown Script step via the <<FULL_MARKDOWN:<executionId>>> placeholder."
           }
         ]
       }

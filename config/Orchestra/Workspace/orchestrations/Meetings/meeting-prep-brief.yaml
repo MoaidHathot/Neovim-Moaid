@@ -569,6 +569,88 @@ steps:
       - "{{dispatch-briefer.output}}"
     timeoutSeconds: 120
 
+  - name: extract-full-markdown
+    type: Script
+    dependsOn: [dispatch-briefer]
+    shell: pwsh
+    script: |
+      # Build an executionId -> full markdown brief lookup, parsed out of the
+      # dispatch-briefer rollup. The full markdown body lives inside each
+      # child's emit-child-result payload at `manifest.markdown`; the
+      # aggregate-dispatch step intentionally drops it to keep the
+      # dispatcher rollup small and LLM-friendly. We surface it here on a
+      # dedicated lookup so the downstream inject-full-markdown step can
+      # substitute placeholder bodies in the ActionView entry without
+      # bloating the prompt or risking LLM tampering.
+      #
+      # The launcher wraps each terminal step's content as
+      # `[<stepName>]\n<content>` joined by `\n---\n`. We extract the
+      # `emit-child-result` segment first; if the segment shape changes
+      # we fall back to parsing the whole finalContent as JSON.
+      $ErrorActionPreference = 'Stop'
+
+      $raw = $args[0]
+      if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw 'dispatch-briefer output is empty.'
+      }
+      $rollup = ConvertFrom-Json -InputObject $raw -Depth 100 -ErrorAction Stop
+
+      $lookup = [ordered]@{}
+
+      foreach ($r in @($rollup.results)) {
+        if ($null -eq $r) { continue }
+        if ([string]::IsNullOrWhiteSpace([string]$r.executionId)) { continue }
+        if ($r.status -ne 'succeeded') { continue }
+        if ([string]::IsNullOrWhiteSpace([string]$r.finalContent)) { continue }
+
+        try {
+          $rawFc = [string]$r.finalContent
+          $segments = $rawFc -split "`n---`n"
+          $emitJson = $null
+          foreach ($seg in $segments) {
+            if ($seg.StartsWith('[emit-child-result]')) {
+              $nl = $seg.IndexOf("`n")
+              if ($nl -ge 0) { $emitJson = $seg.Substring($nl + 1) }
+              break
+            }
+          }
+          if (-not $emitJson) {
+            if ($rawFc.TrimStart().StartsWith('{')) {
+              $emitJson = $rawFc
+            } elseif ($segments.Count -gt 0) {
+              $first = $segments[0]
+              $nl = $first.IndexOf("`n")
+              if ($nl -ge 0 -and $first.StartsWith('[')) {
+                $emitJson = $first.Substring($nl + 1)
+              } else {
+                $emitJson = $first
+              }
+            }
+          }
+          if (-not $emitJson) { continue }
+
+          $childObj = ConvertFrom-Json -InputObject $emitJson -Depth 100 -ErrorAction Stop
+          $md = $null
+          if ($childObj.manifest -and $childObj.manifest.markdown) {
+            $md = [string]$childObj.manifest.markdown
+          }
+          if (-not [string]::IsNullOrWhiteSpace($md)) {
+            $lookup[[string]$r.executionId] = $md
+          }
+        } catch {
+          # Best-effort: if a single child's body cannot be parsed we
+          # skip it; the inject step will leave its placeholder
+          # unsubstituted and the ActionView entry will surface that
+          # as a visible diagnostic.
+          continue
+        }
+      }
+
+      $lookup | ConvertTo-Json -Depth 5 -Compress
+    arguments:
+      - "{{dispatch-briefer.output}}"
+    timeoutSeconds: 120
+
   - name: gate-noteworthy-activity
     type: Prompt
     dependsOn: [aggregate-dispatch]
@@ -643,6 +725,27 @@ steps:
              - `link` 'Open Brief' to `filePath` (use a `file://` URL).
              - `link` 'Meeting Link' to the meeting's `webLink` when
                present.
+             - As the LAST block in the per-meeting section, append a
+               collapsed-by-default `section` titled 'Full Brief' that
+               mirrors the markdown brief saved to disk. Emit it
+               EXACTLY in this shape (the actual markdown body is
+               injected downstream — do NOT inline the body yourself):
+                 {
+                   "type": "section",
+                   "title": "Full Brief",
+                   "defaultCollapsed": true,
+                   "content": [
+                     { "type": "markdown", "body": "<<FULL_MARKDOWN:<executionId>>>" }
+                   ]
+                 }
+               Substitute `<executionId>` with the per-meeting
+               `executionId` from the dispatcher summary. Use this
+               literal placeholder syntax — a downstream Script
+               replaces it with the verbatim markdown brief. Do not
+               wrap the placeholder in extra prose, do not change the
+               title, and do not omit the block for succeeded meetings
+               (even if a `filePath` is empty, still emit the section
+               so the substituter can fill it).
         5. A `section` titled 'Failed Dispatches' when `failed > 0`,
            listing failed meetings with their error messages.
         6. Optional `markdown` 'Run Notes' summarising anything else.
@@ -690,6 +793,96 @@ steps:
       Get-Content -LiteralPath '{{create-actionview-entry.files[0]}}' -Raw
     timeoutSeconds: 60
 
+  - name: inject-full-markdown
+    type: Script
+    dependsOn: [read-actionview-entry-file, extract-full-markdown]
+    shell: pwsh
+    script: |
+      # Substitute `<<FULL_MARKDOWN:<executionId>>>` placeholders in the
+      # ActionView entry's content tree with the verbatim per-meeting
+      # markdown briefs surfaced by extract-full-markdown. Keeping the
+      # substitution out of the LLM prompt avoids:
+      #   (a) re-tokenising every full brief body twice (once in the
+      #       create-actionview-entry user prompt, once back in the
+      #       output JSON), and
+      #   (b) the model "improving" or truncating the brief body --
+      #       which we explicitly want preserved verbatim because the
+      #       very same body is also written to disk under
+      #       briefingsDir as the obsidian-friendly note.
+      $ErrorActionPreference = 'Stop'
+
+      $entryJsonRaw = $args[0]
+      $lookupRaw    = $args[1]
+
+      if ([string]::IsNullOrWhiteSpace($entryJsonRaw)) {
+        throw 'ActionView entry JSON input is empty.'
+      }
+      if ([string]::IsNullOrWhiteSpace($lookupRaw)) {
+        $lookupRaw = '{}'
+      }
+
+      $entry  = ConvertFrom-Json -InputObject $entryJsonRaw -Depth 100 -ErrorAction Stop
+      $lookup = ConvertFrom-Json -InputObject $lookupRaw    -Depth 5   -ErrorAction Stop
+
+      $lookupMap = @{}
+      if ($null -ne $lookup) {
+        foreach ($prop in $lookup.PSObject.Properties) {
+          $lookupMap[[string]$prop.Name] = [string]$prop.Value
+        }
+      }
+
+      $script:substituted   = 0
+      $script:unsubstituted = New-Object System.Collections.Generic.List[string]
+      $placeholderRegex     = '^<<FULL_MARKDOWN:([^>]+)>>$'
+
+      function Invoke-FullMarkdownWalk {
+        param($Node)
+        if ($null -eq $Node) { return }
+        if ($Node -is [System.Collections.IEnumerable] -and -not ($Node -is [string])) {
+          foreach ($item in $Node) { Invoke-FullMarkdownWalk -Node $item }
+          return
+        }
+        if ($Node -isnot [pscustomobject]) { return }
+
+        $typeProp = $Node.PSObject.Properties['type']
+        $bodyProp = $Node.PSObject.Properties['body']
+        if ($typeProp -and $bodyProp -and ([string]$typeProp.Value) -eq 'markdown') {
+          $body = [string]$bodyProp.Value
+          if ($body -match $placeholderRegex) {
+            $id = $Matches[1].Trim()
+            if ($lookupMap.ContainsKey($id)) {
+              $Node.body = $lookupMap[$id]
+              $script:substituted++
+            } else {
+              [void]$script:unsubstituted.Add($id)
+            }
+          }
+        }
+
+        foreach ($prop in $Node.PSObject.Properties) {
+          $val = $prop.Value
+          if ($null -eq $val) { continue }
+          if ($val -is [string]) { continue }
+          if ($val -is [System.Collections.IEnumerable] -or $val -is [pscustomobject]) {
+            Invoke-FullMarkdownWalk -Node $val
+          }
+        }
+      }
+
+      Invoke-FullMarkdownWalk -Node $entry
+
+      if ($script:unsubstituted.Count -gt 0) {
+        $missing = ($script:unsubstituted | Select-Object -Unique) -join ', '
+        Write-Warning ("inject-full-markdown: {0} placeholder(s) had no matching executionId: {1}" -f $script:unsubstituted.Count, $missing)
+      }
+      Write-Information ("inject-full-markdown: substituted {0} placeholder(s)." -f $script:substituted)
+
+      $entry | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{read-actionview-entry-file.output}}"
+      - "{{extract-full-markdown.output}}"
+    timeoutSeconds: 180
+
   # First-class Orchestration step: launches actionview-submit in-process
   # via the engine's IChildOrchestrationLauncher. No MCP transport is
   # involved, so the 3-minute MCP request timeout does not apply. The
@@ -697,10 +890,10 @@ steps:
   # failures as native step failures.
   - name: submit-actionview-entry
     type: Orchestration
-    dependsOn: [read-actionview-entry-file]
+    dependsOn: [inject-full-markdown]
     orchestration: actionview-submit
     parameters:
-      entryJson: "{{read-actionview-entry-file.output}}"
+      entryJson: "{{inject-full-markdown.output}}"
       template: meeting-prep
       groupId: "{{vars.actionViewGroupId}}"
     mode: sync

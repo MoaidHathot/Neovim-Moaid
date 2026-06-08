@@ -82,6 +82,13 @@
             "label": "Meeting Link",
             "required": false,
             "description": "Calendar event webLink so the user can jump straight to the meeting."
+          },
+          {
+            "type": "section",
+            "title": "Full Brief",
+            "titleAliases": ["Full Markdown", "Full Notes", "Full Meeting Brief"],
+            "required": false,
+            "description": "Collapsed-by-default section containing the verbatim markdown brief that was saved to disk under briefingsDir. Mirrors the obsidian-friendly note so the user does not need to open the file. Body is injected by the orchestration's inject-full-markdown Script step via the <<FULL_MARKDOWN:<executionId>>> placeholder."
           }
         ]
       }
