@@ -19,6 +19,52 @@
 			}
 		}
 	},
+	"lsp": {
+		"json": {
+			"command": [
+				"vscode-json-language-server",
+				"--stdio"
+			],
+			"extensions": [
+				".json",
+				".jsonc"
+			]
+		},
+		"marksman": {
+			"command": [
+				"marksman",
+				"server"
+			],
+			"extensions": [
+				".md",
+				".markdown"
+			]
+		},
+		"powershell": {
+			"command": [
+				"pwsh",
+				"-NoLogo",
+				"-NoProfile",
+				"-Command",
+				"$pses=(Get-Module -ListAvailable PowerShellEditorServices|Sort-Object Version -Descending|Select-Object -First 1).ModuleBase; & \"$pses/Start-EditorServices.ps1\" -BundledModulesPath (Split-Path $pses -Parent) -LogPath \"$env:TEMP/opencode-pses.log\" -SessionDetailsPath \"$env:TEMP/opencode-pses-session.json\" -FeatureFlags @() -AdditionalModules @() -HostName opencode -HostProfileId opencode -HostVersion 1.0.0 -Stdio"
+			],
+			"extensions": [
+				".ps1",
+				".psm1",
+				".psd1"
+			]
+		},
+		"taplo": {
+			"command": [
+				"taplo",
+				"lsp",
+				"stdio"
+			],
+			"extensions": [
+				".toml"
+			]
+		}
+	},
 	"mcp": {
 		"teams": {
 			"enabled": false,
@@ -28,6 +74,27 @@
 		"context7": {
 			"type": "remote",
 			"url": "https://mcp.context7.com/mcp"
+		},
+		"zakira-recall": {
+			"type": "local",
+			"command": [
+				"dnx",
+				"Zakira.Recall",
+				"--yes",
+				"--",
+				"mcp"
+			]
+		},
+		"zakira-replay": {
+			"type": "local",
+			"command": [
+				"dnx",
+				"Zakira.Replay",
+				"--yes",
+				"--",
+				"mcp",
+				"serve"
+			]
 		},
 		"ev2": {
 			"enabled": false,
