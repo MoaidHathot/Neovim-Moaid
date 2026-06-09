@@ -717,33 +717,51 @@ steps:
       whether this scheduler tick produced anything worth surfacing to
       ActionView.
 
-      Read the dispatcher summary JSON. The run is "noteworthy" only if
-      at least one child processor succeeded (`succeeded > 0`) OR at
-      least one child failed (`failed > 0`). Both signal real activity
-      that warrants a notification.
+      Inputs:
+        - dryRun: a string, "true" or "false"
+        - Dispatcher summary JSON (with totalDispatched / succeeded / failed)
 
-      If the run is NOT noteworthy (every dispatched processor was a
-      no-op or the dispatcher itself early-completed), call
-      orchestra_complete with status 'success' and a reason like 'All
-      <N> dispatched processors reported no actionable activity;
-      skipping ActionView entry.'
+      Decision order (apply in this exact sequence):
 
-      If the run IS noteworthy, output the dispatcher summary JSON
-      verbatim (no prose, no markdown fences) so the downstream entry
-      generator can consume it.
+      1. If `dryRun` is exactly the string "true", call
+         orchestra_set_status with status 'no_action' and a reason
+         like 'dry-run: ActionView submission suppressed (dispatched=<N>,
+         succeeded=<S>, failed=<F>)'. This is the dryRun contract — the
+         orchestration runs discovery + dispatch but never writes to
+         ActionView / Zakira side-effects. Steps that depend on this
+         gate (create-actionview-entry → … → submit-actionview-entry)
+         are then auto-skipped by the engine.
+
+      2. Otherwise, if the run is NOT noteworthy (every dispatched
+         processor was a no-op AND nothing failed — i.e. succeeded == 0
+         AND failed == 0), call orchestra_set_status with status
+         'no_action' and a reason like 'no-op: all <N> dispatched
+         processors reported zero activity'.
+
+      3. Otherwise (noteworthy: succeeded > 0 OR failed > 0), output
+         the dispatcher summary JSON verbatim (no prose, no markdown
+         fences) so the downstream entry generator can consume it. Do
+         NOT call any tools in this branch.
+
+      Use orchestra_set_status (NOT orchestra_complete) for the
+      no-action branches: we want downstream-dependent steps to be
+      skipped via dependency propagation, while sibling chains like
+      generate-summary still get a chance to assemble a run summary.
 
       Do not call any other tools.
     userPrompt: |
       Decide whether this meeting-action-items run is noteworthy enough
       to surface in ActionView.
 
+      dryRun: {{param.dryRun}}
+
       Dispatcher summary:
       {{aggregate-dispatch.output}}
     outputHandlerPrompt: |
-      When continuing, output the dispatcher summary JSON object
-      verbatim with no prose or fences. Otherwise (early-completion
-      path), preserve the orchestra_complete reason text. Output only
-      the relevant content.
+      When continuing (branch 3), output the dispatcher summary JSON
+      object verbatim with no prose or fences. Otherwise (branches 1
+      and 2 — orchestra_set_status('no_action') was called), preserve
+      the reason text. Output only the relevant content.
 
   - name: create-actionview-entry
     type: Prompt
