@@ -12,6 +12,10 @@ import type { Model } from "@opencode-ai/sdk/v2"
 // extra models actually work. It runs after the built-in plugin (config/user
 // plugins load last), so its `provider.models` result is authoritative.
 //
+// It also drops stale catalog entries that the live API no longer surfaces
+// (detected via `limit.context === 0` after rebuild) — e.g. `claude-opus-4.7-1m`
+// from models.dev whose live successor is `claude-opus-4.7-1m-internal`.
+//
 // The fetch/build logic below is a plain-TypeScript port of opencode's own
 // `packages/opencode/src/plugin/github-copilot/models.ts` so the produced Model
 // objects are shaped identically to the built-in ones.
@@ -79,6 +83,19 @@ function usable(item: RawItem): item is SelectableItem {
     item.capabilities.limits.max_prompt_tokens !== undefined &&
     item.capabilities.supports.tool_calls !== undefined
   )
+}
+
+// Matches Anthropic Opus 4.7 and any later version (4.8, 5.x, ...). Mirrors
+// `anthropicOpus47OrLater` in opencode's provider/transform.ts so we don't have
+// to revisit this when new Opus versions ship. Used to force the
+// `display: "summarized"` thinking flag — Opus 4.7+ flipped the API default to
+// "omitted", which returns empty thinking blocks unless we override it.
+function isAnthropicOpus47OrLater(apiId: string) {
+  const m = /opus-(\d+)[.-](\d+)(?:[.@-]|$)|claude-(\d+)[.-](\d+)-opus(?:[.@-]|$)/i.exec(apiId)
+  if (!m) return false
+  const major = Number(m[1] ?? m[3])
+  const minor = Number(m[2] ?? m[4])
+  return major > 4 || (major === 4 && minor >= 7)
 }
 
 function build(key: string, remote: SelectableItem, url: string, prev?: Model): Model {
@@ -151,7 +168,7 @@ function build(key: string, remote: SelectableItem, url: string, prev?: Model): 
       variants[effort] = {
         thinking: {
           type: "adaptive",
-          ...(model.api.id.includes("opus-4.7") ? { display: "summarized" } : {}),
+          ...(isAnthropicOpus47OrLater(model.api.id) ? { display: "summarized" } : {}),
         },
         effort,
       }
@@ -198,6 +215,14 @@ async function fetchModels(baseURL: string, token: string, existing: Record<stri
   for (const [id, m] of remote) {
     if (id in result) continue
     result[id] = build(id, m, baseURL)
+  }
+
+  // Drop any entry without a real context window. Catches stale models.dev
+  // catalog entries (e.g. `claude-opus-4.7-1m`, ctx=0) that the live API no
+  // longer surfaces — the prune loop above already removed them, but
+  // downstream config-defined models can re-add them, so this is defensive.
+  for (const [key, model] of Object.entries(result)) {
+    if (!model.limit?.context) delete result[key]
   }
 
   const pickerEnabled = new Set([...remote].filter(([, item]) => item.model_picker_enabled).map(([id]) => id))
