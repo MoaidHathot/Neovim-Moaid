@@ -1,0 +1,94 @@
+{
+  "type": "waiting-on",
+  "description": "Outbound asks tracker from the waiting-on-tracker orchestration (mail-only v1). One entry with a stable id (re-published in place each run) listing every open ask grouped by recipient, with three per-ask buttons: Resolved (mark-ledger-item.ps1 -Action completed), Dismiss (-Action dismissed), and Not an ask (flag-as-not-an-ask.ps1, which both dismisses the entry AND records a recipient+pattern in the ask-extraction-ignore trainer so future runs filter near-duplicates). Pinned when any urgent asks are outstanding. Companion daily summary lives at the Zakira category `waiting-on-ledger:daily-summary` for the future daily-morning-digest composer. A weekly Monday-only Obsidian digest under `OrcStra/Waiting On/<YYYY-Wnn>.md` captures closures and still-outstanding asks.",
+  "defaults": {
+    "icon": "clock-alert",
+    "severity": "medium",
+    "tags": ["waiting-on", "mail", "productivity", "ZTS", "followup"]
+  },
+  "contentTemplate": [
+    {
+      "type": "alert",
+      "label": "Urgent waiting-on",
+      "required": false,
+      "description": "Use level 'warning' when any urgent-priority asks are outstanding; omit otherwise. Body bullets the top 5 urgent items with recipient name, ask text, and age in hours."
+    },
+    {
+      "type": "keyValue",
+      "label": "Run Overview",
+      "required": true,
+      "requiredKeys": ["Open asks", "Distinct recipients", "Urgent", "New since run", "Still open", "Auto-closed", "Handled manually", "Dropped this run"],
+      "keyAliases": {
+        "openCount": "Open asks",
+        "totalOpen": "Open asks",
+        "distinctRecipients": "Distinct recipients",
+        "byRecipientCount": "Distinct recipients",
+        "urgent": "Urgent",
+        "urgentCount": "Urgent",
+        "new": "New since run",
+        "newCount": "New since run",
+        "stillOpen": "Still open",
+        "stillOpenCount": "Still open",
+        "staleAuto": "Auto-closed",
+        "staleCount": "Auto-closed",
+        "manualClosed": "Handled manually",
+        "manualCount": "Handled manually",
+        "dropped": "Dropped this run",
+        "droppedCount": "Dropped this run"
+      }
+    },
+    {
+      "type": "section",
+      "title": "<recipient-name> <recipient-address>",
+      "titleAliases": ["Recipient", "Per-Recipient", "By Recipient"],
+      "required": true,
+      "description": "One nested section per recipient with at least one open ask, sorted by ask count (desc) then by age (oldest first). Each recipient section contains a leading markdown summary ('N open ask(s) for this recipient.') and then per-ask nested sections. Inside each per-ask section: a keyValue with Sent / Age / Priority / Signal / Subject / Open thread, and three CLI actions (Resolved / Dismiss / Not an ask). onSuccess=keep so a single-button click does not archive the whole entry. Capped at 10 asks per recipient; surplus rendered as 'Plus N more not shown - they will appear once the older ones close out.'",
+      "nestedSections": {
+        "repeatable": true,
+        "contentTemplate": [
+          {
+            "type": "markdown",
+            "label": "Recipient summary",
+            "required": false,
+            "description": "Bold 'N open ask(s) for this recipient.' line."
+          },
+          {
+            "type": "section",
+            "title": "[<priority>] <ask text>",
+            "titleAliases": ["Ask", "Per-Ask"],
+            "required": true,
+            "description": "One nested section per open ask. Contains a keyValue with Sent / Age (hours) / Priority / Signal / Subject / Open thread, and three CLI actions: Resolved, Dismiss, Not an ask. The Not an ask button carries a confirmMessage so a misclick does not silently train the classifier."
+          }
+        ]
+      }
+    },
+    {
+      "type": "markdown",
+      "label": "Run Notes",
+      "required": false,
+      "description": "Free-form footer with the run id, dryRun and forceSurface flags."
+    }
+  ],
+  "expectedActions": [
+    {
+      "label": "Open Outlook (Sent)",
+      "style": "primary",
+      "description": "Jump to the Outlook web Sent folder."
+    },
+    {
+      "label": "Open Orchestra: Waiting On list in To Do",
+      "style": "default",
+      "description": "Convenience link to the Microsoft To Do list this orchestration syncs aging asks into."
+    },
+    {
+      "label": "Open Waiting On folder",
+      "style": "default",
+      "description": "Open the Obsidian Waiting On folder where the weekly digests live."
+    },
+    {
+      "label": "Dismiss",
+      "style": "default",
+      "description": "Archive this run snapshot. The next scheduler tick will re-publish a fresh one under the same stable id."
+    }
+  ]
+}

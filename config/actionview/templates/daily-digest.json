@@ -1,0 +1,82 @@
+{
+  "type": "daily-digest",
+  "description": "Single morning card from the daily-morning-digest orchestration that ties together today's meetings (with collapsible full briefs from the meeting-prep-brief output) and rolled-up summaries from every tracker (my-prs-tracker A3, meeting-action-items-followup A1, inbox-triage B5, waiting-on-tracker B4). Stable id `daily-digest-<YYYY-MM-DD>` so re-runs the same day update in place; the next day produces a fresh card. Always pinned. Tolerates missing tracker summaries by rendering 'tracker has not run yet today' in the affected section. Companion Obsidian note at `OrcStra/Daily/<YYYY-MM-DD>.md` provides a permanent markdown rendering of the same content. Single Microsoft To Do task per day with the LLM-synthesized top-3 focus.",
+  "defaults": {
+    "icon": "calendar-clock",
+    "severity": "medium",
+    "tags": ["daily", "digest", "productivity", "ZTS"]
+  },
+  "contentTemplate": [
+    {
+      "type": "markdown",
+      "label": "Header",
+      "required": true,
+      "description": "Two-line header with the digest date, weekday, and the count of meetings in the lookahead window."
+    },
+    {
+      "type": "section",
+      "title": "Today's focus",
+      "titleAliases": ["Focus", "Top 3"],
+      "required": true,
+      "description": "LLM-synthesized 2-sentence 'Shape of the day' paragraph followed by a numbered list of THREE focus items. The Script wraps the synthesized markdown in a single `markdown` body inside this section; the body is injected from the synthesize-focus prompt step via the <<FULL_MARKDOWN:focus>> placeholder pattern."
+    },
+    {
+      "type": "section",
+      "title": "Today's meetings (<N>)",
+      "titleAliases": ["Meetings", "Calendar"],
+      "required": true,
+      "description": "When meetings exist: a table (Time / Title / Organizer / Attendees / Link) followed by one nested section per meeting with a Meeting keyValue (Organizer / Attendees / Meeting link / Brief file) and, when includeFullMeetingBriefs=true and a brief exists, a default-collapsed 'Full Brief' nested section embedding the markdown brief body via the <<FULL_MARKDOWN:meeting:<zakiraKey>>> placeholder. When zero meetings: a default-collapsed section with 'No meetings in the window. Focus time available.'"
+    },
+    {
+      "type": "section",
+      "title": "PRs needing me",
+      "titleAliases": ["My PRs"],
+      "required": true,
+      "description": "Sourced from the my-prs-state:daily-summary Zakira record. When found: a keyValue with whatever count fields the tracker exposed (Open Count / Hot Count / etc.) and a 'Hot items' markdown bullet list with per-PR labels and open links. When absent: a polite 'my-prs-tracker has not produced a summary yet today' note."
+    },
+    {
+      "type": "section",
+      "title": "Action items",
+      "titleAliases": ["Open Action Items"],
+      "required": true,
+      "description": "Sourced from the action-items-ledger:daily-summary Zakira record. Same shape as PRs needing me."
+    },
+    {
+      "type": "section",
+      "title": "Inbox (needs action)",
+      "titleAliases": ["Inbox", "Triage"],
+      "required": true,
+      "description": "Sourced from the triage-state:daily-summary Zakira record. Same shape."
+    },
+    {
+      "type": "section",
+      "title": "Waiting on",
+      "titleAliases": ["Outstanding Asks"],
+      "required": true,
+      "description": "Sourced from the waiting-on-ledger:daily-summary Zakira record. Same shape; hot items here surface urgent open asks with recipient + ask text."
+    },
+    {
+      "type": "markdown",
+      "label": "Run Notes",
+      "required": false,
+      "description": "Free-form footer with the run id, forceSurface flag, and includeFullMeetingBriefs flag."
+    }
+  ],
+  "expectedActions": [
+    {
+      "label": "Open today's Obsidian note",
+      "style": "primary",
+      "description": "Open the permanent daily-note rendering of the digest under OrcStra/Daily/<YYYY-MM-DD>.md."
+    },
+    {
+      "label": "Open Orchestra: Daily Focus list in To Do",
+      "style": "default",
+      "description": "Convenience link to the Microsoft To Do list this orchestration syncs the daily focus task into."
+    },
+    {
+      "label": "Dismiss",
+      "style": "default",
+      "description": "Archive this card. Next day's run posts a fresh one under the new stable id."
+    }
+  ]
+}

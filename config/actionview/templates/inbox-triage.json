@@ -1,0 +1,109 @@
+{
+  "type": "inbox-triage",
+  "description": "Cross-source inbox triage from the inbox-triage orchestration. One entry with a stable id (re-published in place each scheduler tick) summarising recent mail (Inbox + Focused + @-mentions) and Teams (DMs + allowlisted channel mentions) classified into needs-action / wait-reply / meeting-prep / fyi / noise. Per-message Mark-handled and Dismiss buttons mutate the triage-state ledger via Shared/scripts/mark-ledger-item.ps1. Pinned when any needs-action items are present. Companion daily summary lives at the Zakira category `triage-state:daily-summary` for the future daily-morning-digest composer.",
+  "defaults": {
+    "icon": "inbox",
+    "severity": "medium",
+    "tags": ["inbox", "mail", "teams", "productivity", "triage", "ZTS"]
+  },
+  "contentTemplate": [
+    {
+      "type": "alert",
+      "label": "Needs action",
+      "required": false,
+      "description": "Use level 'warning' when there are needs-action items; omit otherwise. Body bullets the top 5 with source tag, subject, and rationale."
+    },
+    {
+      "type": "keyValue",
+      "label": "Run Overview",
+      "required": true,
+      "requiredKeys": ["Active items", "Needs action", "Mentions", "Wait reply", "Meeting prep", "FYI", "Noise", "New since run", "Escalated", "Handled"],
+      "keyAliases": {
+        "totalActive": "Active items",
+        "activeCount": "Active items",
+        "needsAction": "Needs action",
+        "mentions": "Mentions",
+        "waitReply": "Wait reply",
+        "meetingPrep": "Meeting prep",
+        "fyi": "FYI",
+        "noise": "Noise",
+        "newCount": "New since run",
+        "new": "New since run",
+        "escalated": "Escalated",
+        "escalations": "Escalated",
+        "handled": "Handled",
+        "manualClosed": "Handled"
+      }
+    },
+    {
+      "type": "section",
+      "title": "Needs action",
+      "titleAliases": ["Action Required", "To Do"],
+      "required": false,
+      "description": "Messages the sender expects a response or action from me. Each item is a nested section titled `[Mail|Teams] <subject>` with a keyValue (From/When/Channel/Folder/Flags/Why/Open) and two CLI actions: Mark handled (calls mark-ledger-item.ps1 -Action completed) and Dismiss (-Action dismissed). onSuccess=keep so single-item clicks do not archive the whole entry. Items are sorted with @mentions first, then high importance, then most recent. Capped at 15; surplus rendered as a 'Plus N more in this bucket not shown.' footer."
+    },
+    {
+      "type": "section",
+      "title": "@Mentions",
+      "titleAliases": ["Mentions", "I Was Mentioned"],
+      "required": false,
+      "description": "Messages where I appear in the mentions collection (regardless of primary category). Same per-item shape and actions as Needs action. Often overlaps with Needs action; the cross-section view makes it easier to spot."
+    },
+    {
+      "type": "section",
+      "title": "Wait reply",
+      "titleAliases": ["Awaiting Response"],
+      "required": false,
+      "description": "Threads I sent into that have received a reply requiring my continued response. Use sparingly per the classifier rules - most Re: chains are needs-action."
+    },
+    {
+      "type": "section",
+      "title": "Meeting prep",
+      "titleAliases": ["Calendar", "Pre-Read"],
+      "required": false,
+      "description": "Calendar invites, agendas, pre-read material, or scheduling negotiations tied to upcoming meetings. Separate from needs-action even when an RSVP is implicit."
+    },
+    {
+      "type": "section",
+      "title": "FYI",
+      "titleAliases": ["Informational"],
+      "required": false,
+      "description": "Informational messages with no action expected (CC/BCC, distribution lists, broadcast updates). Default-collapsed."
+    },
+    {
+      "type": "section",
+      "title": "Noise",
+      "titleAliases": ["Automated", "Notifications"],
+      "required": false,
+      "description": "Automated notifications, monitoring digests, marketing, bouncebacks. Default-collapsed. Surface them at all because misclassification happens; quick scan opportunity."
+    },
+    {
+      "type": "markdown",
+      "label": "Run Notes",
+      "required": false,
+      "description": "Free-form footer with the run id, dryRun and forceSurface flags."
+    }
+  ],
+  "expectedActions": [
+    {
+      "label": "Open Outlook (Inbox)",
+      "style": "primary",
+      "description": "Jump to the Outlook web Inbox."
+    },
+    {
+      "label": "Open Teams",
+      "style": "default",
+      "description": "Jump to Teams web client."
+    },
+    {
+      "label": "Open Orchestra: Inbox list in To Do",
+      "style": "default",
+      "description": "Convenience link to the Microsoft To Do list this orchestration syncs aging needs-action items into."
+    },
+    {
+      "label": "Dismiss",
+      "style": "default",
+      "description": "Archive this run snapshot. The next scheduler tick will re-publish a fresh one under the same stable id."
+    }
+  ]
+}

@@ -1,0 +1,106 @@
+{
+  "type": "my-prs",
+  "description": "Authored-PR snapshot from the my-prs-tracker orchestration. One entry per scheduler run summarising every active PR in the ZTS repository that I authored, bucketed into actionable states (failing-build, merge-conflict, needs-my-response, blocked-on-reviewers, ready-to-complete, draft-stale, healthy-in-progress). Pinned when any PR needs my attention. A companion daily summary is written to Zakira (my-prs-state:daily-summary) for the future daily-morning-digest composer.",
+  "defaults": {
+    "icon": "git-pull-request",
+    "severity": "medium",
+    "tags": ["PR", "ZTS", "my-prs", "productivity"]
+  },
+  "contentTemplate": [
+    {
+      "type": "alert",
+      "label": "Hot list",
+      "required": false,
+      "description": "Use level 'warning' when there are PRs in any of: failing-build, merge-conflict, needs-my-response, blocked-on-reviewers. Omit otherwise. Body should bullet each hot PR with id, state, title, and one-line reason."
+    },
+    {
+      "type": "keyValue",
+      "label": "Run Overview",
+      "required": true,
+      "requiredKeys": ["Total", "Needs attention", "Ready to merge", "Healthy", "Draft (stale)", "New since run", "State changed"],
+      "keyAliases": {
+        "total": "Total",
+        "hot": "Needs attention",
+        "hotCount": "Needs attention",
+        "needsAttention": "Needs attention",
+        "ready": "Ready to merge",
+        "readyToComplete": "Ready to merge",
+        "readyCount": "Ready to merge",
+        "healthy": "Healthy",
+        "healthyInProgress": "Healthy",
+        "draftStale": "Draft (stale)",
+        "drafts": "Draft (stale)",
+        "new": "New since run",
+        "newCount": "New since run",
+        "stateChanged": "State changed",
+        "changedCount": "State changed"
+      }
+    },
+    {
+      "type": "table",
+      "label": "My active PRs",
+      "required": true,
+      "description": "One row per active PR I authored. Expected columns: Id, Title, State (status pill), MergeStatus, Draft, Link."
+    },
+    {
+      "type": "section",
+      "title": "Needs my response",
+      "titleAliases": ["Needs Response", "Waiting For Author"],
+      "required": false,
+      "description": "PRs where a reviewer voted -5 (waiting for author). One nested keyValue per PR with the reason and was->now state transition."
+    },
+    {
+      "type": "section",
+      "title": "Blocked on reviewers",
+      "titleAliases": ["Awaiting Reviewers", "Stalled"],
+      "required": false,
+      "description": "PRs where required reviewers have not yet approved and the PR is past the staleness window."
+    },
+    {
+      "type": "section",
+      "title": "Failing build",
+      "titleAliases": ["Build Failures", "Rejected"],
+      "required": false,
+      "description": "PRs with a reviewer rejection (vote = -10) or a failed required policy evaluation."
+    },
+    {
+      "type": "section",
+      "title": "Merge conflict",
+      "titleAliases": ["Conflicts"],
+      "required": false,
+      "description": "PRs whose mergeStatus is conflicts / rejectedByPolicy / failure."
+    },
+    {
+      "type": "section",
+      "title": "Ready to complete",
+      "titleAliases": ["Ready To Merge"],
+      "required": false,
+      "description": "PRs with all required approvals and a clean merge - safe to complete from the PR page."
+    },
+    {
+      "type": "section",
+      "title": "Draft (stale)",
+      "titleAliases": ["Stale Drafts"],
+      "required": false,
+      "description": "Drafts older than the configured staleHoursDraft window with no recent activity."
+    },
+    {
+      "type": "markdown",
+      "label": "Run Notes",
+      "required": false,
+      "description": "Free-form footer line with the run id and the dryRun / forceSurface flags so the entry is self-describing."
+    }
+  ],
+  "expectedActions": [
+    {
+      "label": "Open ZTS PRs page",
+      "style": "primary",
+      "description": "Opens the Azure DevOps PR list filtered to PRs I authored."
+    },
+    {
+      "label": "Dismiss",
+      "style": "default",
+      "description": "Archive this run summary without further action."
+    }
+  ]
+}

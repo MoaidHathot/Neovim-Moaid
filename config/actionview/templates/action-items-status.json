@@ -1,0 +1,110 @@
+{
+  "type": "action-items-status",
+  "description": "Live status of every isMine action item parsed from the meeting reports under actionItemsDir, maintained by the meeting-action-items-followup orchestration. One entry per scheduler run with a stable id per run. Surfaces overdue / aging / new-today / recently-closed / orphaned buckets, plus per-item Mark-done / Dismiss buttons that invoke Shared/scripts/mark-ledger-item.ps1 to mutate the Zakira ledger directly. Pinned when any item is overdue. A companion daily summary lives at the Zakira category `action-items-ledger:daily-summary` for consumption by the future daily-morning-digest composer.",
+  "defaults": {
+    "icon": "list-checks",
+    "severity": "medium",
+    "tags": ["meetings", "action-items", "productivity", "ZTS", "followup"]
+  },
+  "contentTemplate": [
+    {
+      "type": "alert",
+      "label": "Overdue",
+      "required": false,
+      "description": "Use level 'error' when overdue items exist; omit otherwise. Body bullets the top 5 overdue items with priority, action text, and deadline."
+    },
+    {
+      "type": "keyValue",
+      "label": "Run Overview",
+      "required": true,
+      "requiredKeys": ["Total open", "Overdue", "Aging", "New today", "Closed recently", "Orphaned"],
+      "keyAliases": {
+        "totalOpen": "Total open",
+        "openCount": "Total open",
+        "overdue": "Overdue",
+        "overdueCount": "Overdue",
+        "aging": "Aging",
+        "agingCount": "Aging",
+        "new": "New today",
+        "newToday": "New today",
+        "newCount": "New today",
+        "closedRecently": "Closed recently",
+        "recentlyClosed": "Closed recently",
+        "orphaned": "Orphaned",
+        "orphanedCount": "Orphaned"
+      }
+    },
+    {
+      "type": "keyValue",
+      "label": "Open by priority",
+      "required": true,
+      "requiredKeys": ["High", "Medium", "Low"],
+      "keyAliases": {
+        "HIGH": "High",
+        "MEDIUM": "Medium",
+        "LOW": "Low",
+        "highOpen": "High",
+        "mediumOpen": "Medium",
+        "lowOpen": "Low"
+      }
+    },
+    {
+      "type": "section",
+      "title": "Overdue",
+      "titleAliases": ["Past Due", "Late"],
+      "required": false,
+      "description": "Open items whose deadline is in the past. Each item is a nested section titled `<PRIORITY> - <action>` containing a keyValue with Meeting/Priority/Deadline/Source/Status/Report and two CLI actions: Mark done (calls mark-ledger-item.ps1 with -Action completed) and Dismiss (with -Action dismissed). onSuccess=keep so the entry survives single-item button clicks."
+    },
+    {
+      "type": "section",
+      "title": "Aging",
+      "titleAliases": ["Stale"],
+      "required": false,
+      "description": "Open items without a deadline whose age exceeds the per-priority staleDays threshold (HIGH=2d, MEDIUM=5d, LOW=14d by default). Same nested-section + per-item Mark done / Dismiss action shape as Overdue."
+    },
+    {
+      "type": "section",
+      "title": "New today",
+      "titleAliases": ["New This Run"],
+      "required": false,
+      "description": "Items added to the ledger during this scheduler tick because they appeared in a parsed meeting report for the first time."
+    },
+    {
+      "type": "section",
+      "title": "Recently closed",
+      "titleAliases": ["Closed", "Just Closed"],
+      "required": false,
+      "description": "Items closed within the last recentlyClosedHours window (default 48). Default-collapsed. Includes implicit closures (file shows `- [x]`) and manual closures (Mark done / Dismiss). Useful for spotting accidental closures and for a sense of throughput."
+    },
+    {
+      "type": "section",
+      "title": "Orphaned",
+      "titleAliases": ["Removed From Source"],
+      "required": false,
+      "description": "Items the ledger had as open but whose source meeting file was re-processed without them. Auto-closed with closeReason=source-file-no-longer-lists-item. Default-collapsed."
+    },
+    {
+      "type": "markdown",
+      "label": "Run Notes",
+      "required": false,
+      "description": "Free-form footer with the run id, dryRun and forceSurface flags so the entry is self-describing."
+    }
+  ],
+  "expectedActions": [
+    {
+      "label": "Open action-items folder",
+      "style": "primary",
+      "description": "Opens the local Meeting Action Items folder (the configured actionItemsDir)."
+    },
+    {
+      "label": "Open Orchestra: Action Items list in To Do",
+      "style": "default",
+      "description": "Convenience link to the Microsoft To Do list this orchestration syncs into."
+    },
+    {
+      "label": "Dismiss",
+      "style": "default",
+      "description": "Archive this run summary without further action."
+    }
+  ]
+}
