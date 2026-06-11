@@ -1,0 +1,1488 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: inbox-triage
+description: |
+  Cross-source inbox triage. Every 2h (gated by the ZTS profile) it
+  scans recent mail (Inbox + Focused + @-mentions across all folders)
+  and Teams (DMs + allowlisted channels), classifies each message into
+  one of needs-action / wait-reply / fyi / noise / meeting-prep, diffs
+  against the prior triage-state in Zakira, and surfaces a single
+  ActionView entry with a stable id so each run updates the same card
+  instead of stacking notifications.
+
+  Only NEW or escalated items trigger the ActionView update (gate-prompt
+  pattern). New needs-action items aged > staleHoursForTodo are pushed
+  to the "Orchestra: Inbox" Microsoft To Do list. Per-item Mark-handled
+  and Dismiss buttons on the ActionView entry call
+  Shared/scripts/mark-ledger-item.ps1 against the triage-state ledger.
+
+  Out of scope for v1: auto-reply, auto-archive, any mutation in mail
+  or Teams itself. The orchestration is strictly read-only against
+  Microsoft 365.
+
+version: 1.0.0
+tags: ["ZTS", "triage", "mail", "teams", "auto", "track", "inbox"]
+defaultModel: claude-opus-4.7-1m-internal
+
+metadata:
+  owner: Moaid Hathot
+  ownerAlias: moaid
+  domain: productivity
+  sla: best-effort
+  schedule: "every 2h within ZTS profile window"
+  documentation: |
+    Reusable utilities used:
+      - Shared/todo-upsert.yaml          (per-item Microsoft To Do tasks)
+      - ActionView/actionview-submit.yaml(ActionView entry submission)
+      - Shared/scripts/mark-ledger-item.ps1 (per-item ActionView buttons)
+    Zakira categories written:
+      - triage-state                     (per-message records, key = msg:<src>:<hash>)
+      - triage-state:daily-summary       (daily roll-up, key = YYYY-MM-DD + 'latest')
+      - triage-state:last-run            (cursor for self-extending lookback window)
+
+inputs:
+  lookbackHoursDefault:
+    type: string
+    description: |
+      Minimum lookback window in hours. The effective lookback is
+      max(lookbackHoursDefault, time-since-last-completed-run + 30min
+      buffer), capped at 168h (1 week) to avoid runaway backfills on
+      first-run / post-PTO bootstrapping.
+    required: false
+    default: "2"
+  teamsChannelAllowlist:
+    type: string
+    description: |
+      Comma-separated list of Teams channel names or channel ids to
+      scan in addition to DMs. Empty by default - DMs only. Use channel
+      display names like "ZTS Team / General" or canonical Graph channel
+      ids; the LLM resolves either form.
+    required: false
+    default: ""
+  mailFolderAllowlist:
+    type: string
+    description: |
+      Comma-separated list of mail folder names to scan. The orchestration
+      always also queries the Focused inbox and any folder where I am
+      @-mentioned (regardless of this allowlist).
+    required: false
+    default: "Inbox"
+  staleHoursForTodo:
+    type: string
+    description: |
+      Only push a needs-action item to Microsoft To Do once it has been
+      classified needs-action for at least this many hours. Prevents
+      tasks for messages you might handle instantly.
+    required: false
+    default: "24"
+  forceSurface:
+    type: boolean
+    description: |
+      When true, post the ActionView entry even if nothing changed since
+      the prior run.
+    required: false
+    default: "false"
+  pushToTodo:
+    type: boolean
+    description: |
+      When true, sync aging needs-action items to Microsoft To Do.
+      Disable to suppress the To Do side-effect entirely.
+    required: false
+    default: "true"
+  dryRun:
+    type: boolean
+    description: |
+      When true, run discovery + classify + diff but skip all writes
+      (Zakira, To Do, ActionView). Used for safe testing.
+    required: false
+    default: "false"
+
+variables:
+  # Identity is resolved dynamically per run via resolve-me (Shared/
+  # scripts/resolve-user-identity.ps1: az account show + Graph /me,
+  # cached in Zakira for 24h). No hardcoded UPN here.
+  zakiraCategory: triage-state
+  zakiraSummaryCategory: "triage-state:daily-summary"
+  zakiraLastRunCategory: "triage-state:last-run"
+  zakiraIdentityCategory: "user-identity:cache"
+  todoListName: "Orchestra: Inbox"
+  actionViewGroupId: "inbox-triage-{{orchestration.runId}}"
+  # Stable id - re-publishing under the same id updates the existing
+  # ActionView card rather than creating a duplicate.
+  actionViewEntryId: "inbox-triage-latest"
+  sharedScriptsDir: "{{orchestration.sourceDirectory}}/../Shared/scripts"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 10
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 600
+timeoutSeconds: 5400
+
+trigger:
+  type: scheduler
+  enabled: true
+  intervalSeconds: 7200
+
+steps:
+  - name: resolve-me
+    type: Script
+    shell: pwsh
+    scriptFile: "./../Shared/scripts/resolve-user-identity.ps1"
+    arguments:
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraIdentityCategory}}"
+      - "default"
+      - "24"
+      - "false"
+    timeoutSeconds: 60
+
+  - name: compute-lookback-window
+    type: Script
+    shell: pwsh
+    script: |
+      # Self-extending lookback. Reads the triage-state:last-run cursor;
+      # if missing, uses the default. If present, the effective window
+      # covers everything since that timestamp plus a 30-minute buffer
+      # (to absorb clock skew + the partial trailing minute we may have
+      # already processed). Cap at 168h so a long PTO does not trigger
+      # a multi-week backfill that overwhelms classify.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $dbPath            = $args[0]
+      $lastRunCategory   = $args[1]
+      $defaultLookbackHrs= [int]$args[2]
+
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+            $endIdx = $j; break
+          }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      $lastRunIso = $null
+      $cursorOut = & dnx Zakira.Exchange --yes -- --db $dbPath get $lastRunCategory 'last-run' 2>&1
+      if ($LASTEXITCODE -eq 0) {
+        $dataJson = Get-DataJsonFromCliOutput -Lines $cursorOut
+        if ($dataJson) {
+          try {
+            $cursor = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop
+            $lastRunIso = [string]$cursor.completedAt
+          } catch { }
+        }
+      }
+
+      $now = (Get-Date).ToUniversalTime()
+      $effectiveHrs = $defaultLookbackHrs
+      $hoursSinceLast = $null
+
+      if (-not [string]::IsNullOrWhiteSpace($lastRunIso)) {
+        try {
+          $lastRunUtc = [datetimeoffset]::Parse($lastRunIso, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+          $delta = $now - $lastRunUtc
+          $hoursSinceLast = [math]::Round($delta.TotalHours, 2)
+          $candidate = [math]::Ceiling($delta.TotalHours + 0.5)
+          if ($candidate -gt $effectiveHrs) { $effectiveHrs = [int]$candidate }
+        } catch { }
+      }
+
+      if ($effectiveHrs -gt 168) { $effectiveHrs = 168 }
+      if ($effectiveHrs -lt 1)   { $effectiveHrs = 1 }
+
+      $windowStart = $now.AddHours(-$effectiveHrs)
+
+      [pscustomobject]@{
+        nowUtc                   = $now.ToString('o')
+        lastRunAt                = $lastRunIso
+        hoursSinceLastRun        = $hoursSinceLast
+        defaultLookbackHours     = $defaultLookbackHrs
+        effectiveLookbackHours   = $effectiveHrs
+        windowStartUtc           = $windowStart.ToString('o')
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraLastRunCategory}}"
+      - "{{param.lookbackHoursDefault}}"
+    timeoutSeconds: 60
+
+  - name: discover-mail
+    type: Prompt
+    dependsOn: [compute-lookback-window, resolve-me]
+    systemPrompt: |
+      You are a mail discovery agent using ONLY the `mail` MCP. Your job
+      is to enumerate every message a triage process needs to consider,
+      not to interpret or act on any of them.
+
+      Sources to query, each scoped to the lookback window:
+        1. The mail folder allowlist (default 'Inbox'); query unread and
+           read messages received in the window. Caller may pass a
+           comma-separated list.
+        2. The Focused inbox (Outlook's Focused/Other split). Query the
+           Focused side specifically when the MCP exposes that toggle;
+           otherwise rely on the Inbox query and let downstream classify
+           decide.
+        3. Messages where I am @-mentioned anywhere in my mailbox in
+           the lookback window (NOT scoped to a single folder). My
+           identity (uniqueName / displayName / id) is supplied in the
+           user prompt as a JSON object - use uniqueName for the
+           @-mention filter; never guess or hardcode an address.
+
+      For each surfaced message capture ALL of:
+        - id                : Graph message id (REQUIRED, used to dedup
+                              across the three sub-queries)
+        - subject
+        - sender            : { name, address }
+        - receivedDateTime  : ISO-8601 UTC
+        - conversationId    : Graph thread id when exposed
+        - webLink           : canonical Outlook URL (REQUIRED)
+        - importance        : low | normal | high (from Graph)
+        - isRead            : boolean
+        - hasAttachments    : boolean
+        - isMention         : true when I appear in the message's
+                              `mentions` collection
+        - inToRecipients    : true when my UPN/displayName is in TO (vs
+                              only in CC / BCC). Indicates the sender is
+                              addressing me directly.
+        - folderName        : the folder this message lives in
+        - bodyPreview       : the first ~400 characters of the body
+                              (no HTML, no tracking pixels). Truncate
+                              cleanly at a word boundary.
+
+      Rules:
+        1. Dedup BY `id` - the @-mention sub-query will overlap with
+           the folder queries.
+        2. NEVER modify mail state (no marking read, no moving folders,
+           no flagging). This is read-only triage.
+        3. Items without a `webLink` must be dropped.
+        4. Cap at 200 messages total. If the cap is hit, prefer
+           @-mentions, then Focused, then Inbox by recency.
+        5. Output a single JSON object:
+           {
+             "windowStartUtc":  "...",
+             "windowEndUtc":    "...",
+             "sourceQueriesRan":["inbox-folder","focused","mentions"],
+             "messages":        [ {...as above...} ],
+             "messageCount":    <int>,
+             "notes":           [ "any caveats, e.g. throttling" ]
+           }
+    userPrompt: |
+      Lookback window context (from compute-lookback-window):
+      {{compute-lookback-window.output}}
+
+      My identity (use uniqueName for @-mention filter):
+      {{resolve-me.output}}
+
+      Mail folder allowlist: "{{param.mailFolderAllowlist}}"
+
+      Enumerate recent messages via the `mail` MCP per the rules in your
+      system prompt. Return a single deduplicated JSON object.
+    outputHandlerPrompt: |
+      Extract one valid JSON object only with the fields listed in the
+      system prompt. Strip markdown fences, prose, and trailing
+      whitespace. Output only the JSON object.
+    mcps: [mail]
+    retry:
+      maxRetries: 3
+      backoffSeconds: 15
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: discover-teams
+    type: Prompt
+    dependsOn: [compute-lookback-window, resolve-me]
+    systemPrompt: |
+      You are a Teams discovery agent using ONLY the `teams` MCP. Your
+      job is to enumerate every Teams message a triage process needs to
+      consider, scoped to:
+        1. 1:1 chats and group chats (DMs) the signed-in user
+           participates in.
+        2. Channel messages from the channel allowlist (when non-empty)
+           where the signed-in user is @-mentioned.
+
+      My identity (uniqueName / displayName / id) is supplied in the
+      user prompt as a JSON object - use uniqueName for the @-mention
+      filter; never guess or hardcode an address.
+
+      For each surfaced message capture ALL of:
+        - id                  : Graph chatMessage id (REQUIRED, used to
+                                dedup across sub-queries)
+        - source              : "dm" | "channel"
+        - chatOrChannelId     : Graph chat id or channel id
+        - chatOrChannelName   : human-readable name (chat topic,
+                                channel display name, or comma-separated
+                                participant names for unnamed DMs)
+        - author              : { name, address }
+        - createdDateTime     : ISO-8601 UTC
+        - threadRootId        : root message id of the thread when
+                                exposed (parent for replies)
+        - webLink             : canonical Teams deep-link (REQUIRED)
+        - isMention           : true when I appear in the message's
+                                `mentions` collection
+        - bodyPreview         : first ~400 chars of plain-text body
+        - importance          : low | normal | high if exposed
+        - hasAttachments      : boolean
+
+      Rules:
+        1. Dedup BY `id`.
+        2. NEVER modify Teams state (no replies, no reactions, no marks).
+        3. Drop items without a webLink.
+        4. Cap at 150 messages total.
+        5. If the `teamsChannelAllowlist` is empty, return DMs only -
+           do NOT crawl every channel I am a member of.
+        6. Output a single JSON object:
+           {
+             "windowStartUtc":  "...",
+             "windowEndUtc":    "...",
+             "sourceQueriesRan":["dms","channels-mentions"],
+             "messages":        [ {...as above...} ],
+             "messageCount":    <int>,
+             "notes":           [ "..." ]
+           }
+    userPrompt: |
+      Lookback window context (from compute-lookback-window):
+      {{compute-lookback-window.output}}
+
+      My identity (use uniqueName for @-mention filter):
+      {{resolve-me.output}}
+
+      Teams channel allowlist (comma-separated names/ids; empty = DMs
+      only): "{{param.teamsChannelAllowlist}}"
+
+      Enumerate recent Teams messages via the `teams` MCP per the rules
+      in your system prompt. Return a single deduplicated JSON object.
+    outputHandlerPrompt: |
+      Extract one valid JSON object only with the fields listed in the
+      system prompt. Strip markdown fences, prose, and trailing
+      whitespace. Output only the JSON object.
+    mcps: [teams]
+    retry:
+      maxRetries: 3
+      backoffSeconds: 15
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: merge-and-dedupe
+    type: Script
+    dependsOn: [discover-mail, discover-teams]
+    shell: pwsh
+    script: |
+      # Combine mail + teams discovery outputs into one normalized array.
+      # Per-message zakiraKey = "msg:<source>:<sha1-first16-of-graph-id>"
+      # so the key is bounded-length and shell-safe even when the Graph
+      # id contains slashes / equals signs / pluses (which Graph ids
+      # frequently do).
+      $ErrorActionPreference = 'Stop'
+
+      $mailJson  = $args[0]
+      $teamsJson = $args[1]
+
+      function Get-IdHash {
+        param([string]$Source, [string]$Id)
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes("$Source|$Id")
+        $sha = [System.Security.Cryptography.SHA1]::Create()
+        try { $hashBytes = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
+        $hex = ($hashBytes | ForEach-Object { $_.ToString('x2') }) -join ''
+        return $hex.Substring(0, 16)
+      }
+
+      $merged = New-Object System.Collections.Generic.List[object]
+      $seen   = New-Object System.Collections.Generic.HashSet[string]
+      $errors = New-Object System.Collections.Generic.List[string]
+
+      function Add-Messages {
+        param(
+          [string]$Json,
+          [string]$Source
+        )
+        if ([string]::IsNullOrWhiteSpace($Json)) { return }
+        try {
+          $payload = ConvertFrom-Json -InputObject $Json -Depth 50 -ErrorAction Stop
+        } catch {
+          [void]$script:errors.Add("$($Source): failed to parse discovery JSON: $($_.Exception.Message)")
+          return
+        }
+        if ($null -eq $payload.messages) { return }
+        foreach ($msg in @($payload.messages)) {
+          if ($null -eq $msg) { continue }
+          $id = [string]$msg.id
+          if ([string]::IsNullOrWhiteSpace($id)) { continue }
+          $idHash = Get-IdHash -Source $Source -Id $id
+          $zakiraKey = "msg:${Source}:${idHash}"
+          if (-not $script:seen.Add($zakiraKey)) { continue }
+
+          $enriched = [ordered]@{}
+          foreach ($p in $msg.PSObject.Properties) { $enriched[$p.Name] = $p.Value }
+          $enriched['source']       = $Source
+          $enriched['idHash']       = $idHash
+          $enriched['zakiraKey']    = $zakiraKey
+          [void]$script:merged.Add([pscustomobject]$enriched)
+        }
+      }
+
+      Add-Messages -Json $mailJson  -Source 'mail'
+      Add-Messages -Json $teamsJson -Source 'teams'
+
+      [pscustomobject]@{
+        mergedAt     = (Get-Date).ToUniversalTime().ToString('o')
+        messageCount = $merged.Count
+        messages     = $merged.ToArray()
+        sourceErrors = $errors.ToArray()
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{discover-mail.output}}"
+      - "{{discover-teams.output}}"
+    timeoutSeconds: 60
+
+  - name: classify
+    type: Prompt
+    dependsOn: [merge-and-dedupe, resolve-me]
+    systemPrompt: |
+      You are a triage classifier. You receive a JSON array of recent
+      mail + Teams messages. For EACH message you assign exactly one
+      category from this fixed set:
+
+      - needs-action  : The sender expects a response or an action from
+                        me. Signals: direct question to me; @-mention
+                        with an ask; I am in TO (not CC); explicit
+                        request ("can you...", "please review",
+                        "approve?", "any update?", "ping"); calendar
+                        invite I have not responded to; approval gate;
+                        review request.
+      - wait-reply    : A thread I sent into that has now received a
+                        reply requiring my follow-up. Use sparingly -
+                        most "Re:" chains are needs-action; this bucket
+                        is for cases where the only reasonable next step
+                        is me sending a continued response.
+      - meeting-prep  : Calendar invite, agenda doc, pre-read material,
+                        or scheduling negotiation tied to an upcoming
+                        meeting. Distinct from needs-action even when
+                        an RSVP is implicit.
+      - fyi           : Informational only. I am usually in CC or BCC,
+                        or on a distribution list. No action expected.
+      - noise         : Automated notifications (build/deploy alerts I
+                        am not on-call for, monitoring digest, generic
+                        newsletter, marketing, bounceback, calendar
+                        ICS attachments without context).
+
+      For EACH message also emit:
+        - confidence  : float in [0.0, 1.0]
+        - rationale   : ONE concise sentence justifying the category
+        - tags        : optional array of short flags (e.g.
+                        ["calendar-invite","approval","escalation","cc-only"]).
+
+      Rules:
+        1. Be conservative with needs-action - prefer fyi when in
+           doubt and confidence would be < 0.6 for needs-action.
+        2. Apply the same rules to mail and Teams uniformly. A Teams
+           DM from a person is almost always needs-action unless it is
+           clearly a status broadcast.
+        3. Calendar invites without an explicit ask but with my
+           attendance expected are meeting-prep, not needs-action.
+        4. Do NOT call any tools. Do NOT use any MCPs.
+        5. Output ONLY a JSON object with this shape:
+
+           {
+             "classifiedAt":  "<UTC iso>",
+             "items": [
+               {
+                 "zakiraKey":  "msg:...",
+                 "id":         "...",
+                 "source":     "mail|teams",
+                 "subject":    "...",
+                 "category":   "needs-action|wait-reply|fyi|noise|meeting-prep",
+                 "confidence": <float>,
+                 "rationale":  "...",
+                 "tags":       ["..."]
+               }
+             ],
+             "counts": {
+               "needs-action":  <int>,
+               "wait-reply":    <int>,
+               "fyi":           <int>,
+               "noise":         <int>,
+               "meeting-prep":  <int>
+             }
+           }
+
+           One entry per supplied message - do not drop any.
+    userPrompt: |
+      Merged messages to classify:
+      {{merge-and-dedupe.output}}
+
+      My identity (use to distinguish "I'm in TO" from "I'm in CC"):
+      {{resolve-me.output}}
+
+      Classify every message and emit the JSON object specified in the
+      system prompt. Output ONLY the JSON object.
+    outputHandlerPrompt: |
+      Output exactly one valid JSON object with the fields classifiedAt,
+      items, and counts as specified. Strip markdown fences, prose, and
+      trailing whitespace.
+
+  - name: load-prior-state
+    type: Script
+    dependsOn: [merge-and-dedupe]
+    shell: pwsh
+    script: |
+      # Loads existing triage-state records for the message ids in the
+      # current window. We do not call `list` here because the ledger
+      # can grow large (thousands of records); a per-key `get` against
+      # only the current keys is cheaper.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $mergedJson = $args[0]
+      $dbPath     = $args[1]
+      $category   = $args[2]
+
+      $merged = ConvertFrom-Json -InputObject $mergedJson -Depth 50 -ErrorAction Stop
+
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+            $endIdx = $j; break
+          }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      $prior = @{}
+      foreach ($msg in @($merged.messages)) {
+        if ($null -eq $msg) { continue }
+        $key = [string]$msg.zakiraKey
+        if ([string]::IsNullOrWhiteSpace($key)) { continue }
+        $out = & dnx Zakira.Exchange --yes -- --db $dbPath get $category $key 2>&1
+        if ($LASTEXITCODE -ne 0) { continue }
+        $dataJson = Get-DataJsonFromCliOutput -Lines $out
+        if (-not $dataJson) { continue }
+        try {
+          $data = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop
+          $prior[$key] = $data
+        } catch { }
+      }
+
+      # Emit a JSON object that's easy to consume from the next script.
+      $entries = New-Object System.Collections.Generic.List[object]
+      foreach ($k in $prior.Keys) {
+        $entries.Add([pscustomobject]@{
+          zakiraKey = $k
+          data      = $prior[$k]
+        }) | Out-Null
+      }
+
+      [pscustomobject]@{
+        loadedAt = (Get-Date).ToUniversalTime().ToString('o')
+        category = $category
+        count    = $entries.Count
+        records  = $entries.ToArray()
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{merge-and-dedupe.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraCategory}}"
+    timeoutSeconds: 600
+
+  - name: diff-and-plan-upserts
+    type: Script
+    dependsOn: [merge-and-dedupe, classify, load-prior-state]
+    shell: pwsh
+    script: |
+      # Joins merged messages with their classification and existing
+      # ledger state. Produces the bulk upsert plan plus a change-rollup
+      # that the gate uses to decide whether the run is noteworthy.
+      #
+      # Status semantics:
+      #   active     - we have not seen the user mark it handled
+      #   resolved   - mark-ledger-item.ps1 set status=completed
+      #   dismissed  - mark-ledger-item.ps1 set status=dismissed
+      #   archived   - mark-ledger-item.ps1 set status=archived
+      #
+      # Manual-closed entries are sticky: a re-classified item that the
+      # user already resolved stays resolved (we just refresh lastSeenAt).
+      $ErrorActionPreference = 'Stop'
+
+      $mergedJson    = $args[0]
+      $classifyJson  = $args[1]
+      $priorJson     = $args[2]
+      $runId         = $args[3]
+
+      $merged   = ConvertFrom-Json -InputObject $mergedJson  -Depth 50 -ErrorAction Stop
+      $classify = ConvertFrom-Json -InputObject $classifyJson -Depth 50 -ErrorAction Stop
+      $prior    = ConvertFrom-Json -InputObject $priorJson    -Depth 50 -ErrorAction Stop
+
+      $now = (Get-Date).ToUniversalTime()
+      $nowIso = $now.ToString('o')
+
+      # Maps for joining.
+      $classMap = @{}
+      foreach ($c in @($classify.items)) {
+        if ($null -eq $c) { continue }
+        $classMap[[string]$c.zakiraKey] = $c
+      }
+      $priorMap = @{}
+      foreach ($p in @($prior.records)) {
+        if ($null -eq $p) { continue }
+        $priorMap[[string]$p.zakiraKey] = $p.data
+      }
+
+      $upserts = New-Object System.Collections.Generic.List[object]
+      $rollup = [ordered]@{
+        new = 0; escalated = 0; reclassified = 0; unchanged = 0;
+        manualClosed = 0
+      }
+
+      foreach ($msg in @($merged.messages)) {
+        if ($null -eq $msg) { continue }
+        $key = [string]$msg.zakiraKey
+        $cls = if ($classMap.ContainsKey($key)) { $classMap[$key] } else { $null }
+        $priorData = if ($priorMap.ContainsKey($key)) { $priorMap[$key] } else { $null }
+        $isNew = ($null -eq $priorData)
+
+        # Pull through fields from the message + classifier.
+        $newCategory = if ($cls) { [string]$cls.category } else { 'fyi' }
+        $newConfidence = if ($cls) { [double]($cls.confidence -as [double]) } else { 0.0 }
+        $newRationale = if ($cls) { [string]$cls.rationale } else { '' }
+        $newTags = @()
+        if ($cls -and $cls.PSObject.Properties['tags']) {
+          $newTags = @($cls.tags | ForEach-Object { [string]$_ })
+        }
+
+        # Manual-closed sticky path: preserve status, just refresh lastSeenAt.
+        if (-not $isNew -and $priorData.PSObject.Properties['status']) {
+          $priorStatus = [string]$priorData.status
+          if ($priorStatus -eq 'resolved' -or $priorStatus -eq 'dismissed' -or $priorStatus -eq 'archived') {
+            $rollup['manualClosed'] += 1
+            $refresh = [ordered]@{}
+            foreach ($p in $priorData.PSObject.Properties) { $refresh[$p.Name] = $p.Value }
+            $refresh['lastSeenAt']    = $nowIso
+            # Update classification metadata even on sticky entries so
+            # the historical record reflects the latest reasoning.
+            $refresh['category']      = $newCategory
+            $refresh['confidence']    = $newConfidence
+            $refresh['rationale']     = $newRationale
+            $refresh['tags']          = $newTags
+            $upserts.Add([pscustomobject]@{
+              op        = 'edit'
+              zakiraKey = $key
+              data      = [pscustomobject]$refresh
+              classify  = 'manual-closed'
+            }) | Out-Null
+            continue
+          }
+        }
+
+        # Compose the data payload.
+        $createdAt = if ($isNew) { $nowIso } elseif ($priorData.PSObject.Properties['firstSeenAt']) { [string]$priorData.firstSeenAt } else { $nowIso }
+        $newAt = if ($isNew) { $nowIso } elseif ($priorData.PSObject.Properties['firstClassifiedAt']) { [string]$priorData.firstClassifiedAt } else { $nowIso }
+        $priorCategory = if ($priorData -and $priorData.PSObject.Properties['category']) { [string]$priorData.category } else { $null }
+
+        $bodyPreview = if ($msg.PSObject.Properties['bodyPreview']) { [string]$msg.bodyPreview } else { '' }
+        if ($bodyPreview.Length -gt 1000) { $bodyPreview = $bodyPreview.Substring(0, 1000) + '...' }
+
+        $data = [ordered]@{
+          zakiraKey         = $key
+          messageId         = [string]$msg.id
+          source            = [string]$msg.source
+          subject           = [string]$msg.subject
+          sender            = $msg.sender
+          author            = $msg.author
+          receivedAt        = [string]$msg.receivedDateTime
+          createdDateTime   = [string]$msg.createdDateTime
+          conversationId    = [string]$msg.conversationId
+          threadRootId      = [string]$msg.threadRootId
+          chatOrChannelId   = [string]$msg.chatOrChannelId
+          chatOrChannelName = [string]$msg.chatOrChannelName
+          webLink           = [string]$msg.webLink
+          importance        = [string]$msg.importance
+          isMention         = [bool]($msg.isMention -eq $true)
+          inToRecipients    = [bool]($msg.inToRecipients -eq $true)
+          hasAttachments    = [bool]($msg.hasAttachments -eq $true)
+          folderName        = [string]$msg.folderName
+          bodyPreview       = $bodyPreview
+          category          = $newCategory
+          confidence        = $newConfidence
+          rationale         = $newRationale
+          tags              = $newTags
+          status            = 'active'
+          firstSeenAt       = $createdAt
+          firstClassifiedAt = $newAt
+          lastSeenAt        = $nowIso
+          closedAt          = $null
+          closeReason       = $null
+          runIdLastTouched  = $runId
+        }
+        if (-not $isNew -and $null -ne $priorCategory -and $priorCategory -ne $newCategory) {
+          $data['priorCategory'] = $priorCategory
+          if ($priorCategory -in @('fyi','noise') -and $newCategory -in @('needs-action','wait-reply','meeting-prep')) {
+            $data['escalated'] = $true
+          }
+        }
+
+        $classifyTag = if ($isNew) { 'new' }
+                       elseif (-not $isNew -and $data.PSObject.Properties['escalated'] -and $data['escalated'] -eq $true) { 'escalated' }
+                       elseif ($null -ne $priorCategory -and $priorCategory -ne $newCategory) { 'reclassified' }
+                       else { 'unchanged' }
+        $rollup[$classifyTag] += 1
+
+        $upserts.Add([pscustomobject]@{
+          op        = if ($isNew) { 'create' } else { 'edit' }
+          zakiraKey = $key
+          data      = [pscustomobject]$data
+          classify  = $classifyTag
+        }) | Out-Null
+      }
+
+      [pscustomobject]@{
+        diffedAt    = $nowIso
+        runId       = $runId
+        upsertCount = $upserts.Count
+        upserts     = $upserts.ToArray()
+        rollup      = $rollup
+        countsByCategory = $classify.counts
+      } | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{merge-and-dedupe.output}}"
+      - "{{classify.output}}"
+      - "{{load-prior-state.output}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 120
+
+  - name: gate-noteworthy-activity
+    type: Script
+    dependsOn: [diff-and-plan-upserts]
+    shell: pwsh
+    script: |
+      # ActionView submission is noteworthy when ANY of:
+      #   - new needs-action items appeared
+      #   - any item was escalated into needs-action / wait-reply
+      #   - meeting-prep items appeared
+      #   - forceSurface is true
+      # AND dryRun is false. Pure fyi / noise volume by itself is NOT
+      # noteworthy. dryRun=true forces noteworthy=false so the
+      # ActionView submission branch is skipped entirely.
+      $ErrorActionPreference = 'Stop'
+
+      $diffJson  = $args[0]
+      $forceRaw  = $args[1]
+      $dryRunRaw = $args[2]
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $forceBool  = [string]::Equals($forceRaw.Trim(),  'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $dryRunBool = [string]::Equals($dryRunRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      $newNeedsAction = 0
+      $newMeetingPrep = 0
+      $escalations = 0
+      foreach ($u in @($diff.upserts)) {
+        if ($null -eq $u) { continue }
+        $cat = [string]$u.data.category
+        $cls = [string]$u.classify
+        if ($cls -eq 'new') {
+          if ($cat -eq 'needs-action') { $newNeedsAction += 1 }
+          if ($cat -eq 'meeting-prep') { $newMeetingPrep += 1 }
+        } elseif ($cls -eq 'escalated') {
+          $escalations += 1
+        }
+      }
+
+      $noteworthy = (-not $dryRunBool) -and ($forceBool -or ($newNeedsAction -gt 0) -or ($escalations -gt 0) -or ($newMeetingPrep -gt 0))
+
+      $reason = if ($dryRunBool) {
+        "dry-run: ActionView submission suppressed (newNeedsAction=$newNeedsAction, escalations=$escalations, newMeetingPrep=$newMeetingPrep would otherwise surface)"
+      } elseif ($noteworthy) {
+        "noteworthy: newNeedsAction=$newNeedsAction, escalations=$escalations, newMeetingPrep=$newMeetingPrep, force=$forceBool"
+      } else {
+        "no-op: newNeedsAction=0, escalations=0, newMeetingPrep=0, force=false"
+      }
+
+      [pscustomobject]@{
+        noteworthy      = $noteworthy
+        forceSurface    = $forceBool
+        dryRun          = $dryRunBool
+        newNeedsAction  = $newNeedsAction
+        newMeetingPrep  = $newMeetingPrep
+        escalations     = $escalations
+        reason          = $reason
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{diff-and-plan-upserts.output}}"
+      - "{{param.forceSurface}}"
+      - "{{param.dryRun}}"
+    timeoutSeconds: 30
+
+  - name: noteworthy-gate-prompt
+    type: Prompt
+    dependsOn: [gate-noteworthy-activity]
+    systemPrompt: |
+      You read a JSON object that contains a `noteworthy` boolean. Your
+      ONLY job is to gate downstream ActionView submission.
+
+      Rules:
+      1. If `noteworthy` is exactly `true`, output the JSON object
+         verbatim with no prose, fences, or alterations.
+      2. If `noteworthy` is `false`, call the engine tool
+         `orchestra_set_status` with status `no_action` and a reason
+         that includes the supplied `reason` field. After calling the
+         tool, output the JSON object verbatim.
+      3. Do not call any other tools.
+      4. Do not add prose, markdown fences, or commentary.
+    userPrompt: |
+      Gate decision input:
+      {{gate-noteworthy-activity.output}}
+    outputHandlerPrompt: |
+      Output exactly one JSON object - the gate decision verbatim.
+      Strip any markdown fences, prose, or trailing whitespace.
+
+  - name: update-zakira
+    type: Script
+    dependsOn: [diff-and-plan-upserts]
+    shell: pwsh
+    script: |
+      # Bulk persist the upsert plan to Zakira. Also stamps a new
+      # last-run cursor so the next run extends the lookback window
+      # automatically (even if this run skipped ActionView submission).
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $diffJson      = $args[0]
+      $dbPath        = $args[1]
+      $category      = $args[2]
+      $lastRunCat    = $args[3]
+      $dryRun        = $args[4]
+      $runId         = $args[5]
+
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      if ($dryRunBool) {
+        [pscustomobject]@{ status='dry-run-skipped'; created=0; updated=0 } | ConvertTo-Json -Compress
+        return
+      }
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+
+      $created = 0; $updated = 0
+      $errors = New-Object System.Collections.Generic.List[string]
+
+      foreach ($u in @($diff.upserts)) {
+        if ($null -eq $u) { continue }
+        $key = [string]$u.zakiraKey
+        $payload = $u.data | ConvertTo-Json -Depth 50 -Compress
+        $reason = "$($u.classify); runId=$runId"
+        $author = "inbox-triage:$runId"
+
+        if ($u.op -eq 'create') {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $key `
+            --data $payload --author $author --reason $reason 2>&1
+          if ($LASTEXITCODE -eq 0) { $created += 1 }
+          else {
+            $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $key `
+              --data $payload --author $author --reason $reason 2>&1
+            if ($LASTEXITCODE -eq 0) { $updated += 1 }
+            else { $errors.Add("upsert ${key}: $($out -join ' ')") | Out-Null }
+          }
+        } else {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $key `
+            --data $payload --author $author --reason $reason 2>&1
+          if ($LASTEXITCODE -eq 0) { $updated += 1 }
+          else { $errors.Add("edit ${key}: $($out -join ' ')") | Out-Null }
+        }
+      }
+
+      # Stamp the last-run cursor so the next run's lookback extends
+      # from here automatically.
+      $cursorPayload = @{
+        completedAt = (Get-Date).ToUniversalTime().ToString('o')
+        runId       = $runId
+        upserts     = $created + $updated
+      } | ConvertTo-Json -Compress
+      $cursorOut = & dnx Zakira.Exchange --yes -- --db $dbPath edit $lastRunCat 'last-run' `
+        --data $cursorPayload --author $author --reason 'last-run cursor refresh' 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        $cursorOut = & dnx Zakira.Exchange --yes -- --db $dbPath create $lastRunCat 'last-run' `
+          --data $cursorPayload --author $author --reason 'last-run cursor seed' 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          $errors.Add("cursor write: $($cursorOut -join ' ')") | Out-Null
+        }
+      }
+
+      [pscustomobject]@{
+        status   = 'persisted'
+        created  = $created
+        updated  = $updated
+        errors   = $errors.ToArray()
+      } | ConvertTo-Json -Depth 10 -Compress
+    arguments:
+      - "{{diff-and-plan-upserts.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraCategory}}"
+      - "{{vars.zakiraLastRunCategory}}"
+      - "{{param.dryRun}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 900
+
+  - name: build-todo-payloads
+    type: Script
+    dependsOn: [diff-and-plan-upserts]
+    shell: pwsh
+    script: |
+      # Push to To Do only items that:
+      #   - have category needs-action
+      #   - have status active
+      #   - have been seen for >= staleHoursForTodo
+      # The first time a message is classified needs-action it does NOT
+      # immediately get a task; the user has a grace window to handle it
+      # inline. After the window expires it becomes a task.
+      $ErrorActionPreference = 'Stop'
+
+      $diffJson          = $args[0]
+      $listName          = $args[1]
+      $pushEnabledRaw    = $args[2]
+      $dryRunRaw         = $args[3]
+      $staleHoursForTodo = [int]$args[4]
+
+      $pushEnabled = [string]::Equals($pushEnabledRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $dryRunBool  = [string]::Equals($dryRunRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      if (-not $pushEnabled -or $dryRunBool) {
+        [pscustomobject]@{ items = @() } | ConvertTo-Json -Compress
+        return
+      }
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $now = (Get-Date).ToUniversalTime()
+      $cutoff = $now.AddHours(-$staleHoursForTodo)
+
+      $items = New-Object System.Collections.Generic.List[object]
+      foreach ($u in @($diff.upserts)) {
+        if ($null -eq $u) { continue }
+        $d = $u.data
+        if ([string]$d.status -ne 'active') { continue }
+        if ([string]$d.category -ne 'needs-action') { continue }
+
+        $firstSeenAt = [string]$d.firstSeenAt
+        if ([string]::IsNullOrWhiteSpace($firstSeenAt)) { continue }
+        try {
+          $firstSeenUtc = [datetimeoffset]::Parse($firstSeenAt, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+        } catch { continue }
+        if ($firstSeenUtc -gt $cutoff) { continue }
+
+        # Title - keep the source visible at a glance.
+        $sourceTag = if ([string]$d.source -eq 'mail') { '[Mail]' } else { '[Teams]' }
+        $subj = [string]$d.subject
+        if ([string]::IsNullOrWhiteSpace($subj) -and [string]$d.source -eq 'teams') {
+          $subj = "DM/channel: $([string]$d.chatOrChannelName)"
+        }
+        if ($subj.Length -gt 120) { $subj = $subj.Substring(0, 117) + '...' }
+        $title = "$sourceTag $subj"
+
+        $senderText = ''
+        if ($d.sender -and $d.sender.name)  { $senderText = [string]$d.sender.name }
+        elseif ($d.author -and $d.author.name) { $senderText = [string]$d.author.name }
+
+        $bodyLines = @()
+        if (-not [string]::IsNullOrWhiteSpace($senderText)) { $bodyLines += "From: $senderText" }
+        if (-not [string]::IsNullOrWhiteSpace([string]$d.receivedAt)) { $bodyLines += "Received: $($d.receivedAt)" }
+        if (-not [string]::IsNullOrWhiteSpace([string]$d.rationale)) { $bodyLines += "Why: $($d.rationale)" }
+        if (-not [string]::IsNullOrWhiteSpace([string]$d.bodyPreview)) {
+          $bodyLines += ''
+          $bodyLines += [string]$d.bodyPreview
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$d.webLink)) {
+          $bodyLines += ''
+          $bodyLines += "Open: $($d.webLink)"
+        }
+        $body = ($bodyLines -join "`n").TrimEnd()
+
+        $importance = if ([string]$d.importance -eq 'high') { 'high' }
+                      elseif ($d.isMention -eq $true) { 'high' }
+                      elseif ($d.inToRecipients -eq $true) { 'normal' }
+                      else { 'normal' }
+
+        $items.Add([pscustomobject]@{
+          externalId = $d.zakiraKey
+          title      = $title
+          body       = $body
+          dueDate    = ''
+          importance = $importance
+          status     = 'notStarted'
+          listName   = $listName
+        }) | Out-Null
+      }
+
+      [pscustomobject]@{ items = $items.ToArray(); count = $items.Count } | ConvertTo-Json -Depth 20 -Compress
+    arguments:
+      - "{{diff-and-plan-upserts.output}}"
+      - "{{vars.todoListName}}"
+      - "{{param.pushToTodo}}"
+      - "{{param.dryRun}}"
+      - "{{param.staleHoursForTodo}}"
+    timeoutSeconds: 60
+
+  - name: push-to-todo
+    type: Orchestration
+    dependsOn: [build-todo-payloads]
+    orchestration: todo-upsert
+    forEach: "{{build-todo-payloads.output}}"
+    forEachPath: items
+    itemParameter: todoItem
+    parameters:
+      listName: "{{vars.todoListName}}"
+      externalId: ""
+      title: ""
+      body: ""
+      dueDate: ""
+      importance: normal
+      status: notStarted
+    inputHandlerPrompt: |
+      Return ONLY a valid JSON object mapping todo-upsert parameter
+      names (listName, externalId, title, body, dueDate, importance,
+      status) to string values pulled from the supplied item. Preserve
+      listName, externalId, importance, status, and dueDate verbatim.
+      The body must be a single plain-text string with newlines escaped
+      for valid JSON.
+    mode: sync
+    maxConcurrency: 3
+    continueOnItemFailure: true
+    timeoutSeconds: 1800
+
+  - name: build-actionview-entry
+    type: Script
+    dependsOn: [diff-and-plan-upserts, noteworthy-gate-prompt, update-zakira, push-to-todo]
+    shell: pwsh
+    script: |
+      # Deterministic ActionView entry. Uses a stable entry id so each
+      # run updates the same card instead of stacking new ones. Per-item
+      # Mark-handled / Dismiss buttons call mark-ledger-item.ps1 with
+      # the resolved absolute path.
+      $ErrorActionPreference = 'Stop'
+
+      $diffJson         = $args[0]
+      $sharedScriptsDir = $args[1]
+      $dbPath           = $args[2]
+      $category         = $args[3]
+      $entryId          = $args[4]
+      $groupId          = $args[5]
+      $dryRun           = $args[6]
+      $forceSurface     = $args[7]
+      $runId            = $args[8]
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $forceBool = [string]::Equals($forceSurface.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      $resolvedSharedDir = [System.IO.Path]::GetFullPath($sharedScriptsDir)
+      $markScriptPath = Join-Path $resolvedSharedDir 'mark-ledger-item.ps1'
+
+      $upserts = @($diff.upserts)
+      $active  = $upserts | Where-Object { [string]$_.data.status -eq 'active' } | ForEach-Object { $_.data }
+      $byCat = @{
+        'needs-action' = @($active | Where-Object { [string]$_.category -eq 'needs-action' })
+        'wait-reply'   = @($active | Where-Object { [string]$_.category -eq 'wait-reply'   })
+        'meeting-prep' = @($active | Where-Object { [string]$_.category -eq 'meeting-prep' })
+        'fyi'          = @($active | Where-Object { [string]$_.category -eq 'fyi'          })
+        'noise'        = @($active | Where-Object { [string]$_.category -eq 'noise'        })
+      }
+
+      $mentions = @($active | Where-Object { $_.isMention -eq $true })
+
+      $newCount = @($upserts | Where-Object { $_.classify -eq 'new' }).Count
+      $escalatedCount = @($upserts | Where-Object { $_.classify -eq 'escalated' }).Count
+      $manualClosedCount = @($upserts | Where-Object { $_.classify -eq 'manual-closed' }).Count
+      $totalActive = $active.Count
+
+      $severity = if ($byCat['needs-action'].Count -gt 0) { 'high' } elseif ($byCat['meeting-prep'].Count -gt 0) { 'medium' } else { 'low' }
+      $pinned   = ($byCat['needs-action'].Count -gt 0)
+      $title    = "Inbox: $($byCat['needs-action'].Count) needs action, $($mentions.Count) mention(s), $totalActive active"
+      $subtitle = "$newCount new since last run, $escalatedCount escalated, $manualClosedCount handled"
+
+      function New-ItemActions {
+        param([string]$ItemKey)
+        return @(
+          [ordered]@{
+            label = 'Mark handled'
+            style = 'success'
+            onSuccess = 'keep'
+            command = [ordered]@{
+              type    = 'cli'
+              program = 'pwsh'
+              args    = @(
+                '-NoProfile', '-NoLogo', '-File', $markScriptPath,
+                '-Category', $category,
+                '-Key',      $ItemKey,
+                '-Action',   'completed',
+                '-DatabasePath', $dbPath
+              )
+            }
+          },
+          [ordered]@{
+            label = 'Dismiss'
+            style = 'default'
+            onSuccess = 'keep'
+            command = [ordered]@{
+              type    = 'cli'
+              program = 'pwsh'
+              args    = @(
+                '-NoProfile', '-NoLogo', '-File', $markScriptPath,
+                '-Category', $category,
+                '-Key',      $ItemKey,
+                '-Action',   'dismissed',
+                '-DatabasePath', $dbPath
+              )
+            }
+          }
+        )
+      }
+
+      function New-MessageSection {
+        param([pscustomobject]$Data)
+        $sourceTag = if ([string]$Data.source -eq 'mail') { 'Mail' } else { 'Teams' }
+        $subj = [string]$Data.subject
+        if ([string]::IsNullOrWhiteSpace($subj)) { $subj = [string]$Data.chatOrChannelName }
+        if ([string]::IsNullOrWhiteSpace($subj)) { $subj = '(no subject)' }
+        $titleText = "[$sourceTag] $subj"
+        if ($titleText.Length -gt 140) { $titleText = $titleText.Substring(0, 137) + '...' }
+
+        $senderText = ''
+        if ($Data.sender -and $Data.sender.name) { $senderText = [string]$Data.sender.name }
+        elseif ($Data.author -and $Data.author.name) { $senderText = [string]$Data.author.name }
+
+        $kvPairs = [ordered]@{}
+        if (-not [string]::IsNullOrWhiteSpace($senderText)) { $kvPairs['From'] = $senderText }
+        $when = if (-not [string]::IsNullOrWhiteSpace([string]$Data.receivedAt)) { [string]$Data.receivedAt } else { [string]$Data.createdDateTime }
+        if (-not [string]::IsNullOrWhiteSpace($when)) { $kvPairs['When'] = $when }
+        if ([string]$Data.source -eq 'teams' -and -not [string]::IsNullOrWhiteSpace([string]$Data.chatOrChannelName)) {
+          $kvPairs['Channel/Chat'] = [string]$Data.chatOrChannelName
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$Data.folderName)) { $kvPairs['Folder'] = [string]$Data.folderName }
+        $flags = @()
+        if ($Data.isMention -eq $true) { $flags += '@mention' }
+        if ($Data.inToRecipients -eq $true) { $flags += 'in TO' }
+        if ([string]$Data.importance -eq 'high') { $flags += 'high importance' }
+        if ($Data.hasAttachments -eq $true) { $flags += 'has attachments' }
+        if ($flags.Count -gt 0) { $kvPairs['Flags'] = ($flags -join ', ') }
+        if (-not [string]::IsNullOrWhiteSpace([string]$Data.rationale)) { $kvPairs['Why'] = [string]$Data.rationale }
+        if (-not [string]::IsNullOrWhiteSpace([string]$Data.webLink)) {
+          $kvPairs['Open'] = [ordered]@{ type='link'; url=[string]$Data.webLink; label="open in $sourceTag" }
+        }
+
+        $content = @( [ordered]@{ type='keyValue'; pairs=$kvPairs } )
+        if (-not [string]::IsNullOrWhiteSpace([string]$Data.bodyPreview)) {
+          $content += [ordered]@{ type='markdown'; body="> $([string]$Data.bodyPreview)" }
+        }
+
+        return [ordered]@{
+          type    = 'section'
+          title   = $titleText
+          defaultCollapsed = $false
+          content = $content
+          actions = New-ItemActions -ItemKey ([string]$Data.zakiraKey)
+        }
+      }
+
+      function New-MessageListSection {
+        param([string]$Heading, [object[]]$Items, [bool]$Collapsed = $false)
+        if ($Items.Count -eq 0) { return $null }
+        $cap = 15
+        $shown = $Items | Sort-Object -Property {
+          # Surface mentions first, then high-importance, then most recent.
+          $score = 0
+          if ($_.isMention -eq $true) { $score -= 100 }
+          if ([string]$_.importance -eq 'high') { $score -= 50 }
+          $when = [string]$_.receivedAt
+          if ([string]::IsNullOrWhiteSpace($when)) { $when = [string]$_.createdDateTime }
+          try { $score -= [int]([datetimeoffset]::Parse($when, [System.Globalization.CultureInfo]::InvariantCulture).ToUnixTimeSeconds() / 60) } catch { }
+          $score
+        } | Select-Object -First $cap
+        $nestedContent = @()
+        foreach ($d in $shown) { $nestedContent += New-MessageSection -Data $d }
+        if ($Items.Count -gt $cap) {
+          $more = $Items.Count - $cap
+          $nestedContent += [ordered]@{ type='markdown'; body="_Plus $more more in this bucket not shown._" }
+        }
+        return [ordered]@{
+          type    = 'section'
+          title   = "$Heading ($($Items.Count))"
+          defaultCollapsed = $Collapsed
+          content = $nestedContent
+        }
+      }
+
+      $content = New-Object System.Collections.Generic.List[object]
+
+      if ($byCat['needs-action'].Count -gt 0) {
+        $alertBody = "**$($byCat['needs-action'].Count) item(s) need your attention:**`n`n"
+        foreach ($d in ($byCat['needs-action'] | Select-Object -First 5)) {
+          $sourceTag = if ([string]$d.source -eq 'mail') { 'Mail' } else { 'Teams' }
+          $subj = if (-not [string]::IsNullOrWhiteSpace([string]$d.subject)) { [string]$d.subject } else { [string]$d.chatOrChannelName }
+          $alertBody += "- **[$sourceTag]** $subj"
+          if (-not [string]::IsNullOrWhiteSpace([string]$d.rationale)) { $alertBody += " - $([string]$d.rationale)" }
+          $alertBody += "`n"
+        }
+        if ($byCat['needs-action'].Count -gt 5) {
+          $alertBody += "- _...and $($byCat['needs-action'].Count - 5) more below._"
+        }
+        $content.Add([ordered]@{
+          type  = 'alert'
+          level = 'warning'
+          label = 'Needs action'
+          body  = $alertBody.TrimEnd()
+        }) | Out-Null
+      }
+
+      $content.Add([ordered]@{
+        type  = 'keyValue'
+        label = 'Run Overview'
+        pairs = [ordered]@{
+          'Active items'  = "$totalActive"
+          'Needs action'  = "$($byCat['needs-action'].Count)"
+          'Mentions'      = "$($mentions.Count)"
+          'Wait reply'    = "$($byCat['wait-reply'].Count)"
+          'Meeting prep'  = "$($byCat['meeting-prep'].Count)"
+          'FYI'           = "$($byCat['fyi'].Count)"
+          'Noise'         = "$($byCat['noise'].Count)"
+          'New since run' = "$newCount"
+          'Escalated'     = "$escalatedCount"
+          'Handled'       = "$manualClosedCount"
+        }
+      }) | Out-Null
+
+      $sections = @(
+        (New-MessageListSection -Heading 'Needs action' -Items $byCat['needs-action']),
+        (New-MessageListSection -Heading '@Mentions'    -Items $mentions),
+        (New-MessageListSection -Heading 'Wait reply'   -Items $byCat['wait-reply']),
+        (New-MessageListSection -Heading 'Meeting prep' -Items $byCat['meeting-prep']),
+        (New-MessageListSection -Heading 'FYI'          -Items $byCat['fyi']   -Collapsed $true),
+        (New-MessageListSection -Heading 'Noise'        -Items $byCat['noise'] -Collapsed $true)
+      )
+      foreach ($s in $sections) { if ($null -ne $s) { $content.Add($s) | Out-Null } }
+
+      $content.Add([ordered]@{
+        type = 'markdown'
+        body = "Run id: ``$runId``  -  Dry run: ``$dryRunBool``  -  Force surface: ``$forceBool``"
+      }) | Out-Null
+
+      $entry = [ordered]@{
+        schemaVersion = '1'
+        id            = $entryId
+        type          = 'inbox-triage'
+        source        = 'inbox-triage'
+        title         = $title
+        subtitle      = $subtitle
+        severity      = $severity
+        icon          = 'inbox'
+        tags          = @('inbox','mail','teams','productivity','triage','ZTS')
+        groupId       = $groupId
+        pinned        = $pinned
+        content       = $content.ToArray()
+      }
+
+      $entry | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{diff-and-plan-upserts.output}}"
+      - "{{vars.sharedScriptsDir}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraCategory}}"
+      - "{{vars.actionViewEntryId}}"
+      - "{{vars.actionViewGroupId}}"
+      - "{{param.dryRun}}"
+      - "{{param.forceSurface}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 180
+
+  - name: submit-actionview-entry
+    type: Orchestration
+    dependsOn: [build-actionview-entry]
+    orchestration: actionview-submit
+    parameters:
+      entryJson: "{{build-actionview-entry.output}}"
+      template: inbox-triage
+      groupId: "{{vars.actionViewGroupId}}"
+    inputHandlerPrompt: |
+      Return ONLY a valid JSON object mapping actionview-submit parameter
+      names (entryJson, template, groupId) to string values. entryJson
+      is the canonical entry JSON serialized as a string. No sentinel
+      handling needed - noteworthy-gate-prompt already skipped this
+      branch via orchestra_set_status('no_action') on no-op runs.
+    mode: sync
+    timeoutSeconds: 600
+
+  - name: emit-daily-summary
+    type: Script
+    dependsOn: [diff-and-plan-upserts, update-zakira, push-to-todo, gate-noteworthy-activity]
+    shell: pwsh
+    script: |
+      # Always-on summary writer. Writes the daily snapshot under
+      # triage-state:daily-summary/<YYYY-MM-DD> and the rolling pointer
+      # 'latest' for the future daily-morning-digest composer to read
+      # without computing dates.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $diffJson      = $args[0]
+      $gateJson      = $args[1]
+      $dbPath        = $args[2]
+      $category      = $args[3]
+      $dryRun        = $args[4]
+      $runId         = $args[5]
+
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      if ($dryRunBool) {
+        [pscustomobject]@{ status='dry-run-skipped' } | ConvertTo-Json -Compress
+        return
+      }
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $gate = ConvertFrom-Json -InputObject $gateJson -Depth 50 -ErrorAction Stop
+
+      $active = @($diff.upserts | Where-Object { [string]$_.data.status -eq 'active' } | ForEach-Object { $_.data })
+
+      $needsAction = @($active | Where-Object { [string]$_.category -eq 'needs-action' })
+      $hotItems = @($needsAction | Select-Object -First 10 | ForEach-Object {
+        [ordered]@{
+          zakiraKey = $_.zakiraKey
+          source    = $_.source
+          subject   = $_.subject
+          sender    = if ($_.sender -and $_.sender.name) { [string]$_.sender.name } elseif ($_.author -and $_.author.name) { [string]$_.author.name } else { '' }
+          webLink   = $_.webLink
+          rationale = $_.rationale
+        }
+      })
+
+      $summary = [ordered]@{
+        summaryDate   = (Get-Date).ToString('yyyy-MM-dd')
+        rolledAt      = (Get-Date).ToUniversalTime().ToString('o')
+        runId         = $runId
+        activeCount   = $active.Count
+        countsByCategory = $diff.countsByCategory
+        rollup        = $diff.rollup
+        hotItems      = $hotItems
+        noteworthy    = $gate.noteworthy
+      }
+      $payload = $summary | ConvertTo-Json -Depth 20 -Compress
+
+      function Write-SummaryKey {
+        param([string]$Key)
+        $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
+          --data $payload --author "inbox-triage:$runId" --reason 'daily summary' 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $Key `
+            --data $payload --author "inbox-triage:$runId" --reason 'daily summary' 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Zakira write failed for $category/${Key}: $($out -join ' ')"
+          }
+        }
+      }
+
+      $dayKey = $summary.summaryDate
+      Write-SummaryKey -Key $dayKey
+      Write-SummaryKey -Key 'latest'
+
+      [pscustomobject]@{
+        status   = 'persisted'
+        keys     = @($dayKey, 'latest')
+        category = $category
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{diff-and-plan-upserts.output}}"
+      - "{{gate-noteworthy-activity.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraSummaryCategory}}"
+      - "{{param.dryRun}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 300
+
+  - name: generate-summary
+    type: Transform
+    dependsOn:
+      - compute-lookback-window
+      - discover-mail
+      - discover-teams
+      - merge-and-dedupe
+      - classify
+      - diff-and-plan-upserts
+      - update-zakira
+      - push-to-todo
+      - submit-actionview-entry
+      - emit-daily-summary
+    template: |
+      # inbox-triage Run Summary
+
+      **Run ID:** {{orchestration.runId}}
+      **Started:** {{orchestration.startedAt}}
+      **Dry run:** {{param.dryRun}}
+      **Force surface:** {{param.forceSurface}}
+      **Push to To Do:** {{param.pushToTodo}}
+      **Mail folder allowlist:** {{param.mailFolderAllowlist}}
+      **Teams channel allowlist:** {{param.teamsChannelAllowlist}}
+
+      ## Lookback window
+      ```json
+      {{compute-lookback-window.output}}
+      ```
+
+      ## Mail discovery
+      ```json
+      {{discover-mail.output}}
+      ```
+
+      ## Teams discovery
+      ```json
+      {{discover-teams.output}}
+      ```
+
+      ## Merged + dedup
+      ```json
+      {{merge-and-dedupe.output}}
+      ```
+
+      ## Classification
+      ```json
+      {{classify.output}}
+      ```
+
+      ## Diff + upsert plan
+      ```json
+      {{diff-and-plan-upserts.output}}
+      ```
+
+      ## Zakira persistence
+      ```json
+      {{update-zakira.output}}
+      ```
+
+      ## To Do push
+      ```text
+      {{push-to-todo.output}}
+      ```
+
+      ## ActionView submission
+      ```text
+      {{submit-actionview-entry.output}}
+      ```
+
+      ## Daily summary
+      ```text
+      {{emit-daily-summary.output}}
+      ```
+    contentType: text/markdown

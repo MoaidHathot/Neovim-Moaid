@@ -1,0 +1,278 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: zakira-find-or-skip
+description: |
+  Reusable utility that classifies a list of items into "needs-processing"
+  vs "already-handled" buckets using Zakira.Exchange as the source of truth.
+  Generalises the per-item state-filter pattern previously duplicated inside
+  meeting-prep-brief.filter-already-briefed and
+  meeting-action-items-extractor.filter-already-processed (and a few others).
+
+  Behaviour:
+    - For each input item, looks up <category>/<key> in the Zakira CLI.
+    - Treats CLI exit 1 (not found) as "needs-processing".
+    - Treats any other non-zero exit as "needs-processing" (fail-open) so a
+      transient Zakira hiccup never silently drops an item.
+    - When an entry exists, parses its `Data:` JSON payload and consults
+      <statusField>. If the value matches any of <skipIfStatusEquals> AND
+      (freshnessHours == 0 OR the freshness timestamp at <freshnessField>
+      is within the freshness window), the item is bucketed as skipped.
+    - forceProcess=true bypasses all of the above and routes every item to
+      `toProcess`.
+
+  Output JSON shape (deterministic):
+    {
+      "toProcess": [ ...full original item objects... ],
+      "skipped":   [ { "key": "...", "summary": "...", "matchedAt": "..." } ],
+      "stats":     { "total": N, "toProcess": N, "skipped": N, "errors": N }
+    }
+version: 1.0.0
+tags: ["utility", "zakira", "shared", "reusable", "auto"]
+defaultModel: claude-opus-4.7-1m-internal
+
+metadata:
+  owner: Moaid Hathot
+  ownerAlias: moaid
+  domain: shared
+  sla: best-effort
+  documentation: |
+    Invoked synchronously as a child orchestration from any tracker that
+    needs idempotent "process me only when state changed" semantics. The
+    consumer should normalise its items first so every emitted object
+    carries the lookup key on the field declared by `itemKeyField`.
+
+inputs:
+  itemsJson:
+    type: string
+    description: |
+      JSON array of item objects, serialized as a string. Each object must
+      carry a stable lookup key on the field named by `itemKeyField`.
+    required: true
+    multiline: true
+  itemKeyField:
+    type: string
+    description: |
+      Property name on each item that holds the canonical Zakira key.
+    required: false
+    default: zakiraKey
+  dbPath:
+    type: string
+    description: |
+      Absolute path to the Zakira SQLite database file.
+    required: false
+    default: "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+  category:
+    type: string
+    description: |
+      Zakira.Exchange category to look up each item against.
+    required: true
+  statusField:
+    type: string
+    description: |
+      Property name within the stored `Data:` JSON payload that holds the
+      lifecycle status. Defaults to `status`.
+    required: false
+    default: status
+  skipIfStatusEquals:
+    type: string
+    description: |
+      Comma-separated list of status values that signal "already-handled".
+      Match is case-insensitive. When the stored status matches any entry,
+      the item is bucketed as skipped (subject to the freshness rule).
+    required: false
+    default: processed
+  freshnessField:
+    type: string
+    description: |
+      Optional property name within the stored payload that holds an
+      ISO-8601 timestamp used for freshness gating. When empty, freshness
+      is not evaluated and any matching status counts as "already-handled".
+    required: false
+    default: ""
+  freshnessHours:
+    type: string
+    description: |
+      When non-zero, the stored timestamp at `freshnessField` must be
+      within the last `freshnessHours` hours for the item to be considered
+      "already-handled". Items past the freshness window are returned to
+      `toProcess` so they can be reprocessed.
+    required: false
+    default: "0"
+  forceProcess:
+    type: boolean
+    description: |
+      When true, bypass all checks and route every item to `toProcess`.
+    required: false
+    default: "false"
+
+defaultStepTimeoutSeconds: 600
+timeoutSeconds: 1200
+
+steps:
+  - name: filter
+    type: Script
+    shell: pwsh
+    script: |
+      # Deterministic Zakira lookup loop. The single dependency is the
+      # Zakira.Exchange CLI being on PATH (via dnx). The CLI prints
+      # human-formatted records; the `Data:` field carries the stored
+      # JSON payload (which may be compact or pretty-printed depending
+      # on the writer), so the parser captures everything from the
+      # `Data:` marker until the next field marker before stripping
+      # the prefix.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $itemsJson         = $args[0]
+      $itemKeyField      = $args[1]
+      $dbPath            = $args[2]
+      $category          = $args[3]
+      $statusField       = $args[4]
+      $skipIfStatusRaw   = $args[5]
+      $freshnessField    = $args[6]
+      $freshnessHoursRaw = $args[7]
+      $forceProcessRaw   = $args[8]
+
+      if ([string]::IsNullOrWhiteSpace($itemsJson))    { throw 'itemsJson is required.' }
+      if ([string]::IsNullOrWhiteSpace($itemKeyField)) { throw 'itemKeyField is required.' }
+      if ([string]::IsNullOrWhiteSpace($dbPath))       { throw 'dbPath is required.' }
+      if ([string]::IsNullOrWhiteSpace($category))     { throw 'category is required.' }
+      if ([string]::IsNullOrWhiteSpace($statusField))  { $statusField = 'status' }
+
+      $forceProcess = [string]::Equals($forceProcessRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      $skipStatuses = @()
+      if (-not [string]::IsNullOrWhiteSpace($skipIfStatusRaw)) {
+        $skipStatuses = @($skipIfStatusRaw -split ',' | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
+      }
+
+      $freshnessHours = 0
+      if (-not [string]::IsNullOrWhiteSpace($freshnessHoursRaw)) {
+        try { $freshnessHours = [int]$freshnessHoursRaw } catch { $freshnessHours = 0 }
+      }
+      $cutoffUtc = $null
+      if ($freshnessHours -gt 0) {
+        $cutoffUtc = (Get-Date).ToUniversalTime().AddHours(-$freshnessHours)
+      }
+
+      $items = ConvertFrom-Json -InputObject $itemsJson -NoEnumerate -ErrorAction Stop
+
+      $toProcess = New-Object System.Collections.Generic.List[object]
+      $skipped   = New-Object System.Collections.Generic.List[object]
+      $errors    = 0
+
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+            $endIdx = $j; break
+          }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      foreach ($item in @($items)) {
+        if ($null -eq $item) { continue }
+
+        $keyProp = $item.PSObject.Properties[$itemKeyField]
+        $key = if ($keyProp) { [string]$keyProp.Value } else { '' }
+        if ([string]::IsNullOrWhiteSpace($key)) {
+          # Fail-open: missing key cannot be looked up; route to processing
+          # so callers do not silently drop work, but record it for the
+          # caller's diagnostics.
+          [void]$toProcess.Add($item)
+          $errors++
+          continue
+        }
+
+        if ($forceProcess) {
+          [void]$toProcess.Add($item)
+          continue
+        }
+
+        $cliOutput = & dnx Zakira.Exchange --yes -- `
+          --db $dbPath `
+          get $category $key 2>&1
+        $cliExit = $LASTEXITCODE
+
+        if ($cliExit -eq 1) {
+          # Not found in store - first time seeing this item.
+          [void]$toProcess.Add($item)
+          continue
+        }
+        if ($cliExit -ne 0) {
+          # Real CLI error - fail-open to processing rather than dropping.
+          [void]$toProcess.Add($item)
+          $errors++
+          continue
+        }
+
+        $dataJson = Get-DataJsonFromCliOutput -Lines $cliOutput
+        $shouldSkip = $false
+        $matchedAtRaw = $null
+
+        if ($dataJson) {
+          try {
+            $rec = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop
+            $statusProp = $rec.PSObject.Properties[$statusField]
+            $status = if ($statusProp) { [string]$statusProp.Value } else { '' }
+            $statusLower = $status.Trim().ToLowerInvariant()
+
+            if ($skipStatuses.Count -gt 0 -and ($skipStatuses -contains $statusLower)) {
+              if ($freshnessHours -le 0) {
+                $shouldSkip = $true
+              } elseif (-not [string]::IsNullOrWhiteSpace($freshnessField)) {
+                $tsProp = $rec.PSObject.Properties[$freshnessField]
+                if ($tsProp) {
+                  $matchedAtRaw = [string]$tsProp.Value
+                  if (-not [string]::IsNullOrWhiteSpace($matchedAtRaw)) {
+                    try {
+                      $ts = [datetimeoffset]::Parse($matchedAtRaw, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+                      if ($ts -gt $cutoffUtc) { $shouldSkip = $true }
+                    } catch { }
+                  }
+                }
+              }
+            }
+          } catch { }
+        }
+
+        if ($shouldSkip) {
+          [void]$skipped.Add([pscustomobject]@{
+            key       = $key
+            summary   = "status='$status'"
+            matchedAt = $matchedAtRaw
+          })
+        } else {
+          [void]$toProcess.Add($item)
+        }
+      }
+
+      [pscustomobject]@{
+        toProcess = $toProcess.ToArray()
+        skipped   = $skipped.ToArray()
+        stats     = [ordered]@{
+          total     = @($items).Count
+          toProcess = $toProcess.Count
+          skipped   = $skipped.Count
+          errors    = $errors
+        }
+      } | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{param.itemsJson}}"
+      - "{{param.itemKeyField}}"
+      - "{{param.dbPath}}"
+      - "{{param.category}}"
+      - "{{param.statusField}}"
+      - "{{param.skipIfStatusEquals}}"
+      - "{{param.freshnessField}}"
+      - "{{param.freshnessHours}}"
+      - "{{param.forceProcess}}"
+    timeoutSeconds: 600

@@ -1,0 +1,507 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: todo-upsert
+description: |
+  Reusable utility that idempotently creates or updates a Microsoft To Do
+  task identified by a caller-supplied stable externalId. Backed by
+  Microsoft Graph (https://graph.microsoft.com/v1.0/me/todo) and an
+  externalId -> taskId mapping persisted in Zakira.Exchange so repeat
+  calls converge on the same task instead of duplicating it.
+
+  Behaviour:
+    - Resolves a Graph access token fresh per run via
+      `az account get-access-token --scope https://graph.microsoft.com/.default`.
+      The token piggybacks on the user's already-authenticated Azure CLI
+      session, which manages its own token cache (DPAPI-encrypted on
+      Windows via WAM/MSAL). The token is held in memory for the
+      duration of one upsert and dropped immediately afterwards. It is
+      NEVER written to Zakira, to a log, or to any file or env var.
+    - For ad-hoc testing only, an in-memory env var
+      `GRAPH_ACCESS_TOKEN_PREFILL` (set by the parent process for a
+      single run, NEVER in a profile / dotfile / .env) short-circuits
+      the az call. If you find yourself wanting to persist a token,
+      stop - use az login + the standard cache instead.
+    - Looks up (or creates) the named To Do list under
+      `todo-list-map / <listName>` in Zakira so list-id resolution is
+      cached across runs.
+    - Looks up the task mapping under
+      `todo-task-map / <externalId>` in Zakira.
+        * Mapping hit -> PATCH the task (title/body/dueDate/importance/status).
+        * Mapping miss -> POST a new task, then write the mapping.
+    - When status='completed', the task is patched/created already-done so
+      the same call can both create and instantly close (useful for
+      "completed today" entries that we still want present for the day).
+
+  Output JSON shape:
+    {
+      "operation":     "created" | "updated" | "no-op",
+      "listName":      "...",
+      "listId":        "...",
+      "externalId":    "...",
+      "taskId":        "...",
+      "status":        "notStarted|inProgress|completed",
+      "webLink":       "https://to-do.live.com/.../tasks/id/...",
+      "graphResponse": <object>
+    }
+version: 1.0.0
+tags: ["utility", "microsoft-todo", "graph", "shared", "reusable", "auto"]
+defaultModel: claude-opus-4.7-1m-internal
+
+metadata:
+  owner: Moaid Hathot
+  ownerAlias: moaid
+  domain: shared
+  sla: best-effort
+  documentation: |
+    Auth path (v1): `az account get-access-token --scope
+    https://graph.microsoft.com/.default`. Requires the signed-in az
+    identity to consent to the `Tasks.ReadWrite` Microsoft Graph
+    permission. If the m365 proxy ever exposes a generic Graph-token
+    endpoint we can swap the auth step without changing the contract.
+
+    External id stability: callers MUST choose externalId so the same
+    logical task always hashes to the same string. Examples:
+      - PR tracker:           "pr:{prId}"
+      - Action items tracker: "ai:{meetingZakiraKey}:{itemHash}"
+      - Waiting-on tracker:   "wo:{askId}"
+
+inputs:
+  listName:
+    type: string
+    description: |
+      Microsoft To Do list display name. Auto-created when missing.
+      Recommended convention: "Orchestra: <Source>" (e.g.,
+      "Orchestra: PRs", "Orchestra: Action Items", "Orchestra: Waiting On").
+    required: true
+  externalId:
+    type: string
+    description: |
+      Caller-stable external id used to deduplicate. Mapped to the Graph
+      taskId via Zakira.Exchange so re-invocations PATCH instead of
+      POST-ing a duplicate.
+    required: true
+  title:
+    type: string
+    description: |
+      Task title (single line).
+    required: true
+  body:
+    type: string
+    description: |
+      Optional markdown body. Microsoft To Do stores it as text/html
+      after server-side conversion; this orchestration sends contentType
+      'text' so the original markdown is preserved verbatim in the
+      Outlook / To Do clients.
+    required: false
+    default: ""
+    multiline: true
+  dueDate:
+    type: string
+    description: |
+      Optional ISO-8601 date/time for the task due date. Sent as UTC.
+      Empty string clears the due date on the task.
+    required: false
+    default: ""
+  importance:
+    type: string
+    description: |
+      One of: low, normal, high. Defaults to normal.
+    required: false
+    default: normal
+    enum: [low, normal, high]
+  status:
+    type: string
+    description: |
+      One of: notStarted, inProgress, completed, deferred, waitingOnOthers.
+      Defaults to notStarted. Passing 'completed' for a not-yet-existing
+      task creates it already-done.
+    required: false
+    default: notStarted
+    enum: [notStarted, inProgress, completed, deferred, waitingOnOthers]
+  categories:
+    type: string
+    description: |
+      Optional comma-separated category names to attach to the task.
+      Useful for grouping in Outlook.
+    required: false
+    default: ""
+  dbPath:
+    type: string
+    description: |
+      Absolute path to the Zakira SQLite database file used for the
+      externalId -> taskId mapping and list-id cache.
+    required: false
+    default: "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 3
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 300
+timeoutSeconds: 900
+
+steps:
+  - name: resolve-list-id
+    type: Script
+    shell: pwsh
+    script: |
+      # List-id resolution with Zakira caching. Fetches its OWN short-
+      # lived Graph token via az; the token never leaves this Script's
+      # in-memory scope (no step output, no logging, no var passing).
+      #
+      # Cache layout: category 'todo-list-map', key = listName,
+      # data = {"listId":"...","resolvedAt":"...","displayName":"..."}.
+      # Cache misses: list /me/todo/lists, find by displayName, create
+      # via POST if absent. Always re-validate cached entries against
+      # Graph in case the list was renamed/deleted.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $listName  = $args[0]
+      $dbPath    = $args[1]
+
+      if ([string]::IsNullOrWhiteSpace($listName)) { throw 'listName is required.' }
+      if ([string]::IsNullOrWhiteSpace($dbPath))   { throw 'dbPath is required.' }
+
+      function Get-GraphTokenInline {
+        # Returns a Graph access token. The token NEVER leaves this
+        # script: no step output, no log line, no env mutation. az
+        # manages its own DPAPI-encrypted cache on Windows.
+        $t = $env:GRAPH_ACCESS_TOKEN_PREFILL
+        if (-not [string]::IsNullOrWhiteSpace($t)) { return $t }
+        try { Get-Command az -ErrorAction Stop | Out-Null } catch {
+          throw "Cannot resolve Microsoft Graph token: az CLI not on PATH."
+        }
+        $azRaw = & az account get-access-token --scope "https://graph.microsoft.com/.default" -o json 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          $azText = if ($azRaw -is [array]) { ($azRaw -join "`n") } else { [string]$azRaw }
+          throw "az account get-access-token failed (exit $LASTEXITCODE): $azText"
+        }
+        $azText = if ($azRaw -is [array]) { ($azRaw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$azRaw }
+        $azJson = ConvertFrom-Json -InputObject $azText -ErrorAction Stop
+        $tok = [string]$azJson.accessToken
+        if ([string]::IsNullOrWhiteSpace($tok)) { throw "az account get-access-token returned no accessToken." }
+        return $tok
+      }
+
+      $token = Get-GraphTokenInline
+      $headers = @{ Authorization = "Bearer $token"; Accept = 'application/json' }
+
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+            $endIdx = $j; break
+          }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      $cachedListId = $null
+      $cacheOutput = & dnx Zakira.Exchange --yes -- --db $dbPath get 'todo-list-map' $listName 2>&1
+      if ($LASTEXITCODE -eq 0) {
+        $cachedDataJson = Get-DataJsonFromCliOutput -Lines $cacheOutput
+        if ($cachedDataJson) {
+          try {
+            $cached = ConvertFrom-Json -InputObject $cachedDataJson -ErrorAction Stop
+            $cachedListId = [string]$cached.listId
+          } catch { }
+        }
+      }
+
+      $resolvedListId = $null
+      $resolvedDisplayName = $null
+      $allLists = $null
+
+      if ($cachedListId) {
+        # Validate the cached list still exists with the same display name.
+        try {
+          $valResp = Invoke-RestMethod -Method Get `
+            -Uri "https://graph.microsoft.com/v1.0/me/todo/lists/$cachedListId" `
+            -Headers $headers
+          if ($valResp -and ($valResp.displayName -eq $listName)) {
+            $resolvedListId = $cachedListId
+            $resolvedDisplayName = $valResp.displayName
+          }
+        } catch {
+          # Cache stale; fall through to enumeration.
+          $resolvedListId = $null
+        }
+      }
+
+      if (-not $resolvedListId) {
+        $allLists = Invoke-RestMethod -Method Get `
+          -Uri "https://graph.microsoft.com/v1.0/me/todo/lists?`$top=200" `
+          -Headers $headers
+        if ($allLists -and $allLists.value) {
+          $match = @($allLists.value) | Where-Object { $_.displayName -eq $listName } | Select-Object -First 1
+          if ($match) {
+            $resolvedListId = [string]$match.id
+            $resolvedDisplayName = [string]$match.displayName
+          }
+        }
+      }
+
+      if (-not $resolvedListId) {
+        # Create the list.
+        $createBody = @{ displayName = $listName } | ConvertTo-Json -Compress
+        $createResp = Invoke-RestMethod -Method Post `
+          -Uri "https://graph.microsoft.com/v1.0/me/todo/lists" `
+          -Headers ($headers + @{ 'Content-Type' = 'application/json' }) `
+          -Body $createBody
+        if (-not $createResp -or -not $createResp.id) {
+          throw "Failed to create To Do list '$listName' (no id in response)."
+        }
+        $resolvedListId = [string]$createResp.id
+        $resolvedDisplayName = [string]$createResp.displayName
+      }
+
+      # Drop the token from memory before emitting step output. Belt
+      # and suspenders: the token was never going to be in the output
+      # object, but explicit clearing makes the intent unmistakable.
+      $token = $null
+      $headers = $null
+      Remove-Variable -Name token, headers -ErrorAction SilentlyContinue
+
+      # Write-through cache (best-effort; failure to cache should not break the upsert).
+      $cachePayload = @{
+        listId      = $resolvedListId
+        displayName = $resolvedDisplayName
+        resolvedAt  = (Get-Date).ToUniversalTime().ToString('o')
+      } | ConvertTo-Json -Compress
+
+      try {
+        $writeOut = & dnx Zakira.Exchange --yes -- --db $dbPath edit 'todo-list-map' $listName `
+          --data $cachePayload `
+          --author 'todo-upsert' `
+          --reason 'list-id cache refresh' 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          & dnx Zakira.Exchange --yes -- --db $dbPath create 'todo-list-map' $listName `
+            --data $cachePayload `
+            --author 'todo-upsert' `
+            --reason 'list-id cache seed' 2>&1 | Out-Null
+        }
+      } catch { }
+
+      [pscustomobject]@{
+        listId      = $resolvedListId
+        listName    = $resolvedDisplayName
+        cacheHit    = ($cachedListId -eq $resolvedListId)
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{param.listName}}"
+      - "{{param.dbPath}}"
+    timeoutSeconds: 180
+
+  - name: upsert-task
+    type: Script
+    dependsOn: [resolve-list-id]
+    shell: pwsh
+    script: |
+      # Mapping lookup -> PATCH or POST. Fetches its OWN short-lived
+      # Graph token via az; the token never leaves this Script's
+      # in-memory scope (no step output, no logging, no var passing).
+      #
+      # Mapping cache: category 'todo-task-map', key = externalId,
+      # data = {"listId":"...","taskId":"...","createdAt":"..."}.
+      # When the cached taskId returns 404 (deleted by user), the mapping
+      # is cleared and a fresh POST is performed so the user always sees
+      # the expected task in their list.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $listJson       = $args[0]
+      $externalId     = $args[1]
+      $title          = $args[2]
+      $body           = $args[3]
+      $dueDate        = $args[4]
+      $importance     = $args[5]
+      $status         = $args[6]
+      $categoriesRaw  = $args[7]
+      $dbPath         = $args[8]
+
+      if ([string]::IsNullOrWhiteSpace($externalId)) { throw 'externalId is required.' }
+      if ([string]::IsNullOrWhiteSpace($title))      { throw 'title is required.' }
+
+      $listId = (ConvertFrom-Json -InputObject $listJson).listId
+      if ([string]::IsNullOrWhiteSpace($listId)) { throw 'No listId.' }
+
+      function Get-GraphTokenInline {
+        # Returns a Graph access token. The token NEVER leaves this
+        # script: no step output, no log line, no env mutation. az
+        # manages its own DPAPI-encrypted cache on Windows.
+        $t = $env:GRAPH_ACCESS_TOKEN_PREFILL
+        if (-not [string]::IsNullOrWhiteSpace($t)) { return $t }
+        try { Get-Command az -ErrorAction Stop | Out-Null } catch {
+          throw "Cannot resolve Microsoft Graph token: az CLI not on PATH."
+        }
+        $azRaw = & az account get-access-token --scope "https://graph.microsoft.com/.default" -o json 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          $azText = if ($azRaw -is [array]) { ($azRaw -join "`n") } else { [string]$azRaw }
+          throw "az account get-access-token failed (exit $LASTEXITCODE): $azText"
+        }
+        $azText = if ($azRaw -is [array]) { ($azRaw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$azRaw }
+        $azJson = ConvertFrom-Json -InputObject $azText -ErrorAction Stop
+        $tok = [string]$azJson.accessToken
+        if ([string]::IsNullOrWhiteSpace($tok)) { throw "az account get-access-token returned no accessToken." }
+        return $tok
+      }
+
+      $token = Get-GraphTokenInline
+      $headers = @{
+        Authorization  = "Bearer $token"
+        Accept         = 'application/json'
+        'Content-Type' = 'application/json'
+      }
+
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+            $endIdx = $j; break
+          }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      $categories = @()
+      if (-not [string]::IsNullOrWhiteSpace($categoriesRaw)) {
+        $categories = @($categoriesRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+      }
+
+      $taskBody = [ordered]@{
+        title      = $title
+        importance = $importance
+        status     = $status
+        body       = [ordered]@{
+          contentType = 'text'
+          content     = $body
+        }
+      }
+      if (-not [string]::IsNullOrWhiteSpace($dueDate)) {
+        $taskBody['dueDateTime'] = [ordered]@{
+          dateTime = $dueDate
+          timeZone = 'UTC'
+        }
+      }
+      if ($categories.Count -gt 0) {
+        $taskBody['categories'] = $categories
+      }
+      $taskBodyJson = $taskBody | ConvertTo-Json -Depth 50 -Compress
+
+      $existingTaskId = $null
+      $existingListId = $null
+      $mappingOutput = & dnx Zakira.Exchange --yes -- --db $dbPath get 'todo-task-map' $externalId 2>&1
+      if ($LASTEXITCODE -eq 0) {
+        $mappingDataJson = Get-DataJsonFromCliOutput -Lines $mappingOutput
+        if ($mappingDataJson) {
+          try {
+            $mapping = ConvertFrom-Json -InputObject $mappingDataJson -ErrorAction Stop
+            $existingTaskId = [string]$mapping.taskId
+            $existingListId = [string]$mapping.listId
+          } catch { }
+        }
+      }
+
+      $operation = 'no-op'
+      $taskId = $null
+      $graphResponse = $null
+
+      if (-not [string]::IsNullOrWhiteSpace($existingTaskId)) {
+        $patchListId = if ([string]::IsNullOrWhiteSpace($existingListId)) { $listId } else { $existingListId }
+        $patchUri = "https://graph.microsoft.com/v1.0/me/todo/lists/$patchListId/tasks/$existingTaskId"
+        try {
+          $graphResponse = Invoke-RestMethod -Method Patch -Uri $patchUri -Headers $headers -Body $taskBodyJson
+          $taskId = [string]$graphResponse.id
+          $operation = 'updated'
+        } catch {
+          # PS 7 surfaces HttpResponseException with .Response.StatusCode as a
+          # System.Net.HttpStatusCode enum; cast to int for a clean compare.
+          $statusCode = $null
+          if ($_.Exception.PSObject.Properties['Response'] -and $_.Exception.Response) {
+            try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { $statusCode = $null }
+          }
+          if ($statusCode -ne 404) { throw }
+          # Mapping points to a deleted task: clear it and fall through to POST.
+          $existingTaskId = $null
+        }
+      }
+
+      if (-not $taskId) {
+        $postUri = "https://graph.microsoft.com/v1.0/me/todo/lists/$listId/tasks"
+        $graphResponse = Invoke-RestMethod -Method Post -Uri $postUri -Headers $headers -Body $taskBodyJson
+        if (-not $graphResponse -or -not $graphResponse.id) {
+          throw "Microsoft Graph create-task returned no id."
+        }
+        $taskId = [string]$graphResponse.id
+        $operation = 'created'
+
+        # Persist the new mapping (write-through).
+        $mappingPayload = @{
+          externalId = $externalId
+          listId     = $listId
+          taskId     = $taskId
+          createdAt  = (Get-Date).ToUniversalTime().ToString('o')
+        } | ConvertTo-Json -Compress
+        try {
+          $writeOut = & dnx Zakira.Exchange --yes -- --db $dbPath create 'todo-task-map' $externalId `
+            --data $mappingPayload `
+            --author 'todo-upsert' `
+            --reason 'externalId -> taskId mapping' 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            & dnx Zakira.Exchange --yes -- --db $dbPath edit 'todo-task-map' $externalId `
+              --data $mappingPayload `
+              --author 'todo-upsert' `
+              --reason 'externalId -> taskId mapping (replace)' 2>&1 | Out-Null
+          }
+        } catch { }
+      }
+
+      # Drop the token + Authorization header from memory before
+      # emitting step output. The output object below never references
+      # them, but explicit clearing makes the intent unmistakable.
+      $token = $null
+      $headers = $null
+      Remove-Variable -Name token, headers -ErrorAction SilentlyContinue
+
+      [pscustomobject]@{
+        operation     = $operation
+        listName      = (ConvertFrom-Json -InputObject $listJson).listName
+        listId        = $listId
+        externalId    = $externalId
+        taskId        = $taskId
+        status        = $status
+        # Microsoft To Do tasks do not expose a webLink via Graph; deep-links
+        # require constructing app-side URLs that vary by client. Leave null
+        # and let the caller render its own affordance if needed.
+        webLink       = $null
+        graphResponse = $graphResponse
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{resolve-list-id.output}}"
+      - "{{param.externalId}}"
+      - "{{param.title}}"
+      - "{{param.body}}"
+      - "{{param.dueDate}}"
+      - "{{param.importance}}"
+      - "{{param.status}}"
+      - "{{param.categories}}"
+      - "{{param.dbPath}}"
+    timeoutSeconds: 300

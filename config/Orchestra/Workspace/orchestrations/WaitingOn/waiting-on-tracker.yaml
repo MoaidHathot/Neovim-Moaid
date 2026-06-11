@@ -1,0 +1,1636 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: waiting-on-tracker
+description: |
+  Tracks outbound asks: messages I sent that are awaiting a response.
+  Every 4h (gated by the ZTS profile) it scans my recent sent mail,
+  uses a two-pass classifier to extract real asks (Pass 1: wide net,
+  Pass 2: strict verification + false-positive ignore list), maintains
+  a per-ask Zakira ledger, and surfaces a single ActionView entry
+  grouped by recipient with three buttons per ask: Resolved, Dismiss,
+  Not an ask.
+
+  v1 scope: mail only. Teams and PR-comment sources are planned for
+  a follow-up pass and slot into the same shape (discover-* + pass1
+  + pass2 + check-resolution per source).
+
+  Resolution detection is intentionally NOT done by an LLM thread
+  scan in v1; instead a deterministic `staleAutoCloseDays` cutoff
+  (default 30) auto-closes asks the user did not handle, with a
+  closeReason of `stale-presumed-resolved`. Real thread-scan
+  resolution is planned for v2.
+
+  False-positive trainer: clicking "Not an ask" on the ActionView entry
+  invokes Shared/scripts/flag-as-not-an-ask.ps1 which dismisses the
+  ledger entry AND writes a (pattern, recipient) -> ignore record to
+  the ask-extraction-ignore category. Pass 2 of the next run filters
+  near-duplicate candidates from the same recipient.
+
+version: 1.0.0
+tags: ["ZTS", "MSFT", "waiting-on", "auto", "track", "followup"]
+defaultModel: claude-opus-4.7-1m-internal
+
+metadata:
+  owner: Moaid Hathot
+  ownerAlias: moaid
+  domain: productivity
+  sla: best-effort
+  schedule: "every 4h within ZTS profile window"
+  documentation: |
+    Reusable utilities used:
+      - Shared/todo-upsert.yaml          (per-ask Microsoft To Do tasks)
+      - ActionView/actionview-submit.yaml(ActionView entry submission)
+      - Shared/scripts/mark-ledger-item.ps1 (Resolved / Dismiss buttons)
+      - Shared/scripts/flag-as-not-an-ask.ps1 (Not-an-ask button)
+    Zakira categories written:
+      - waiting-on-ledger                (per-ask records, key = wo:<askIdHash>)
+      - waiting-on-ledger:daily-summary  (daily roll-up, key = YYYY-MM-DD + 'latest')
+      - waiting-on-ledger:last-run       (cursor for self-extending lookback)
+      - ask-extraction-ignore            (false-positive trainer, key = nonask:<patternHash>)
+
+inputs:
+  lookbackDaysDefault:
+    type: string
+    description: |
+      Default lookback window in days. Effective lookback is
+      max(lookbackDaysDefault, days-since-last-completed-run + 12h
+      buffer), capped at 30 days. Long enough to catch asks sent
+      across a normal weekend / mid-week travel without flooding the
+      classifier.
+    required: false
+    default: "7"
+  reminderThresholdHoursNormal:
+    type: string
+    description: |
+      Hours since the ask was sent before it counts as 'waiting too
+      long' for normal-priority asks (used by the To Do push gate).
+    required: false
+    default: "48"
+  reminderThresholdHoursUrgent:
+    type: string
+    description: |
+      Hours threshold for urgent-priority asks.
+    required: false
+    default: "8"
+  staleAutoCloseDays:
+    type: string
+    description: |
+      Auto-close open asks older than this many days as
+      stale-presumed-resolved. Crude but bounded; replace with a real
+      thread-scan resolver in v2.
+    required: false
+    default: "30"
+  maxNewToDoPushPerRun:
+    type: string
+    description: |
+      Cap on new Microsoft To Do task creations per run (PATCHes to
+      existing tasks are unaffected). Protects the first bootstrap
+      run from flooding To Do.
+    required: false
+    default: "25"
+  pushToTodo:
+    type: boolean
+    description: |
+      When true, push aging needs-reminder asks to the Microsoft To Do
+      list. Disable to suppress the To Do side-effect entirely.
+    required: false
+    default: "true"
+  forceSurface:
+    type: boolean
+    description: |
+      When true, post the ActionView entry even if nothing changed
+      since the prior run.
+    required: false
+    default: "false"
+  dryRun:
+    type: boolean
+    description: |
+      When true, run discovery + classify + diff but skip all writes
+      (Zakira, To Do, ActionView, Obsidian).
+    required: false
+    default: "false"
+
+variables:
+  # Identity is resolved dynamically per run via resolve-me (Shared/
+  # scripts/resolve-user-identity.ps1: az account show + Graph /me,
+  # cached in Zakira for 24h). No hardcoded UPN here.
+  zakiraLedgerCategory: waiting-on-ledger
+  zakiraSummaryCategory: "waiting-on-ledger:daily-summary"
+  zakiraLastRunCategory: "waiting-on-ledger:last-run"
+  zakiraIgnoreCategory: ask-extraction-ignore
+  zakiraIdentityCategory: "user-identity:cache"
+  todoListName: "Orchestra: Waiting On"
+  obsidianDigestDir: "{{env.USERPROFILE}}\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\Waiting On"
+  actionViewGroupId: "waiting-on-{{orchestration.runId}}"
+  actionViewEntryId: "waiting-on-latest"
+  sharedScriptsDir: "{{orchestration.sourceDirectory}}/../Shared/scripts"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 10
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 600
+timeoutSeconds: 7200
+
+trigger:
+  type: scheduler
+  enabled: true
+  intervalSeconds: 14400
+
+steps:
+  - name: resolve-me
+    type: Script
+    shell: pwsh
+    scriptFile: "./../Shared/scripts/resolve-user-identity.ps1"
+    arguments:
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraIdentityCategory}}"
+      - "default"
+      - "24"
+      - "false"
+    timeoutSeconds: 60
+
+  - name: compute-lookback-window
+    type: Script
+    shell: pwsh
+    script: |
+      # Self-extending lookback in DAYS (this orchestration's natural
+      # cadence). The cursor lives under waiting-on-ledger:last-run.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $dbPath               = $args[0]
+      $lastRunCategory      = $args[1]
+      $defaultLookbackDays  = [int]$args[2]
+
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+            $endIdx = $j; break
+          }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      $lastRunIso = $null
+      $cursorOut = & dnx Zakira.Exchange --yes -- --db $dbPath get $lastRunCategory 'last-run' 2>&1
+      if ($LASTEXITCODE -eq 0) {
+        $dataJson = Get-DataJsonFromCliOutput -Lines $cursorOut
+        if ($dataJson) {
+          try {
+            $cursor = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop
+            $lastRunIso = [string]$cursor.completedAt
+          } catch { }
+        }
+      }
+
+      $now = (Get-Date).ToUniversalTime()
+      $effectiveDays = $defaultLookbackDays
+      $hoursSinceLast = $null
+
+      if (-not [string]::IsNullOrWhiteSpace($lastRunIso)) {
+        try {
+          $lastRunUtc = [datetimeoffset]::Parse($lastRunIso, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+          $delta = $now - $lastRunUtc
+          $hoursSinceLast = [math]::Round($delta.TotalHours, 2)
+          $candidateDays = [math]::Ceiling($delta.TotalDays + 0.5)
+          if ($candidateDays -gt $effectiveDays) { $effectiveDays = [int]$candidateDays }
+        } catch { }
+      }
+
+      if ($effectiveDays -gt 30) { $effectiveDays = 30 }
+      if ($effectiveDays -lt 1)  { $effectiveDays = 1 }
+
+      $windowStart = $now.AddDays(-$effectiveDays)
+
+      [pscustomobject]@{
+        nowUtc                = $now.ToString('o')
+        lastRunAt             = $lastRunIso
+        hoursSinceLastRun     = $hoursSinceLast
+        defaultLookbackDays   = $defaultLookbackDays
+        effectiveLookbackDays = $effectiveDays
+        windowStartUtc        = $windowStart.ToString('o')
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraLastRunCategory}}"
+      - "{{param.lookbackDaysDefault}}"
+    timeoutSeconds: 60
+
+  - name: load-ignore-list
+    type: Script
+    shell: pwsh
+    script: |
+      # Loads every entry in ask-extraction-ignore so pass2-verify can
+      # filter candidates that match a previously-trained pattern. We
+      # do a `list` + per-key `get` (the ignore list is small - at
+      # most a few hundred entries even after months of use - so the
+      # extra CLI roundtrips are negligible).
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $dbPath   = $args[0]
+      $category = $args[1]
+
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+            $endIdx = $j; break
+          }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      $listOut = & dnx Zakira.Exchange --yes -- --db $dbPath list --cat $category -n 1000 2>&1
+      $keys = New-Object System.Collections.Generic.List[string]
+      if ($LASTEXITCODE -eq 0 -and $null -ne $listOut) {
+        foreach ($line in @($listOut)) {
+          $text = [string]$line
+          if ([string]::IsNullOrWhiteSpace($text)) { continue }
+          if ($text -match '^\s*(Key|---|====|Listing|No entries|Found)') { continue }
+          $tokens = $text -split '\s{2,}|\t', 2
+          if ($tokens.Count -eq 0) { continue }
+          $candidate = $tokens[0].Trim()
+          if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+          [void]$keys.Add($candidate)
+        }
+      }
+
+      $entries = New-Object System.Collections.Generic.List[object]
+      foreach ($key in $keys) {
+        $out = & dnx Zakira.Exchange --yes -- --db $dbPath get $category $key 2>&1
+        if ($LASTEXITCODE -ne 0) { continue }
+        $dataJson = Get-DataJsonFromCliOutput -Lines $out
+        if (-not $dataJson) { continue }
+        try {
+          $data = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop
+          $entries.Add([pscustomobject]@{
+            zakiraKey = $key
+            pattern   = [string]$data.pattern
+            recipient = [string]$data.recipient
+            data      = $data
+          }) | Out-Null
+        } catch { }
+      }
+
+      [pscustomobject]@{
+        loadedAt = (Get-Date).ToUniversalTime().ToString('o')
+        category = $category
+        count    = $entries.Count
+        entries  = $entries.ToArray()
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraIgnoreCategory}}"
+    timeoutSeconds: 300
+
+  - name: discover-outbound-asks-mail
+    type: Prompt
+    dependsOn: [compute-lookback-window, resolve-me]
+    systemPrompt: |
+      You are a SENT-mail discovery agent using ONLY the `mail` MCP.
+      Your job is to enumerate every message I sent in the lookback
+      window so a downstream classifier can pick out the ones that
+      are actually asks awaiting a response. You do NOT decide what
+      is an ask - that is the next step's job. You DO filter out
+      obvious non-asks (automated forwarding, BCC-only blasts).
+
+      Query rules:
+        1. Source folder: `SentItems` (Outlook's Sent folder).
+        2. Window: messages where `sentDateTime` is within the lookback
+           window passed in via compute-lookback-window's output.
+        3. Skip messages with no recipients at all (drafts that
+           somehow leaked into Sent).
+        4. Skip messages where I am the only TO (self-sends).
+        5. Cap at 200 messages. If exceeded, prefer the most recent.
+
+      For EACH surfaced message capture ALL of:
+        - id                  : Graph message id (REQUIRED, used for ledger keying)
+        - subject
+        - sentDateTime        : ISO-8601 UTC (REQUIRED)
+        - conversationId      : Graph thread id (REQUIRED for resolution scanning later)
+        - webLink             : canonical Outlook URL (REQUIRED)
+        - toRecipients        : array of { name, address } (REQUIRED)
+        - ccRecipients        : array of { name, address }
+        - bodyPreview         : first ~800 characters, plain text, no HTML
+        - importance          : low | normal | high
+        - hasAttachments      : boolean
+
+      NEVER modify mail state. NEVER mark anything read / unread / flagged
+      or move folders. This is read-only enumeration.
+
+      Output a single JSON object:
+      {
+        "windowStartUtc":  "...",
+        "windowEndUtc":    "...",
+        "messages":        [ {...as above...} ],
+        "messageCount":    <int>,
+        "notes":           [ "..." ]
+      }
+    userPrompt: |
+      Lookback window context (from compute-lookback-window):
+      {{compute-lookback-window.output}}
+
+      My identity (use uniqueName as the "sender = me" reference):
+      {{resolve-me.output}}
+
+      Enumerate my Sent Items in the window per the rules in your
+      system prompt. Return one JSON object.
+    outputHandlerPrompt: |
+      Extract one valid JSON object only with the fields listed in the
+      system prompt. Strip markdown fences, prose, and trailing
+      whitespace. Output only the JSON object.
+    mcps: [mail]
+    retry:
+      maxRetries: 3
+      backoffSeconds: 15
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: pass1-extract-candidates
+    type: Prompt
+    dependsOn: [discover-outbound-asks-mail, resolve-me]
+    systemPrompt: |
+      You are PASS 1 of a two-pass ask classifier. Your job is WIDE
+      NET extraction: identify every message that COULD be an outbound
+      ask awaiting a response. Better to include borderline cases here
+      and let Pass 2 strip them than to miss a real ask.
+
+      An "ask" is loosely defined as any sent message that imposes a
+      cognitive obligation on the recipient: a question, action
+      request, approval, scheduling negotiation, decision request,
+      sign-off request, status inquiry ("any update on X?"), feedback
+      request, etc.
+
+      For EACH input message produce a candidate with:
+        - messageId
+        - subject
+        - sentDateTime
+        - conversationId
+        - webLink
+        - primaryRecipient : { name, address } - the FIRST TO recipient,
+                              used as the canonical recipient for
+                              dedup and trainer keying. Pick from TO,
+                              not CC.
+        - allRecipients   : flattened array of all TO+CC names+addresses
+        - candidateAskText: the SHORTEST sentence-or-clause that captures
+                            the ask. Pull verbatim from the message;
+                            do not paraphrase. Aim for <= 200 chars.
+        - rawSignal       : which textual signal made you flag this
+                            (e.g. "question-mark", "imperative-please",
+                            "approval-request", "any-update-ping",
+                            "scheduling", "review-request",
+                            "decision-needed")
+        - tentativeUrgency: "urgent" | "normal" | "low" - rough guess
+                            based on subject + body language
+                            (Subject: "URGENT" / words like "asap"
+                            -> urgent; passing-context FYI -> low).
+
+      Rules:
+        1. Include the message if it contains ANY plausible ask.
+        2. If a single message contains MULTIPLE distinct asks, emit
+           one candidate per ask. Each gets its own candidateAskText
+           and shares the same messageId / conversationId.
+        3. Drop messages that are pure broadcast (newsletters,
+           announcements without a follow-up gate), pure FYI, or
+           pure thank-you replies.
+        4. Do NOT call any tools. Do NOT use any MCPs.
+        5. Output ONLY a JSON object:
+           {
+             "extractedAt": "<UTC iso>",
+             "candidates": [ {...as above...} ],
+             "candidateCount": <int>,
+             "droppedAsObviousNonAsk": <int>
+           }
+    userPrompt: |
+      Sent messages to scan:
+      {{discover-outbound-asks-mail.output}}
+
+      My identity:
+      {{resolve-me.output}}
+
+      Apply wide-net Pass 1 extraction per the rules in your system
+      prompt. Output
+      ONLY the JSON object.
+    outputHandlerPrompt: |
+      Output exactly one valid JSON object with the fields extractedAt,
+      candidates, candidateCount, and droppedAsObviousNonAsk. Strip
+      markdown fences, prose, and trailing whitespace.
+
+  - name: pass2-verify
+    type: Prompt
+    dependsOn: [pass1-extract-candidates, load-ignore-list, resolve-me]
+    systemPrompt: |
+      You are PASS 2 of a two-pass ask classifier. Your job is STRICT
+      verification: keep only candidates that are real asks awaiting
+      a response AND that do not match a learned false-positive
+      pattern.
+
+      Inputs (in userPrompt):
+        - candidates       : Pass 1 wide-net candidates
+        - ignoreList       : entries the user previously flagged via
+                             the "Not an ask" button - each has
+                             { pattern, recipient, source, originalAskText }.
+
+      For each candidate, decide:
+
+        VERIFIED if ALL of:
+          - The candidateAskText genuinely imposes a response
+            obligation (question, action request, approval, etc.)
+          - You don't have strong evidence the recipient already
+            answered (you do NOT have thread access in Pass 2; rely
+            on the candidate's own text - e.g., "thanks!" reply
+            chains, "no need anymore" cancellations - to drop
+            obvious self-resolutions).
+          - The candidateAskText (normalized) does NOT match an
+            ignoreList entry for the same primaryRecipient.
+
+        DROPPED otherwise. Use one of these dropReasons:
+          - "matches-ignore-list"
+          - "self-resolved-in-thread"
+          - "informational"
+          - "ambiguous-low-confidence"
+          - "trivial-or-rhetorical"
+
+      Pattern matching against the ignore list:
+        - Normalize candidateAskText: lowercase, alphanumeric+space
+          only, single-space collapsed, max 80 chars.
+        - For each ignoreList entry: if entry.recipient matches the
+          candidate.primaryRecipient.address (case-insensitive) AND
+          the normalized candidate STARTS WITH or CONTAINS entry.pattern
+          (or vice versa), treat as a match.
+
+      For each VERIFIED candidate also assign a final priority:
+        - urgent : sender's tentative urgency was urgent, OR subject
+                   contains URGENT/asap/blocker, OR the ask is
+                   blocking work
+        - normal : default
+        - low    : passing reminder, low-stakes question
+
+      Compute the ledger key for each verified candidate:
+        - askIdInput = lower(source='mail') + '|' + conversationId +
+                       '|' + lower(primaryRecipient.address) + '|' +
+                       normalizedCandidateAskText
+        - askIdHash  = SHA1-hex(askIdInput) first 16 chars
+        - zakiraKey  = "wo:" + askIdHash
+        (Note: you are emitting these so the downstream Script can
+         verify the hashing matches. If you cannot compute SHA1, set
+         askIdHash to null and the Script will recompute.)
+
+      Output ONLY a single JSON object:
+      {
+        "verifiedAt": "<UTC iso>",
+        "verified": [
+          {
+            "zakiraKey":          "wo:..." | null,
+            "messageId":          "...",
+            "subject":            "...",
+            "sentDateTime":       "...",
+            "conversationId":     "...",
+            "webLink":            "...",
+            "primaryRecipient":   { "name": "...", "address": "..." },
+            "allRecipients":      [ {...} ],
+            "askText":            "<verbatim shortest sentence>",
+            "normalizedAskText":  "<lowercased alnum, <=80 chars>",
+            "rawSignal":          "...",
+            "priority":           "urgent | normal | low"
+          }
+        ],
+        "dropped": [
+          {
+            "messageId":  "...",
+            "askText":    "...",
+            "dropReason": "matches-ignore-list | self-resolved-in-thread | informational | ambiguous-low-confidence | trivial-or-rhetorical",
+            "ignoreEntryMatched": "<key or null>"
+          }
+        ],
+        "verifiedCount": <int>,
+        "droppedCount":  <int>
+      }
+
+      Do NOT call any tools. Do NOT use any MCPs.
+    userPrompt: |
+      Candidates from Pass 1:
+      {{pass1-extract-candidates.output}}
+
+      Loaded ignore list (false-positive trainer):
+      {{load-ignore-list.output}}
+
+      My identity:
+      {{resolve-me.output}}
+
+      Apply Pass 2 verification per the rules in your system prompt.
+      Output ONLY the JSON object.
+    outputHandlerPrompt: |
+      Output exactly one JSON object with the fields verifiedAt,
+      verified, dropped, verifiedCount, droppedCount. Strip markdown
+      fences, prose, and trailing whitespace.
+
+  - name: load-prior-state
+    type: Script
+    dependsOn: [pass2-verify]
+    shell: pwsh
+    script: |
+      # Loads existing waiting-on-ledger records. We use `list` to get
+      # keys then `get` per-key. The ledger is bounded - even after
+      # months of use, expect a few hundred records at most because the
+      # staleAutoCloseDays cutoff sweeps stale entries.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $dbPath   = $args[0]
+      $category = $args[1]
+
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+            $endIdx = $j; break
+          }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      $listOut = & dnx Zakira.Exchange --yes -- --db $dbPath list --cat $category -n 1000 2>&1
+      $keys = New-Object System.Collections.Generic.List[string]
+      if ($LASTEXITCODE -eq 0 -and $null -ne $listOut) {
+        foreach ($line in @($listOut)) {
+          $text = [string]$line
+          if ([string]::IsNullOrWhiteSpace($text)) { continue }
+          if ($text -match '^\s*(Key|---|====|Listing|No entries|Found)') { continue }
+          $tokens = $text -split '\s{2,}|\t', 2
+          if ($tokens.Count -eq 0) { continue }
+          $candidate = $tokens[0].Trim()
+          if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+          [void]$keys.Add($candidate)
+        }
+      }
+
+      $entries = New-Object System.Collections.Generic.List[object]
+      foreach ($key in $keys) {
+        $out = & dnx Zakira.Exchange --yes -- --db $dbPath get $category $key 2>&1
+        if ($LASTEXITCODE -ne 0) { continue }
+        $dataJson = Get-DataJsonFromCliOutput -Lines $out
+        if (-not $dataJson) { continue }
+        try {
+          $data = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop
+          $entries.Add([pscustomobject]@{ zakiraKey = $key; data = $data }) | Out-Null
+        } catch { }
+      }
+
+      [pscustomobject]@{
+        loadedAt = (Get-Date).ToUniversalTime().ToString('o')
+        category = $category
+        count    = $entries.Count
+        records  = $entries.ToArray()
+      } | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraLedgerCategory}}"
+    timeoutSeconds: 600
+
+  - name: merge-and-diff
+    type: Script
+    dependsOn: [pass2-verify, load-prior-state]
+    shell: pwsh
+    script: |
+      # Deterministic merge of Pass 2 verified candidates with the
+      # existing ledger. Decisions per ask:
+      #   - new            : verified candidate with no prior ledger
+      #                      entry (or a prior entry that was dismissed/
+      #                      resolved - manual closures are sticky).
+      #   - still-open     : existing open ask whose hash also appears
+      #                      in verified (just refresh lastSeenAt)
+      #   - manual-closed  : existing ask with status in
+      #                      resolved/dismissed/archived - sticky
+      #   - stale-auto     : existing open ask older than
+      #                      staleAutoCloseDays - auto-closes
+      #   - orphaned       : existing open ask whose hash no longer
+      #                      appears in verified AND it's not yet stale
+      #                      -> leave alone (recipient may have replied;
+      #                      we'll catch it on a future scan when the
+      #                      thread no longer shows as an outbound ask)
+      #
+      # Hashing recomputed deterministically here so we can ignore the
+      # LLM's askIdHash and trust the math.
+      $ErrorActionPreference = 'Stop'
+
+      $verifiedJson      = $args[0]
+      $priorJson         = $args[1]
+      $staleAutoCloseDays= [int]$args[2]
+      $runId             = $args[3]
+
+      $verified = ConvertFrom-Json -InputObject $verifiedJson -Depth 100 -ErrorAction Stop
+      $prior    = ConvertFrom-Json -InputObject $priorJson    -Depth 100 -ErrorAction Stop
+
+      $now = (Get-Date).ToUniversalTime()
+      $nowIso = $now.ToString('o')
+      $staleCutoff = $now.AddDays(-$staleAutoCloseDays)
+
+      function Get-NormalizedPattern {
+        param([string]$Text)
+        if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+        $lower = $Text.ToLowerInvariant()
+        $stripped = $lower -replace '[^a-z0-9 ]', ''
+        $collapsed = ($stripped -replace '\s+', ' ').Trim()
+        if ($collapsed.Length -gt 80) { $collapsed = $collapsed.Substring(0, 80) }
+        return $collapsed
+      }
+      function Get-AskHash {
+        param([string]$Source, [string]$ConversationId, [string]$Recipient, [string]$NormalizedText)
+        $input = "$Source|$ConversationId|$Recipient|$NormalizedText".ToLowerInvariant()
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($input)
+        $sha = [System.Security.Cryptography.SHA1]::Create()
+        try { $hashBytes = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
+        $hex = ($hashBytes | ForEach-Object { $_.ToString('x2') }) -join ''
+        return $hex.Substring(0, 16)
+      }
+
+      $priorMap = @{}
+      foreach ($p in @($prior.records)) {
+        if ($null -eq $p) { continue }
+        $priorMap[[string]$p.zakiraKey] = $p.data
+      }
+      $remainingPriorKeys = New-Object System.Collections.Generic.HashSet[string]
+      foreach ($k in $priorMap.Keys) { [void]$remainingPriorKeys.Add($k) }
+
+      $upserts = New-Object System.Collections.Generic.List[object]
+      $rollup = [ordered]@{
+        new = 0; 'still-open' = 0; 'manual-closed' = 0;
+        'stale-auto' = 0; orphaned = 0
+      }
+
+      # Process verified candidates first - this populates new + still-open
+      # buckets and reduces the orphan candidate set.
+      foreach ($v in @($verified.verified)) {
+        if ($null -eq $v) { continue }
+
+        $askText = [string]$v.askText
+        $normalized = [string]$v.normalizedAskText
+        if ([string]::IsNullOrWhiteSpace($normalized)) {
+          $normalized = Get-NormalizedPattern -Text $askText
+        }
+        $recipientAddr = ''
+        if ($v.primaryRecipient -and $v.primaryRecipient.address) {
+          $recipientAddr = ([string]$v.primaryRecipient.address).ToLowerInvariant()
+        }
+        $convId = [string]$v.conversationId
+        $hash = Get-AskHash -Source 'mail' -ConversationId $convId -Recipient $recipientAddr -NormalizedText $normalized
+        $key = "wo:$hash"
+
+        $prior = if ($priorMap.ContainsKey($key)) { $priorMap[$key] } else { $null }
+        if ($null -ne $prior) { [void]$remainingPriorKeys.Remove($key) }
+
+        if ($null -ne $prior -and $prior.PSObject.Properties['status']) {
+          $priorStatus = [string]$prior.status
+          if ($priorStatus -in @('resolved','dismissed','archived','stale-auto-closed')) {
+            # Manual / auto closures are sticky. Refresh lastSeenAt only.
+            $rollup['manual-closed'] += 1
+            $refresh = [ordered]@{}
+            foreach ($p in $prior.PSObject.Properties) { $refresh[$p.Name] = $p.Value }
+            $refresh['lastSeenAt'] = $nowIso
+            $upserts.Add([pscustomobject]@{
+              op = 'edit'; zakiraKey = $key; data = [pscustomobject]$refresh; classify = 'manual-closed'
+            }) | Out-Null
+            continue
+          }
+        }
+
+        $isNew = ($null -eq $prior)
+        $createdAt = if ($isNew) { $nowIso } elseif ($prior.PSObject.Properties['createdAt']) { [string]$prior.createdAt } else { $nowIso }
+        $firstSeenAt = if ($isNew) { [string]$v.sentDateTime } elseif ($prior.PSObject.Properties['firstSeenAt']) { [string]$prior.firstSeenAt } else { [string]$v.sentDateTime }
+        $sentAt = [string]$v.sentDateTime
+
+        $data = [ordered]@{
+          zakiraKey         = $key
+          askId             = $hash
+          source            = 'mail'
+          messageId         = [string]$v.messageId
+          subject           = [string]$v.subject
+          conversationId    = $convId
+          webLink           = [string]$v.webLink
+          recipient         = $recipientAddr
+          recipientName     = if ($v.primaryRecipient -and $v.primaryRecipient.name) { [string]$v.primaryRecipient.name } else { $recipientAddr }
+          allRecipients     = $v.allRecipients
+          askText           = $askText
+          normalizedAskText = $normalized
+          rawSignal         = [string]$v.rawSignal
+          priority          = [string]$v.priority
+          status            = 'open'
+          createdAt         = $createdAt
+          sentDateTime      = $sentAt
+          firstSeenAt       = $firstSeenAt
+          lastSeenAt        = $nowIso
+          closedAt          = $null
+          closeReason       = $null
+          runIdLastTouched  = $runId
+        }
+
+        $classify = if ($isNew) { 'new' } else { 'still-open' }
+        $rollup[$classify] += 1
+
+        $upserts.Add([pscustomobject]@{
+          op = if ($isNew) { 'create' } else { 'edit' }
+          zakiraKey = $key
+          data = [pscustomobject]$data
+          classify = $classify
+        }) | Out-Null
+      }
+
+      # Orphan / stale handling for remaining prior keys.
+      foreach ($key in $remainingPriorKeys) {
+        $entry = $priorMap[$key]
+        $status = if ($entry.PSObject.Properties['status']) { [string]$entry.status } else { 'open' }
+        if ($status -ne 'open') { continue }
+
+        $sentAt = if ($entry.PSObject.Properties['sentDateTime']) { [string]$entry.sentDateTime } else { '' }
+        $sentUtc = $null
+        if (-not [string]::IsNullOrWhiteSpace($sentAt)) {
+          try { $sentUtc = [datetimeoffset]::Parse($sentAt, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime } catch { }
+        }
+
+        if ($null -ne $sentUtc -and $sentUtc -lt $staleCutoff) {
+          # Auto-close.
+          $rollup['stale-auto'] += 1
+          $merged = [ordered]@{}
+          foreach ($p in $entry.PSObject.Properties) { $merged[$p.Name] = $p.Value }
+          $merged['status']      = 'stale-auto-closed'
+          $merged['closedAt']    = $nowIso
+          $merged['closeReason'] = 'stale-presumed-resolved'
+          $upserts.Add([pscustomobject]@{
+            op = 'edit'; zakiraKey = $key; data = [pscustomobject]$merged; classify = 'stale-auto'
+          }) | Out-Null
+        } else {
+          # Not yet stale - leave it as-is (do not include in upserts).
+          # This is the "orphan but still tracked" case: the recipient
+          # may have responded but our pass2-verify also dropped this
+          # ask because it's no longer in Sent. We give the user the
+          # benefit of the doubt; the staleAutoCloseDays cutoff will
+          # eventually retire it.
+          $rollup['orphaned'] += 1
+        }
+      }
+
+      [pscustomobject]@{
+        diffedAt    = $nowIso
+        runId       = $runId
+        rollup      = $rollup
+        upsertCount = $upserts.Count
+        upserts     = $upserts.ToArray()
+        droppedCount = [int]$verified.droppedCount
+      } | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{pass2-verify.output}}"
+      - "{{load-prior-state.output}}"
+      - "{{param.staleAutoCloseDays}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 120
+
+  - name: gate-noteworthy-activity
+    type: Script
+    dependsOn: [merge-and-diff]
+    shell: pwsh
+    script: |
+      # Noteworthy when ANY of:
+      #   - new asks appeared
+      #   - any ask auto-closed (stale-auto) - the user should know we
+      #     swept some away
+      #   - the open count crossed a threshold (always surface when
+      #     >= 10 open asks regardless of changes - reminder pressure)
+      #   - forceSurface
+      # AND dryRun is false. dryRun=true forces noteworthy=false so the
+      # ActionView submission branch is skipped entirely.
+      $ErrorActionPreference = 'Stop'
+
+      $diffJson  = $args[0]
+      $forceRaw  = $args[1]
+      $dryRunRaw = $args[2]
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $forceBool  = [string]::Equals($forceRaw.Trim(),  'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $dryRunBool = [string]::Equals($dryRunRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      $rollup = $diff.rollup
+      $newCount = [int]$rollup.new
+      $staleCount = [int]$rollup.'stale-auto'
+      $openCount = ([int]$rollup.new + [int]$rollup.'still-open')
+
+      $noteworthy = (-not $dryRunBool) -and ($forceBool -or ($newCount -gt 0) -or ($staleCount -gt 0) -or ($openCount -ge 10))
+
+      $reason = if ($dryRunBool) {
+        "dry-run: ActionView submission suppressed (new=$newCount, stale=$staleCount, open=$openCount would otherwise surface)"
+      } elseif ($noteworthy) {
+        "noteworthy: new=$newCount, stale-auto=$staleCount, open=$openCount, force=$forceBool"
+      } else {
+        "no-op: new=0, stale=0, open<10, force=false"
+      }
+
+      [pscustomobject]@{
+        noteworthy   = $noteworthy
+        forceSurface = $forceBool
+        dryRun       = $dryRunBool
+        newCount     = $newCount
+        staleCount   = $staleCount
+        openCount    = $openCount
+        reason       = $reason
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{merge-and-diff.output}}"
+      - "{{param.forceSurface}}"
+      - "{{param.dryRun}}"
+    timeoutSeconds: 30
+
+  - name: noteworthy-gate-prompt
+    type: Prompt
+    dependsOn: [gate-noteworthy-activity]
+    systemPrompt: |
+      You read a JSON object that contains a `noteworthy` boolean. Your
+      ONLY job is to gate downstream ActionView submission.
+
+      Rules:
+      1. If `noteworthy` is exactly `true`, output the JSON object
+         verbatim with no prose, fences, or alterations.
+      2. If `noteworthy` is `false`, call the engine tool
+         `orchestra_set_status` with status `no_action` and a reason
+         that includes the supplied `reason` field. After calling the
+         tool, output the JSON object verbatim.
+      3. Do not call any other tools.
+      4. Do not add prose, markdown fences, or commentary.
+    userPrompt: |
+      Gate decision input:
+      {{gate-noteworthy-activity.output}}
+    outputHandlerPrompt: |
+      Output exactly one JSON object - the gate decision verbatim.
+      Strip any markdown fences, prose, or trailing whitespace.
+
+  - name: update-ledger
+    type: Script
+    dependsOn: [merge-and-diff]
+    shell: pwsh
+    script: |
+      # Bulk Zakira writes + last-run cursor refresh. Runs even when
+      # gate-noteworthy-activity is no-op so the lookback cursor keeps
+      # advancing.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $diffJson    = $args[0]
+      $dbPath      = $args[1]
+      $category    = $args[2]
+      $lastRunCat  = $args[3]
+      $dryRun      = $args[4]
+      $runId       = $args[5]
+
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      if ($dryRunBool) {
+        [pscustomobject]@{ status='dry-run-skipped' } | ConvertTo-Json -Compress
+        return
+      }
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+
+      $created = 0; $updated = 0
+      $errors = New-Object System.Collections.Generic.List[string]
+
+      foreach ($u in @($diff.upserts)) {
+        if ($null -eq $u) { continue }
+        $key = [string]$u.zakiraKey
+        $payload = $u.data | ConvertTo-Json -Depth 50 -Compress
+        $reason = "$($u.classify); runId=$runId"
+        $author = "waiting-on-tracker:$runId"
+
+        if ($u.op -eq 'create') {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $key `
+            --data $payload --author $author --reason $reason 2>&1
+          if ($LASTEXITCODE -eq 0) { $created += 1 }
+          else {
+            $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $key `
+              --data $payload --author $author --reason $reason 2>&1
+            if ($LASTEXITCODE -eq 0) { $updated += 1 }
+            else { $errors.Add("upsert ${key}: $($out -join ' ')") | Out-Null }
+          }
+        } else {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $key `
+            --data $payload --author $author --reason $reason 2>&1
+          if ($LASTEXITCODE -eq 0) { $updated += 1 }
+          else { $errors.Add("edit ${key}: $($out -join ' ')") | Out-Null }
+        }
+      }
+
+      $cursorPayload = @{
+        completedAt = (Get-Date).ToUniversalTime().ToString('o')
+        runId       = $runId
+        upserts     = $created + $updated
+      } | ConvertTo-Json -Compress
+
+      $cursorOut = & dnx Zakira.Exchange --yes -- --db $dbPath edit $lastRunCat 'last-run' `
+        --data $cursorPayload --author $author --reason 'last-run cursor refresh' 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        $cursorOut = & dnx Zakira.Exchange --yes -- --db $dbPath create $lastRunCat 'last-run' `
+          --data $cursorPayload --author $author --reason 'last-run cursor seed' 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          $errors.Add("cursor write: $($cursorOut -join ' ')") | Out-Null
+        }
+      }
+
+      [pscustomobject]@{
+        status   = 'persisted'
+        created  = $created
+        updated  = $updated
+        errors   = $errors.ToArray()
+      } | ConvertTo-Json -Depth 10 -Compress
+    arguments:
+      - "{{merge-and-diff.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraLedgerCategory}}"
+      - "{{vars.zakiraLastRunCategory}}"
+      - "{{param.dryRun}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 900
+
+  - name: build-todo-payloads
+    type: Script
+    dependsOn: [merge-and-diff]
+    shell: pwsh
+    script: |
+      # Push to To Do only open asks whose age exceeds the per-priority
+      # reminder threshold. New asks below the threshold get the To Do
+      # treatment on a later run, not immediately.
+      $ErrorActionPreference = 'Stop'
+
+      $diffJson           = $args[0]
+      $listName           = $args[1]
+      $pushEnabledRaw     = $args[2]
+      $dryRunRaw          = $args[3]
+      $thresholdUrgentHrs = [int]$args[4]
+      $thresholdNormalHrs = [int]$args[5]
+      $maxNewCap          = [int]$args[6]
+
+      $pushEnabled = [string]::Equals($pushEnabledRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $dryRunBool  = [string]::Equals($dryRunRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      if (-not $pushEnabled -or $dryRunBool) {
+        [pscustomobject]@{ items = @() } | ConvertTo-Json -Compress
+        return
+      }
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $now = (Get-Date).ToUniversalTime()
+
+      $items = New-Object System.Collections.Generic.List[object]
+      $newPushed = 0
+
+      foreach ($u in @($diff.upserts)) {
+        if ($null -eq $u) { continue }
+        $d = $u.data
+        $status = [string]$d.status
+        if ($status -ne 'open') { continue }
+
+        $sentAt = [string]$d.sentDateTime
+        if ([string]::IsNullOrWhiteSpace($sentAt)) { continue }
+        try {
+          $sentUtc = [datetimeoffset]::Parse($sentAt, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+        } catch { continue }
+
+        $threshold = if ([string]$d.priority -eq 'urgent') { $thresholdUrgentHrs } else { $thresholdNormalHrs }
+        $ageHours = ($now - $sentUtc).TotalHours
+        if ($ageHours -lt $threshold) { continue }
+
+        # Cap NEW pushes (existing tasks PATCH idempotently, no cap).
+        if ($u.classify -eq 'new') {
+          if ($newPushed -ge $maxNewCap) { continue }
+          $newPushed++
+        }
+
+        $importance = switch ([string]$d.priority) {
+          'urgent' { 'high' }
+          'low'    { 'low' }
+          default  { 'normal' }
+        }
+
+        $recipientText = if (-not [string]::IsNullOrWhiteSpace([string]$d.recipientName)) { [string]$d.recipientName } else { [string]$d.recipient }
+        $subj = [string]$d.subject
+        if ([string]::IsNullOrWhiteSpace($subj)) { $subj = '(no subject)' }
+        if ($subj.Length -gt 80) { $subj = $subj.Substring(0, 77) + '...' }
+        $title = "Waiting on $recipientText - $subj"
+
+        $bodyLines = @(
+          [string]$d.askText,
+          '',
+          "Sent: $sentAt",
+          "To: $recipientText <$([string]$d.recipient)>",
+          "Priority: $([string]$d.priority)",
+          "Signal: $([string]$d.rawSignal)"
+        )
+        if (-not [string]::IsNullOrWhiteSpace([string]$d.webLink)) {
+          $bodyLines += ''
+          $bodyLines += "Open thread: $([string]$d.webLink)"
+        }
+        $body = ($bodyLines -join "`n").TrimEnd()
+
+        $items.Add([pscustomobject]@{
+          externalId = [string]$d.zakiraKey
+          title      = $title
+          body       = $body
+          dueDate    = ''
+          importance = $importance
+          status     = 'notStarted'
+          listName   = $listName
+        }) | Out-Null
+      }
+
+      [pscustomobject]@{ items = $items.ToArray(); count = $items.Count; newPushed = $newPushed } | ConvertTo-Json -Depth 20 -Compress
+    arguments:
+      - "{{merge-and-diff.output}}"
+      - "{{vars.todoListName}}"
+      - "{{param.pushToTodo}}"
+      - "{{param.dryRun}}"
+      - "{{param.reminderThresholdHoursUrgent}}"
+      - "{{param.reminderThresholdHoursNormal}}"
+      - "{{param.maxNewToDoPushPerRun}}"
+    timeoutSeconds: 60
+
+  - name: push-to-todo
+    type: Orchestration
+    dependsOn: [build-todo-payloads]
+    orchestration: todo-upsert
+    forEach: "{{build-todo-payloads.output}}"
+    forEachPath: items
+    itemParameter: todoItem
+    parameters:
+      listName: "{{vars.todoListName}}"
+      externalId: ""
+      title: ""
+      body: ""
+      dueDate: ""
+      importance: normal
+      status: notStarted
+    inputHandlerPrompt: |
+      Return ONLY a valid JSON object mapping todo-upsert parameter
+      names (listName, externalId, title, body, dueDate, importance,
+      status) to string values pulled from the supplied item. Preserve
+      listName, externalId, importance, status verbatim. The body must
+      be a single plain-text string with newlines escaped for valid JSON.
+    mode: sync
+    maxConcurrency: 3
+    continueOnItemFailure: true
+    timeoutSeconds: 1800
+
+  - name: build-actionview-entry
+    type: Script
+    dependsOn: [merge-and-diff, noteworthy-gate-prompt, update-ledger, push-to-todo]
+    shell: pwsh
+    script: |
+      # Deterministic ActionView entry builder. Open asks grouped by
+      # recipient with three per-ask buttons: Resolved, Dismiss,
+      # Not an ask. Stable entry id so each run updates the same card.
+      $ErrorActionPreference = 'Stop'
+
+      $diffJson          = $args[0]
+      $sharedScriptsDir  = $args[1]
+      $dbPath            = $args[2]
+      $ledgerCategory    = $args[3]
+      $ignoreCategory    = $args[4]
+      $entryId           = $args[5]
+      $groupId           = $args[6]
+      $dryRun            = $args[7]
+      $forceSurface      = $args[8]
+      $runId             = $args[9]
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $forceBool = [string]::Equals($forceSurface.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      $resolvedSharedDir = [System.IO.Path]::GetFullPath($sharedScriptsDir)
+      $markScriptPath    = Join-Path $resolvedSharedDir 'mark-ledger-item.ps1'
+      $notAnAskScriptPath= Join-Path $resolvedSharedDir 'flag-as-not-an-ask.ps1'
+
+      $upserts = @($diff.upserts)
+      $openItems = @($upserts | Where-Object { [string]$_.data.status -eq 'open' } | ForEach-Object { $_.data })
+
+      # Group by recipient address.
+      $byRecipient = $openItems | Group-Object -Property { [string]$_.recipient }
+
+      $now = (Get-Date).ToUniversalTime()
+      foreach ($d in $openItems) {
+        try {
+          $sentUtc = [datetimeoffset]::Parse([string]$d.sentDateTime, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+          $d | Add-Member -NotePropertyName ageHours -NotePropertyValue ([math]::Round(($now - $sentUtc).TotalHours, 1)) -Force
+        } catch {
+          $d | Add-Member -NotePropertyName ageHours -NotePropertyValue 0 -Force
+        }
+      }
+
+      $newCount       = [int]$diff.rollup.new
+      $staleCount     = [int]$diff.rollup.'stale-auto'
+      $manualCount    = [int]$diff.rollup.'manual-closed'
+      $stillOpenCount = [int]$diff.rollup.'still-open'
+      $totalOpen      = $openItems.Count
+
+      $urgentOpen = @($openItems | Where-Object { [string]$_.priority -eq 'urgent' })
+      $severity = if ($urgentOpen.Count -gt 0) { 'high' } elseif ($totalOpen -ge 10) { 'medium' } else { 'low' }
+      $pinned   = ($urgentOpen.Count -gt 0)
+      $title    = "Waiting on: $totalOpen ask(s), $($urgentOpen.Count) urgent, across $($byRecipient.Count) recipient(s)"
+      $subtitle = "$newCount new, $staleCount auto-closed, $manualCount handled in last run"
+
+      function New-AskActions {
+        param([string]$LedgerKey)
+        return @(
+          [ordered]@{
+            label = 'Resolved'
+            style = 'success'
+            onSuccess = 'keep'
+            command = [ordered]@{
+              type = 'cli'
+              program = 'pwsh'
+              args = @(
+                '-NoProfile','-NoLogo','-File', $markScriptPath,
+                '-Category', $ledgerCategory,
+                '-Key',      $LedgerKey,
+                '-Action',   'completed',
+                '-Reason',   'resolved-via-actionview',
+                '-DatabasePath', $dbPath
+              )
+            }
+          },
+          [ordered]@{
+            label = 'Dismiss'
+            style = 'default'
+            onSuccess = 'keep'
+            command = [ordered]@{
+              type = 'cli'
+              program = 'pwsh'
+              args = @(
+                '-NoProfile','-NoLogo','-File', $markScriptPath,
+                '-Category', $ledgerCategory,
+                '-Key',      $LedgerKey,
+                '-Action',   'dismissed',
+                '-Reason',   'dismissed-via-actionview',
+                '-DatabasePath', $dbPath
+              )
+            }
+          },
+          [ordered]@{
+            label = 'Not an ask'
+            style = 'danger'
+            onSuccess = 'keep'
+            confirmMessage = 'Train the classifier to ignore similar messages from this recipient in future runs?'
+            command = [ordered]@{
+              type = 'cli'
+              program = 'pwsh'
+              args = @(
+                '-NoProfile','-NoLogo','-File', $notAnAskScriptPath,
+                '-LedgerCategory', $ledgerCategory,
+                '-LedgerKey',      $LedgerKey,
+                '-IgnoreCategory', $ignoreCategory,
+                '-DatabasePath',   $dbPath
+              )
+            }
+          }
+        )
+      }
+
+      function New-AskSection {
+        param([pscustomobject]$Data)
+        $askText = [string]$Data.askText
+        $titleText = "[$([string]$Data.priority)] $askText"
+        if ($titleText.Length -gt 140) { $titleText = $titleText.Substring(0, 137) + '...' }
+
+        $pairs = [ordered]@{}
+        $pairs['Sent']        = [string]$Data.sentDateTime
+        $pairs['Age (hours)'] = "$($Data.ageHours)"
+        $pairs['Priority']    = [string]$Data.priority
+        $pairs['Signal']      = [string]$Data.rawSignal
+        if (-not [string]::IsNullOrWhiteSpace([string]$Data.subject)) { $pairs['Subject'] = [string]$Data.subject }
+        if (-not [string]::IsNullOrWhiteSpace([string]$Data.webLink)) {
+          $pairs['Open thread'] = [ordered]@{ type='link'; url=[string]$Data.webLink; label='open in Outlook' }
+        }
+
+        return [ordered]@{
+          type    = 'section'
+          title   = $titleText
+          defaultCollapsed = $false
+          content = @(
+            [ordered]@{ type='keyValue'; pairs=$pairs }
+          )
+          actions = New-AskActions -LedgerKey ([string]$Data.zakiraKey)
+        }
+      }
+
+      function New-RecipientSection {
+        param([string]$Recipient, [object[]]$Asks)
+        if ($Asks.Count -eq 0) { return $null }
+        $cap = 10
+        # Sort within a recipient: urgent first, then oldest first.
+        $sorted = $Asks | Sort-Object -Property `
+          @{ Expression = { if ([string]$_.priority -eq 'urgent') { 0 } elseif ([string]$_.priority -eq 'normal') { 1 } else { 2 } } }, `
+          @{ Expression = { -[double]$_.ageHours } }
+        $shown = $sorted | Select-Object -First $cap
+        $nested = New-Object System.Collections.Generic.List[object]
+        $nested.Add([ordered]@{
+          type = 'markdown'
+          body = "**$($Asks.Count) open ask(s) for this recipient.**"
+        }) | Out-Null
+        foreach ($d in $shown) { $nested.Add((New-AskSection -Data $d)) | Out-Null }
+        if ($Asks.Count -gt $cap) {
+          $more = $Asks.Count - $cap
+          $nested.Add([ordered]@{ type='markdown'; body="_Plus $more more not shown - they will appear once the older ones close out._" }) | Out-Null
+        }
+
+        $first = $shown[0]
+        $headerName = if (-not [string]::IsNullOrWhiteSpace([string]$first.recipientName)) { [string]$first.recipientName } else { $Recipient }
+        return [ordered]@{
+          type    = 'section'
+          title   = "$headerName <$Recipient> ($($Asks.Count))"
+          defaultCollapsed = $false
+          content = $nested.ToArray()
+        }
+      }
+
+      $content = New-Object System.Collections.Generic.List[object]
+
+      if ($urgentOpen.Count -gt 0) {
+        $alertBody = "**$($urgentOpen.Count) urgent ask(s) outstanding:**`n`n"
+        foreach ($d in ($urgentOpen | Select-Object -First 5)) {
+          $r = if (-not [string]::IsNullOrWhiteSpace([string]$d.recipientName)) { [string]$d.recipientName } else { [string]$d.recipient }
+          $alertBody += "- **$r** - $([string]$d.askText) _(age $([string]$d.ageHours)h)_`n"
+        }
+        if ($urgentOpen.Count -gt 5) {
+          $alertBody += "- _...and $($urgentOpen.Count - 5) more below._"
+        }
+        $content.Add([ordered]@{
+          type  = 'alert'
+          level = 'warning'
+          label = 'Urgent waiting-on'
+          body  = $alertBody.TrimEnd()
+        }) | Out-Null
+      }
+
+      $content.Add([ordered]@{
+        type  = 'keyValue'
+        label = 'Run Overview'
+        pairs = [ordered]@{
+          'Open asks'        = "$totalOpen"
+          'Distinct recipients' = "$($byRecipient.Count)"
+          'Urgent'           = "$($urgentOpen.Count)"
+          'New since run'    = "$newCount"
+          'Still open'       = "$stillOpenCount"
+          'Auto-closed'      = "$staleCount"
+          'Handled manually' = "$manualCount"
+          'Dropped this run' = "$([int]$diff.droppedCount)"
+        }
+      }) | Out-Null
+
+      # Recipient sections, sorted by ask count desc then by oldest ask asc.
+      $sortedGroups = $byRecipient | Sort-Object -Property `
+        @{ Expression = { -$_.Count } }, `
+        @{ Expression = {
+            $oldest = $_.Group | Sort-Object -Property { -[double]$_.ageHours } -Top 1
+            -[double]$oldest.ageHours
+          } }
+
+      foreach ($g in $sortedGroups) {
+        $section = New-RecipientSection -Recipient $g.Name -Asks @($g.Group)
+        if ($null -ne $section) { $content.Add($section) | Out-Null }
+      }
+
+      $content.Add([ordered]@{
+        type = 'markdown'
+        body = "Run id: ``$runId``  -  Dry run: ``$dryRunBool``  -  Force surface: ``$forceBool``"
+      }) | Out-Null
+
+      $entry = [ordered]@{
+        schemaVersion = '1'
+        id            = $entryId
+        type          = 'waiting-on'
+        source        = 'waiting-on-tracker'
+        title         = $title
+        subtitle      = $subtitle
+        severity      = $severity
+        icon          = 'clock-alert'
+        tags          = @('waiting-on','mail','productivity','ZTS','followup')
+        groupId       = $groupId
+        pinned        = $pinned
+        content       = $content.ToArray()
+      }
+
+      $entry | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{merge-and-diff.output}}"
+      - "{{vars.sharedScriptsDir}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraLedgerCategory}}"
+      - "{{vars.zakiraIgnoreCategory}}"
+      - "{{vars.actionViewEntryId}}"
+      - "{{vars.actionViewGroupId}}"
+      - "{{param.dryRun}}"
+      - "{{param.forceSurface}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 180
+
+  - name: submit-actionview-entry
+    type: Orchestration
+    dependsOn: [build-actionview-entry]
+    orchestration: actionview-submit
+    parameters:
+      entryJson: "{{build-actionview-entry.output}}"
+      template: waiting-on
+      groupId: "{{vars.actionViewGroupId}}"
+    inputHandlerPrompt: |
+      Return ONLY a valid JSON object mapping actionview-submit parameter
+      names (entryJson, template, groupId) to string values. The
+      entryJson value is the canonical entry JSON serialized as a
+      string. No sentinel handling needed - noteworthy-gate-prompt
+      already skipped this branch via orchestra_set_status('no_action')
+      on no-op runs.
+    mode: sync
+    timeoutSeconds: 600
+
+  - name: weekly-obsidian-digest
+    type: Script
+    dependsOn: [merge-and-diff, update-ledger]
+    shell: pwsh
+    script: |
+      # Monday-only weekly digest. Writes one note per ISO week
+      # summarising closures + still-outstanding asks grouped by
+      # recipient. Skipped on all other days.
+      $ErrorActionPreference = 'Stop'
+
+      $diffJson    = $args[0]
+      $digestDir   = $args[1]
+      $dryRunRaw   = $args[2]
+
+      $dryRunBool = [string]::Equals($dryRunRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $today = Get-Date
+      if ($today.DayOfWeek -ne [System.DayOfWeek]::Monday) {
+        [pscustomobject]@{ status='skipped'; reason='not-monday' } | ConvertTo-Json -Compress
+        return
+      }
+      if ($dryRunBool) {
+        [pscustomobject]@{ status='dry-run-skipped' } | ConvertTo-Json -Compress
+        return
+      }
+
+      if (-not (Test-Path -LiteralPath $digestDir)) {
+        New-Item -ItemType Directory -Path $digestDir -Force | Out-Null
+      }
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+
+      $upserts = @($diff.upserts)
+      $closed = $upserts | Where-Object { $_.classify -in @('stale-auto','manual-closed') } | ForEach-Object { $_.data }
+      $open = $upserts | Where-Object { $_.classify -in @('new','still-open') } | ForEach-Object { $_.data }
+
+      $iso = [System.Globalization.ISOWeek]::GetWeekOfYear($today)
+      $year = [System.Globalization.ISOWeek]::GetYear($today)
+      $weekKey = "{0:0000}-W{1:00}" -f $year, $iso
+
+      $lines = New-Object System.Collections.Generic.List[string]
+      [void]$lines.Add("# Waiting On - $weekKey")
+      [void]$lines.Add('')
+      [void]$lines.Add("_Refreshed on $($today.ToString('yyyy-MM-dd')) by waiting-on-tracker._")
+      [void]$lines.Add('')
+      [void]$lines.Add("Open asks: **$(@($open).Count)** across **$(@($open | Group-Object -Property recipient).Count)** recipient(s).")
+      [void]$lines.Add("Closed since the previous weekly digest: **$(@($closed).Count)**.")
+      [void]$lines.Add('')
+
+      if (@($open).Count -gt 0) {
+        [void]$lines.Add('## Still outstanding')
+        [void]$lines.Add('')
+        $openGroups = $open | Group-Object -Property { [string]$_.recipient } | Sort-Object -Property Count -Descending
+        foreach ($g in $openGroups) {
+          $first = $g.Group | Select-Object -First 1
+          $name = if (-not [string]::IsNullOrWhiteSpace([string]$first.recipientName)) { [string]$first.recipientName } else { $g.Name }
+          [void]$lines.Add("### $name <$($g.Name)>")
+          [void]$lines.Add('')
+          foreach ($d in ($g.Group | Sort-Object -Property { [string]$_.sentDateTime })) {
+            $linkPart = if (-not [string]::IsNullOrWhiteSpace([string]$d.webLink)) { " ([thread]($([string]$d.webLink)))" } else { '' }
+            [void]$lines.Add("- [ ] **[$([string]$d.priority)]** $([string]$d.askText) _(sent $([string]$d.sentDateTime))_$linkPart")
+          }
+          [void]$lines.Add('')
+        }
+      }
+
+      if (@($closed).Count -gt 0) {
+        [void]$lines.Add('## Closed this period')
+        [void]$lines.Add('')
+        foreach ($d in ($closed | Sort-Object -Property { [string]$_.closedAt } -Descending)) {
+          $name = if (-not [string]::IsNullOrWhiteSpace([string]$d.recipientName)) { [string]$d.recipientName } else { [string]$d.recipient }
+          [void]$lines.Add("- [x] **[$([string]$d.priority)]** $([string]$d.askText) - $name _(close reason: $([string]$d.closeReason))_")
+        }
+        [void]$lines.Add('')
+      }
+
+      $path = Join-Path $digestDir ("$weekKey.md")
+      Set-Content -LiteralPath $path -Value ($lines -join "`n") -Encoding utf8NoBOM
+
+      [pscustomobject]@{
+        status   = 'written'
+        path     = $path
+        weekKey  = $weekKey
+        open     = @($open).Count
+        closed   = @($closed).Count
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{merge-and-diff.output}}"
+      - "{{vars.obsidianDigestDir}}"
+      - "{{param.dryRun}}"
+    timeoutSeconds: 120
+
+  - name: emit-daily-summary
+    type: Script
+    dependsOn: [merge-and-diff, update-ledger, push-to-todo, gate-noteworthy-activity]
+    shell: pwsh
+    script: |
+      # Always-on summary writer. Writes the daily snapshot under
+      # waiting-on-ledger:daily-summary/<YYYY-MM-DD> + 'latest' for the
+      # future daily-morning-digest composer.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $diffJson  = $args[0]
+      $gateJson  = $args[1]
+      $dbPath    = $args[2]
+      $category  = $args[3]
+      $dryRun    = $args[4]
+      $runId     = $args[5]
+
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      if ($dryRunBool) {
+        [pscustomobject]@{ status='dry-run-skipped' } | ConvertTo-Json -Compress
+        return
+      }
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $gate = ConvertFrom-Json -InputObject $gateJson -Depth 50 -ErrorAction Stop
+
+      $open = @($diff.upserts | Where-Object { [string]$_.data.status -eq 'open' } | ForEach-Object { $_.data })
+      $hotAsks = @($open | Where-Object { [string]$_.priority -eq 'urgent' } | Select-Object -First 10 | ForEach-Object {
+        [ordered]@{
+          zakiraKey  = $_.zakiraKey
+          askText    = $_.askText
+          recipient  = $_.recipient
+          recipientName = $_.recipientName
+          sentDateTime = $_.sentDateTime
+          webLink    = $_.webLink
+          priority   = $_.priority
+        }
+      })
+
+      $summary = [ordered]@{
+        summaryDate     = (Get-Date).ToString('yyyy-MM-dd')
+        rolledAt        = (Get-Date).ToUniversalTime().ToString('o')
+        runId           = $runId
+        openCount       = $open.Count
+        urgentCount     = @($open | Where-Object { [string]$_.priority -eq 'urgent' }).Count
+        rollup          = $diff.rollup
+        hotAsks         = $hotAsks
+        distinctRecipients = @($open | Group-Object -Property recipient).Count
+        noteworthy      = $gate.noteworthy
+      }
+      $payload = $summary | ConvertTo-Json -Depth 20 -Compress
+
+      function Write-SummaryKey {
+        param([string]$Key)
+        $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
+          --data $payload --author "waiting-on-tracker:$runId" --reason 'daily summary' 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $Key `
+            --data $payload --author "waiting-on-tracker:$runId" --reason 'daily summary' 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Zakira write failed for $category/${Key}: $($out -join ' ')"
+          }
+        }
+      }
+
+      $dayKey = $summary.summaryDate
+      Write-SummaryKey -Key $dayKey
+      Write-SummaryKey -Key 'latest'
+
+      [pscustomobject]@{
+        status   = 'persisted'
+        keys     = @($dayKey, 'latest')
+        category = $category
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{merge-and-diff.output}}"
+      - "{{gate-noteworthy-activity.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraSummaryCategory}}"
+      - "{{param.dryRun}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 300
+
+  - name: generate-summary
+    type: Transform
+    dependsOn:
+      - compute-lookback-window
+      - load-ignore-list
+      - discover-outbound-asks-mail
+      - pass1-extract-candidates
+      - pass2-verify
+      - load-prior-state
+      - merge-and-diff
+      - update-ledger
+      - push-to-todo
+      - submit-actionview-entry
+      - weekly-obsidian-digest
+      - emit-daily-summary
+    template: |
+      # waiting-on-tracker Run Summary
+
+      **Run ID:** {{orchestration.runId}}
+      **Started:** {{orchestration.startedAt}}
+      **Dry run:** {{param.dryRun}}
+      **Force surface:** {{param.forceSurface}}
+      **Push to To Do:** {{param.pushToTodo}}
+      **Lookback days:** {{param.lookbackDaysDefault}}
+      **Stale auto-close days:** {{param.staleAutoCloseDays}}
+
+      ## Lookback window
+      ```json
+      {{compute-lookback-window.output}}
+      ```
+
+      ## Ignore list (false-positive trainer)
+      ```json
+      {{load-ignore-list.output}}
+      ```
+
+      ## Sent-mail discovery
+      ```json
+      {{discover-outbound-asks-mail.output}}
+      ```
+
+      ## Pass 1 candidates
+      ```json
+      {{pass1-extract-candidates.output}}
+      ```
+
+      ## Pass 2 verified
+      ```json
+      {{pass2-verify.output}}
+      ```
+
+      ## Prior ledger
+      ```json
+      {{load-prior-state.output}}
+      ```
+
+      ## Merge + diff
+      ```json
+      {{merge-and-diff.output}}
+      ```
+
+      ## Ledger persistence
+      ```json
+      {{update-ledger.output}}
+      ```
+
+      ## To Do push
+      ```text
+      {{push-to-todo.output}}
+      ```
+
+      ## ActionView submission
+      ```text
+      {{submit-actionview-entry.output}}
+      ```
+
+      ## Weekly Obsidian digest
+      ```text
+      {{weekly-obsidian-digest.output}}
+      ```
+
+      ## Daily summary
+      ```text
+      {{emit-daily-summary.output}}
+      ```
+    contentType: text/markdown

@@ -1,0 +1,1042 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: my-prs-tracker
+description: |
+  Surfaces PRs that *I authored* and that need my attention or are stuck.
+  Complements the existing reviewer-side suite (pr-auto-reviewer,
+  pr-code-reviewer, pr-comment-responder, pr-review-dispatcher).
+
+  Runs every 2h within the ZTS profile window. For each active PR in
+  the ZTS repository where `createdBy.uniqueName` matches the dynamically
+  resolved signed-in user (via the resolve-me step + Shared/scripts/
+  resolve-user-identity.ps1), classifies the PR into one of:
+    - failing-build       (any policy evaluation failed/rejected)
+    - merge-conflict      (mergeStatus != succeeded for non-trivial reasons)
+    - needs-my-response   (a reviewer voted "waiting for author" recently)
+    - blocked-on-reviewers(required-but-not-yet-voted reviewer is stale > N hours)
+    - ready-to-complete   (all required approvals + clean merge + no draft)
+    - draft-stale         (in draft > staleHoursDraft with no recent commits)
+    - healthy-in-progress (everything else)
+
+  Diffs the new classification against the prior Zakira snapshot. Pushes
+  blocked/needs-response PRs to the "Orchestra: PRs" Microsoft To Do list
+  via the shared todo-upsert orchestration. Submits a single deterministic
+  ActionView entry (template `my-prs`, stable id per run) and writes the
+  daily summary record consumed by the future daily-morning-digest (B1).
+
+version: 1.0.0
+tags: ["ZTS", "MSFT", "PR", "auto", "track", "my-prs"]
+defaultModel: claude-opus-4.7-1m-internal
+
+metadata:
+  owner: Moaid Hathot
+  ownerAlias: moaid
+  domain: productivity
+  sla: best-effort
+  schedule: "every 2h within ZTS profile window"
+  documentation: |
+    Reusable utilities used:
+      - Shared/todo-upsert.yaml          (per-PR Microsoft To Do tasks)
+      - ActionView/actionview-submit.yaml(ActionView entry submission)
+    Zakira categories written:
+      - my-prs-state                     (per-PR records, key = pr-<id>)
+      - my-prs-state:daily-summary       (daily roll-up, key = YYYY-MM-DD + 'latest')
+
+inputs:
+  forceSurface:
+    type: boolean
+    description: |
+      When true, post the ActionView entry even if nothing changed since
+      the prior run. Useful for manual reruns when you want a current
+      snapshot regardless of state diffs.
+    required: false
+    default: "false"
+  staleHoursReviewers:
+    type: string
+    description: |
+      Hours of inactivity (no reviewer vote, no new iteration) that flips
+      a PR into "blocked-on-reviewers". Default 24h.
+    required: false
+    default: "24"
+  staleHoursDraft:
+    type: string
+    description: |
+      Hours of inactivity for a draft PR before it counts as draft-stale.
+      Default 168h (7 days).
+    required: false
+    default: "168"
+  pushToTodo:
+    type: boolean
+    description: |
+      When true, blocked-on-reviewers and needs-my-response PRs get a
+      Microsoft To Do task in the "Orchestra: PRs" list via todo-upsert.
+      Disable to skip the To Do side-effect entirely.
+    required: false
+    default: "true"
+  dryRun:
+    type: boolean
+    description: |
+      When true, run discovery + classification + diff but skip Zakira
+      writes, To Do upserts, and ActionView submission. Used for
+      verifying the read path.
+    required: false
+    default: "false"
+
+variables:
+  organization: msazure
+  project: One
+  repository: ZTS
+  orgUrl: "https://dev.azure.com/msazure"
+  # Identity is resolved dynamically per run via resolve-me (which uses
+  # Shared/scripts/resolve-user-identity.ps1: az account show + Graph /me,
+  # cached in Zakira for 24h). No hardcoded UPN here.
+  zakiraCategory: my-prs-state
+  zakiraSummaryCategory: "my-prs-state:daily-summary"
+  zakiraIdentityCategory: "user-identity:cache"
+  todoListName: "Orchestra: PRs"
+  actionViewGroupId: "my-prs-{{orchestration.runId}}"
+  sharedScriptsDir: "{{orchestration.sourceDirectory}}/../Shared/scripts"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 10
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 600
+timeoutSeconds: 3600
+
+trigger:
+  type: scheduler
+  enabled: true
+  intervalSeconds: 7200
+
+steps:
+  - name: resolve-me
+    type: Script
+    shell: pwsh
+    scriptFile: "./../Shared/scripts/resolve-user-identity.ps1"
+    arguments:
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraIdentityCategory}}"
+      - "default"
+      - "24"
+      - "false"
+    timeoutSeconds: 60
+
+  - name: discover-my-prs
+    type: Script
+    dependsOn: [resolve-me]
+    shell: pwsh
+    script: |
+      # Deterministic discovery via Azure CLI. Lists active PRs in the
+      # ZTS repository and filters to ones I authored. The az CLI is the
+      # same tool zts-official-pipeline-tracker already relies on, so no
+      # new dependency. PR threads / policy detail are pulled lazily by
+      # downstream classify-state when actually needed.
+      #
+      # Identity is supplied by the upstream resolve-me step (NOT
+      # hardcoded). The identity JSON exposes `uniqueName` (UPN);
+      # filtering is case-insensitive on `createdBy.uniqueName`.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      try { Get-Command az -ErrorAction Stop | Out-Null } catch {
+        throw "az CLI is not available on PATH; cannot discover PRs."
+      }
+
+      $orgUrl       = $args[0]
+      $project      = $args[1]
+      $repository   = $args[2]
+      $identityJson = $args[3]
+
+      $identity = ConvertFrom-Json -InputObject $identityJson -Depth 10 -ErrorAction Stop
+      $myUniqueName = [string]$identity.uniqueName
+      if ([string]::IsNullOrWhiteSpace($myUniqueName)) {
+        throw "resolve-me did not return a uniqueName; cannot filter PRs."
+      }
+
+      $stderrFile = [System.IO.Path]::GetTempFileName()
+      try {
+        $raw = & az repos pr list `
+          --org $orgUrl `
+          --project $project `
+          --repository $repository `
+          --status active `
+          --top 200 `
+          -o json 2>$stderrFile
+        if ($LASTEXITCODE -ne 0) {
+          $stderr = Get-Content -LiteralPath $stderrFile -Raw -ErrorAction SilentlyContinue
+          throw "az repos pr list failed (exit $LASTEXITCODE) for $project/$repository. stderr: $stderr"
+        }
+      } finally {
+        Remove-Item -LiteralPath $stderrFile -Force -ErrorAction SilentlyContinue
+      }
+
+      $jsonText = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
+      $allPrs = ConvertFrom-Json -InputObject $jsonText -Depth 100 -ErrorAction Stop
+
+      $now = (Get-Date).ToUniversalTime()
+      $myUpnLower = $myUniqueName.ToLowerInvariant()
+
+      $mine = New-Object System.Collections.Generic.List[object]
+      foreach ($pr in @($allPrs)) {
+        if ($null -eq $pr) { continue }
+        $createdBy = $pr.createdBy
+        if ($null -eq $createdBy) { continue }
+        $upn = [string]$createdBy.uniqueName
+        if ([string]::IsNullOrWhiteSpace($upn)) { continue }
+        if ($upn.ToLowerInvariant() -ne $myUpnLower) { continue }
+
+        $reviewers = @()
+        if ($pr.reviewers) {
+          foreach ($r in @($pr.reviewers)) {
+            if ($null -eq $r) { continue }
+            $reviewers += [pscustomobject]@{
+              uniqueName  = [string]$r.uniqueName
+              displayName = [string]$r.displayName
+              # Vote codes: 10=approved, 5=approved-with-suggestions,
+              # 0=no-vote, -5=waiting-for-author, -10=rejected.
+              vote        = [int]($r.vote -as [int])
+              isRequired  = [bool]($r.isRequired -eq $true)
+              hasDeclined = [bool]($r.hasDeclined -eq $true)
+              isContainer = [bool]($r.isContainer -eq $true)
+            }
+          }
+        }
+
+        $webUrl = $null
+        if ($pr._links -and $pr._links.web -and $pr._links.web.href) {
+          $webUrl = [string]$pr._links.web.href
+        } else {
+          $webUrl = "$orgUrl/$project/_git/$repository/pullrequest/$($pr.pullRequestId)"
+        }
+
+        $mine.Add([pscustomobject]@{
+          prId            = [int]$pr.pullRequestId
+          title           = [string]$pr.title
+          status          = [string]$pr.status
+          mergeStatus     = [string]$pr.mergeStatus
+          isDraft         = [bool]($pr.isDraft -eq $true)
+          createdAt       = [string]$pr.creationDate
+          sourceRefName   = [string]$pr.sourceRefName
+          targetRefName   = [string]$pr.targetRefName
+          sourceCommit    = if ($pr.lastMergeSourceCommit) { [string]$pr.lastMergeSourceCommit.commitId } else { $null }
+          targetCommit    = if ($pr.lastMergeTargetCommit) { [string]$pr.lastMergeTargetCommit.commitId } else { $null }
+          reviewers       = $reviewers
+          repositoryId    = if ($pr.repository) { [string]$pr.repository.id } else { $null }
+          webUrl          = $webUrl
+          # The az CLI does not expose a generic "lastUpdated" field; the
+          # closest stable proxy is the source-commit timestamp, but it
+          # is not on the list response. Downstream classify-state treats
+          # creationDate as a fallback "last reference time" and the
+          # diff-against-prior step rolls forward to detect movement.
+          discoveredAt    = $now.ToString('o')
+        }) | Out-Null
+      }
+
+      [pscustomobject]@{
+        discoveredAt    = $now.ToString('o')
+        totalActive     = @($allPrs).Count
+        mine            = $mine.ToArray()
+        mineCount       = $mine.Count
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{vars.orgUrl}}"
+      - "{{vars.project}}"
+      - "{{vars.repository}}"
+      - "{{resolve-me.output}}"
+    timeoutSeconds: 300
+
+  - name: classify-state
+    type: Script
+    dependsOn: [discover-my-prs]
+    shell: pwsh
+    script: |
+      # Pure deterministic classification. No I/O, no MCP, no LLM. Each
+      # PR is bucketed into one of the documented states; the bucket is
+      # what the ActionView entry surfaces and what the To Do push (if
+      # enabled) filters on.
+      $ErrorActionPreference = 'Stop'
+
+      $discoveryJson         = $args[0]
+      $staleHoursReviewers   = [int]$args[1]
+      $staleHoursDraft       = [int]$args[2]
+
+      $discovery = ConvertFrom-Json -InputObject $discoveryJson -Depth 100 -ErrorAction Stop
+      $now = (Get-Date).ToUniversalTime()
+      $staleCutoffReviewers = $now.AddHours(-$staleHoursReviewers)
+      $staleCutoffDraft     = $now.AddHours(-$staleHoursDraft)
+
+      $byState = [ordered]@{
+        'failing-build'        = 0
+        'merge-conflict'       = 0
+        'needs-my-response'    = 0
+        'blocked-on-reviewers' = 0
+        'ready-to-complete'    = 0
+        'draft-stale'          = 0
+        'healthy-in-progress'  = 0
+      }
+
+      $classified = New-Object System.Collections.Generic.List[object]
+      foreach ($pr in @($discovery.mine)) {
+        if ($null -eq $pr) { continue }
+
+        $reviewers = @($pr.reviewers)
+        $voters = @($reviewers | Where-Object { $_.vote -ne 0 -and -not $_.isContainer })
+        $required = @($reviewers | Where-Object { $_.isRequired -eq $true -and -not $_.isContainer })
+        $waitingForAuthor = @($reviewers | Where-Object { $_.vote -eq -5 -and -not $_.isContainer })
+        $rejections = @($reviewers | Where-Object { $_.vote -eq -10 -and -not $_.isContainer })
+        $approvals = @($reviewers | Where-Object { ($_.vote -eq 10 -or $_.vote -eq 5) -and -not $_.isContainer })
+
+        $createdAtUtc = $null
+        try { $createdAtUtc = [datetimeoffset]::Parse([string]$pr.createdAt, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime } catch { }
+        if ($null -eq $createdAtUtc) { $createdAtUtc = $now }
+
+        # State precedence: rejections / failing build / merge conflict
+        # take precedence over the friendlier "needs response" / "blocked"
+        # buckets because they are the ones that block the PR outright.
+        $state = $null
+        $reason = ''
+
+        $mergeStatus = [string]$pr.mergeStatus
+        if (-not [string]::IsNullOrWhiteSpace($mergeStatus) -and `
+            $mergeStatus -ne 'succeeded' -and $mergeStatus -ne 'queued' -and $mergeStatus -ne 'notSet') {
+          # 'conflicts', 'rejectedByPolicy', 'failure' all map here.
+          $state = 'merge-conflict'
+          $reason = "mergeStatus=$mergeStatus"
+        }
+        elseif ($rejections.Count -gt 0) {
+          $state = 'failing-build'
+          $reason = "Reviewer(s) rejected: " + (($rejections | ForEach-Object { $_.displayName }) -join ', ')
+        }
+        elseif ($waitingForAuthor.Count -gt 0) {
+          $state = 'needs-my-response'
+          $reason = "Waiting for author from: " + (($waitingForAuthor | ForEach-Object { $_.displayName }) -join ', ')
+        }
+        elseif ($pr.isDraft -eq $true) {
+          if ($createdAtUtc -lt $staleCutoffDraft) {
+            $state = 'draft-stale'
+            $reason = "Draft created $($createdAtUtc.ToString('o')); no recent activity within ${staleHoursDraft}h."
+          } else {
+            $state = 'healthy-in-progress'
+            $reason = 'Active draft.'
+          }
+        }
+        elseif ($required.Count -gt 0 -and $approvals.Count -ge $required.Count -and $mergeStatus -eq 'succeeded') {
+          $state = 'ready-to-complete'
+          $reason = "All $($required.Count) required reviewer(s) approved; merge clean."
+        }
+        elseif ($required.Count -gt 0 -and ($approvals.Count -lt $required.Count) -and $createdAtUtc -lt $staleCutoffReviewers) {
+          $state = 'blocked-on-reviewers'
+          $missing = $required.Count - $approvals.Count
+          $reason = "$missing required reviewer(s) have not approved; PR older than ${staleHoursReviewers}h."
+        }
+        else {
+          $state = 'healthy-in-progress'
+          $reason = 'In flight.'
+        }
+
+        $byState[$state] += 1
+
+        $enriched = [ordered]@{}
+        foreach ($p in $pr.PSObject.Properties) { $enriched[$p.Name] = $p.Value }
+        $enriched['state']      = $state
+        $enriched['reason']     = $reason
+        $enriched['classifiedAt'] = $now.ToString('o')
+        $classified.Add([pscustomobject]$enriched) | Out-Null
+      }
+
+      [pscustomobject]@{
+        classifiedAt = $now.ToString('o')
+        prs          = $classified.ToArray()
+        byState      = $byState
+        total        = $classified.Count
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{discover-my-prs.output}}"
+      - "{{param.staleHoursReviewers}}"
+      - "{{param.staleHoursDraft}}"
+    timeoutSeconds: 60
+
+  - name: diff-against-prior
+    type: Script
+    dependsOn: [classify-state]
+    shell: pwsh
+    script: |
+      # Reads each PR's prior Zakira snapshot (category my-prs-state, key
+      # pr-<id>) via the Zakira CLI. Flags whether the state changed and
+      # whether it's a brand-new PR. The output is what update-zakira and
+      # build-actionview-entry consume; the prior snapshot is preserved
+      # on each item so the ActionView entry can show "was X, now Y".
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $classifiedJson = $args[0]
+      $dbPath         = $args[1]
+      $category       = $args[2]
+
+      $classified = ConvertFrom-Json -InputObject $classifiedJson -Depth 100 -ErrorAction Stop
+
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+            $endIdx = $j; break
+          }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      $diffed = New-Object System.Collections.Generic.List[object]
+      $changeCounts = [ordered]@{
+        new           = 0
+        stateChanged  = 0
+        unchanged     = 0
+      }
+
+      foreach ($pr in @($classified.prs)) {
+        if ($null -eq $pr) { continue }
+        $key = "pr-$([string]$pr.prId)"
+        $prior = $null
+
+        $out = & dnx Zakira.Exchange --yes -- --db $dbPath get $category $key 2>&1
+        if ($LASTEXITCODE -eq 0) {
+          $dataJson = Get-DataJsonFromCliOutput -Lines $out
+          if ($dataJson) {
+            try { $prior = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop } catch { $prior = $null }
+          }
+        }
+
+        $isNew = ($null -eq $prior)
+        $stateChanged = $false
+        $priorState = $null
+        if (-not $isNew -and $prior.PSObject.Properties['state']) {
+          $priorState = [string]$prior.state
+          $stateChanged = ($priorState -ne [string]$pr.state)
+        }
+
+        if ($isNew) { $changeCounts['new'] += 1 }
+        elseif ($stateChanged) { $changeCounts['stateChanged'] += 1 }
+        else { $changeCounts['unchanged'] += 1 }
+
+        $enriched = [ordered]@{}
+        foreach ($p in $pr.PSObject.Properties) { $enriched[$p.Name] = $p.Value }
+        $enriched['zakiraKey']     = $key
+        $enriched['isNew']         = $isNew
+        $enriched['priorState']    = $priorState
+        $enriched['stateChanged']  = $stateChanged
+        $diffed.Add([pscustomobject]$enriched) | Out-Null
+      }
+
+      [pscustomobject]@{
+        diffedAt    = (Get-Date).ToUniversalTime().ToString('o')
+        prs         = $diffed.ToArray()
+        changes     = $changeCounts
+        total       = $diffed.Count
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{classify-state.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraCategory}}"
+    timeoutSeconds: 600
+
+  - name: gate-noteworthy-activity
+    type: Script
+    dependsOn: [diff-against-prior]
+    shell: pwsh
+    script: |
+      # Deterministically decides whether this run is worth surfacing to
+      # ActionView. The decision is consumed by noteworthy-gate-prompt
+      # (downstream) which is the only thing that can flip a step's
+      # status via orchestra_set_status. We keep the actual computation
+      # in this Script so the daily-summary writer can read it directly
+      # without going through an LLM.
+      #
+      # dryRun=true forces noteworthy=false so the entire ActionView
+      # submit branch is skipped under dry runs (build-actionview-entry
+      # and submit-actionview-entry both depend on noteworthy-gate-prompt
+      # and get skipped via orchestra_set_status('no_action')). This
+      # honours the documented dryRun contract: "skip Zakira writes, To
+      # Do upserts, and ActionView submission."
+      $ErrorActionPreference = 'Stop'
+
+      $diffJson = $args[0]
+      $force    = $args[1]
+      $dryRun   = $args[2]
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $forceBool  = [string]::Equals($force.Trim(),  'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      $hotStates = @('failing-build','merge-conflict','needs-my-response','blocked-on-reviewers')
+      $hotCount = @($diff.prs | Where-Object { $hotStates -contains $_.state }).Count
+      $changedCount = [int]$diff.changes.new + [int]$diff.changes.stateChanged
+
+      $noteworthy = (-not $dryRunBool) -and (($forceBool) -or ($changedCount -gt 0) -or ($hotCount -gt 0))
+
+      $reason = if ($dryRunBool) {
+        "dry-run: ActionView submission suppressed (hot=$hotCount, changed=$changedCount would otherwise surface)"
+      } elseif ($noteworthy) {
+        "noteworthy: hot=$hotCount, changed=$changedCount, force=$forceBool"
+      } else {
+        "no-op: hot=0, changed=0, force=false"
+      }
+
+      [pscustomobject]@{
+        noteworthy   = $noteworthy
+        forceSurface = $forceBool
+        dryRun       = $dryRunBool
+        hotCount     = $hotCount
+        changedCount = $changedCount
+        totalPrs     = [int]$diff.total
+        reason       = $reason
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{diff-against-prior.output}}"
+      - "{{param.forceSurface}}"
+      - "{{param.dryRun}}"
+    timeoutSeconds: 30
+
+  - name: noteworthy-gate-prompt
+    type: Prompt
+    dependsOn: [gate-noteworthy-activity]
+    systemPrompt: |
+      You read a JSON object that contains a `noteworthy` boolean. Your
+      ONLY job is to gate downstream ActionView submission.
+
+      Rules:
+      1. If `noteworthy` is exactly `true`, output the JSON object
+         verbatim with no prose, fences, or alterations.
+      2. If `noteworthy` is `false`, call the engine tool
+         `orchestra_set_status` with status `no_action` and a reason
+         string that includes the supplied `reason` field. After
+         calling the tool, output the JSON object verbatim so the
+         downstream emitters still receive it for reference (no_action
+         skips downstream consumers regardless).
+      3. Do not call any other tools.
+      4. Do not add prose, markdown fences, or commentary in any branch.
+    userPrompt: |
+      Gate decision input:
+      {{gate-noteworthy-activity.output}}
+    outputHandlerPrompt: |
+      Output exactly one JSON object - the gate decision verbatim.
+      Strip any markdown fences, prose, or trailing whitespace.
+
+  - name: update-zakira-records
+    type: Script
+    dependsOn: [diff-against-prior]
+    shell: pwsh
+    script: |
+      # Bulk Zakira writes via the CLI. We deliberately do NOT route this
+      # through tracker-item-mutate (which is one-record-per-call): for
+      # the per-PR loop the inline pattern is significantly cheaper, and
+      # the schema is stable. tracker-item-mutate is reserved for
+      # ActionView buttons / out-of-band mutations.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $diffJson = $args[0]
+      $dbPath   = $args[1]
+      $category = $args[2]
+      $dryRun   = $args[3]
+      $runId    = $args[4]
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      if ($dryRunBool) {
+        [pscustomobject]@{ status = 'dry-run-skipped'; updated = 0; created = 0 } | ConvertTo-Json -Compress
+        return
+      }
+
+      $updated = 0
+      $created = 0
+      $errors  = New-Object System.Collections.Generic.List[string]
+
+      foreach ($pr in @($diff.prs)) {
+        if ($null -eq $pr) { continue }
+        $key = [string]$pr.zakiraKey
+
+        $payload = [ordered]@{
+          prId         = $pr.prId
+          title        = $pr.title
+          state        = $pr.state
+          reason       = $pr.reason
+          status       = $pr.status
+          mergeStatus  = $pr.mergeStatus
+          isDraft      = $pr.isDraft
+          webUrl       = $pr.webUrl
+          reviewers    = $pr.reviewers
+          classifiedAt = $pr.classifiedAt
+          runId        = $runId
+        } | ConvertTo-Json -Depth 50 -Compress
+
+        if ($pr.isNew -eq $true) {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $key `
+            --data $payload `
+            --author "my-prs-tracker:$runId" `
+            --reason "PR snapshot create" 2>&1
+          if ($LASTEXITCODE -eq 0) { $created += 1 } else { $errors.Add("create ${key}: $($out -join ' ')") | Out-Null }
+        } else {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $key `
+            --data $payload `
+            --author "my-prs-tracker:$runId" `
+            --reason "PR snapshot edit" 2>&1
+          if ($LASTEXITCODE -eq 0) { $updated += 1 } else { $errors.Add("edit ${key}: $($out -join ' ')") | Out-Null }
+        }
+      }
+
+      [pscustomobject]@{
+        status  = 'persisted'
+        updated = $updated
+        created = $created
+        errors  = $errors.ToArray()
+      } | ConvertTo-Json -Depth 5 -Compress
+    arguments:
+      - "{{diff-against-prior.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraCategory}}"
+      - "{{param.dryRun}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 600
+
+  - name: build-todo-payloads
+    type: Script
+    dependsOn: [diff-against-prior]
+    shell: pwsh
+    script: |
+      # Produces the list of PRs that warrant a Microsoft To Do task plus
+      # the canonical payload shape todo-upsert expects. Only the "hot"
+      # states get tasks; healthy + ready-to-complete + draft-stale are
+      # surfaced in ActionView only. The forEach dispatcher invokes
+      # todo-upsert once per emitted item.
+      $ErrorActionPreference = 'Stop'
+
+      $diffJson    = $args[0]
+      $listName    = $args[1]
+      $pushEnabled = $args[2]
+      $dryRun      = $args[3]
+
+      $pushBool = [string]::Equals($pushEnabled.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      if (-not $pushBool -or $dryRunBool) {
+        [pscustomobject]@{ items = @() } | ConvertTo-Json -Compress
+        return
+      }
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+
+      $hotStates = @('failing-build','merge-conflict','needs-my-response','blocked-on-reviewers')
+      $items = New-Object System.Collections.Generic.List[object]
+      foreach ($pr in @($diff.prs)) {
+        if ($null -eq $pr) { continue }
+        if (-not ($hotStates -contains [string]$pr.state)) { continue }
+
+        $importance = switch ([string]$pr.state) {
+          'failing-build'    { 'high' }
+          'merge-conflict'   { 'high' }
+          'needs-my-response'{ 'high' }
+          default            { 'normal' }
+        }
+
+        $title = "PR $($pr.prId): $($pr.title) [$($pr.state)]"
+        # Plain text body (Microsoft To Do clients still render newlines
+        # but no markdown). Include the PR URL so the task is one click
+        # from the actual PR. Use -join "`n" instead of a here-string
+        # because here-strings break YAML block-scalar indentation.
+        $bodyLines = @(
+          [string]$pr.reason,
+          '',
+          "PR: $($pr.webUrl)",
+          "State: $($pr.state)"
+        )
+        $body = ($bodyLines -join "`n").Trim()
+
+        $items.Add([pscustomobject]@{
+          externalId = "pr:$($pr.prId)"
+          title      = $title
+          body       = $body
+          importance = $importance
+          status     = 'notStarted'
+          listName   = $listName
+        }) | Out-Null
+      }
+
+      [pscustomobject]@{ items = $items.ToArray() } | ConvertTo-Json -Depth 20 -Compress
+    arguments:
+      - "{{diff-against-prior.output}}"
+      - "{{vars.todoListName}}"
+      - "{{param.pushToTodo}}"
+      - "{{param.dryRun}}"
+    timeoutSeconds: 60
+
+  - name: push-to-todo
+    type: Orchestration
+    dependsOn: [build-todo-payloads]
+    orchestration: todo-upsert
+    forEach: "{{build-todo-payloads.output}}"
+    forEachPath: items
+    itemParameter: todoItem
+    parameters:
+      listName: "{{vars.todoListName}}"
+      externalId: ""
+      title: ""
+      body: ""
+      importance: normal
+      status: notStarted
+    inputHandlerPrompt: |
+      Return ONLY a valid JSON object mapping todo-upsert parameter names
+      (listName, externalId, title, body, importance, status) to string
+      values pulled from the supplied item. Preserve the listName as-is.
+      Pass importance, status, and title through verbatim. Body must be
+      a plain text string (escape newlines as required for valid JSON).
+    mode: sync
+    maxConcurrency: 3
+    continueOnItemFailure: true
+    timeoutSeconds: 1200
+
+  - name: build-actionview-entry
+    type: Script
+    dependsOn: [diff-against-prior, noteworthy-gate-prompt, update-zakira-records, push-to-todo]
+    shell: pwsh
+    script: |
+      # Deterministic ActionView entry builder. No LLM: the structure is
+      # stable, and avoiding the model removes drift and saves tokens.
+      # Only invoked when noteworthy-gate-prompt did NOT call
+      # orchestra_set_status('no_action'), so this step is guaranteed
+      # to be on the publish path - no skip-sentinel handling required.
+      $ErrorActionPreference = 'Stop'
+
+      $diffJson  = $args[0]
+      $gateJson  = $args[1]
+      $todoJson  = $args[2]
+      $dryRun    = $args[3]
+      $forceSurface = $args[4]
+      $groupId   = $args[5]
+      $runId     = $args[6]
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $forceBool = [string]::Equals($forceSurface.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      $hotStates = @('failing-build','merge-conflict','needs-my-response','blocked-on-reviewers')
+      $hot       = @($diff.prs | Where-Object { $hotStates -contains $_.state })
+      $ready     = @($diff.prs | Where-Object { $_.state -eq 'ready-to-complete' })
+      $healthy   = @($diff.prs | Where-Object { $_.state -eq 'healthy-in-progress' })
+      $draftStale= @($diff.prs | Where-Object { $_.state -eq 'draft-stale' })
+
+      $severity = if ($hot.Count -gt 0) { 'high' } elseif ($ready.Count -gt 0 -or $draftStale.Count -gt 0) { 'medium' } else { 'low' }
+      $pinned   = ($hot.Count -gt 0)
+      $title    = "My PRs: $($hot.Count) need attention, $($ready.Count) ready, $($diff.total) total"
+      $subtitle = "$($diff.changes.new) new, $($diff.changes.stateChanged) state-changed, $($diff.changes.unchanged) unchanged"
+
+      # State -> ActionView status-pill level lookup. Inline switch-as-
+      # expression inside a hashtable literal is not parseable by PS 7.x,
+      # so the mapping lives on a plain hashtable.
+      $stateLevelMap = @{
+        'failing-build'        = 'error'
+        'merge-conflict'       = 'error'
+        'needs-my-response'    = 'warning'
+        'blocked-on-reviewers' = 'warning'
+        'ready-to-complete'    = 'success'
+        'draft-stale'          = 'info'
+        'healthy-in-progress'  = 'info'
+      }
+
+      $rows = @()
+      foreach ($pr in @($diff.prs)) {
+        $level = $stateLevelMap[[string]$pr.state]
+        if ([string]::IsNullOrWhiteSpace($level)) { $level = 'info' }
+        $draftCell = if ($pr.isDraft) { 'yes' } else { 'no' }
+        $rows += ,@(
+          "$($pr.prId)",
+          "$($pr.title)",
+          [ordered]@{ type = 'status'; level = $level; label = $pr.state },
+          "$($pr.mergeStatus)",
+          $draftCell,
+          [ordered]@{ type = 'link'; url = [string]$pr.webUrl; label = "PR #$($pr.prId)" }
+        )
+      }
+
+      $content = New-Object System.Collections.Generic.List[object]
+
+      if ($hot.Count -gt 0) {
+        $alertBody = "**$($hot.Count) PR(s) need your attention:**`n`n"
+        foreach ($pr in $hot) {
+          $alertBody += "- **PR #$($pr.prId)** [$($pr.state)] $($pr.title) - $($pr.reason)`n"
+        }
+        $content.Add([ordered]@{
+          type  = 'alert'
+          level = 'warning'
+          label = 'Hot list'
+          body  = $alertBody.TrimEnd()
+        }) | Out-Null
+      }
+
+      $content.Add([ordered]@{
+        type    = 'keyValue'
+        label   = 'Run Overview'
+        pairs   = [ordered]@{
+          Total             = "$($diff.total)"
+          'Needs attention' = "$($hot.Count)"
+          'Ready to merge'  = "$($ready.Count)"
+          Healthy           = "$($healthy.Count)"
+          'Draft (stale)'   = "$($draftStale.Count)"
+          'New since run'   = "$($diff.changes.new)"
+          'State changed'   = "$($diff.changes.stateChanged)"
+        }
+      }) | Out-Null
+
+      $content.Add([ordered]@{
+        type     = 'table'
+        label    = 'My active PRs'
+        columns  = @('Id','Title','State','MergeStatus','Draft','Link')
+        sortable = $true
+        rows     = $rows
+      }) | Out-Null
+
+      # Per-state sections (only when populated) so the user can drill in.
+      foreach ($pair in @(
+        @{ key = 'Needs my response';  list = ($diff.prs | Where-Object { $_.state -eq 'needs-my-response'   }) },
+        @{ key = 'Blocked on reviewers'; list = ($diff.prs | Where-Object { $_.state -eq 'blocked-on-reviewers' }) },
+        @{ key = 'Failing build';       list = ($diff.prs | Where-Object { $_.state -eq 'failing-build'       }) },
+        @{ key = 'Merge conflict';      list = ($diff.prs | Where-Object { $_.state -eq 'merge-conflict'      }) },
+        @{ key = 'Ready to complete';   list = ($diff.prs | Where-Object { $_.state -eq 'ready-to-complete'   }) },
+        @{ key = 'Draft (stale)';       list = ($diff.prs | Where-Object { $_.state -eq 'draft-stale'         }) }
+      )) {
+        $list = @($pair.list)
+        if ($list.Count -eq 0) { continue }
+        $sectionContent = New-Object System.Collections.Generic.List[object]
+        foreach ($pr in $list) {
+          $sectionContent.Add([ordered]@{
+            type  = 'keyValue'
+            label = "PR #$($pr.prId): $($pr.title)"
+            pairs = [ordered]@{
+              Reason       = "$($pr.reason)"
+              'Was'        = if ($pr.priorState) { [string]$pr.priorState } else { '(new)' }
+              'Now'        = "$($pr.state)"
+              MergeStatus  = "$($pr.mergeStatus)"
+              Link         = [ordered]@{ type='link'; url=[string]$pr.webUrl; label="open PR #$($pr.prId)" }
+            }
+          }) | Out-Null
+        }
+        $content.Add([ordered]@{
+          type             = 'section'
+          title            = "$($pair.key) ($($list.Count))"
+          defaultCollapsed = $false
+          content          = $sectionContent.ToArray()
+        }) | Out-Null
+      }
+
+      $content.Add([ordered]@{
+        type = 'markdown'
+        body = "Run id: ``$runId``  -  Dry run: ``$dryRunBool``  -  Force surface: ``$forceBool``"
+      }) | Out-Null
+
+      $entry = [ordered]@{
+        schemaVersion = '1'
+        id            = "my-prs-tracker-$runId"
+        type          = 'my-prs'
+        source        = 'my-prs-tracker'
+        title         = $title
+        subtitle      = $subtitle
+        severity      = $severity
+        icon          = 'git-pull-request'
+        tags          = @('PR','ZTS','my-prs','productivity')
+        groupId       = $groupId
+        pinned        = $pinned
+        content       = $content.ToArray()
+      }
+
+      $entry | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{diff-against-prior.output}}"
+      - "{{gate-noteworthy-activity.output}}"
+      - "{{push-to-todo.output}}"
+      - "{{param.dryRun}}"
+      - "{{param.forceSurface}}"
+      - "{{vars.actionViewGroupId}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 120
+
+  - name: submit-actionview-entry
+    type: Orchestration
+    dependsOn: [build-actionview-entry]
+    orchestration: actionview-submit
+    parameters:
+      entryJson: "{{build-actionview-entry.output}}"
+      template: my-prs
+      groupId: "{{vars.actionViewGroupId}}"
+    inputHandlerPrompt: |
+      Return ONLY a valid JSON object mapping actionview-submit parameter
+      names (entryJson, template, groupId) to string values. The
+      entryJson value must be a single canonical JSON object serialized
+      as a string. Pass the upstream entry through verbatim; no sentinel
+      handling needed because noteworthy-gate-prompt already skipped this
+      branch via orchestra_set_status('no_action') on no-op runs.
+    mode: sync
+    timeoutSeconds: 600
+
+  - name: emit-daily-summary
+    type: Script
+    dependsOn: [diff-against-prior, gate-noteworthy-activity, update-zakira-records, push-to-todo]
+    shell: pwsh
+    script: |
+      # Writes the daily summary record consumed by the future daily-
+      # morning-digest orchestration. Two keys are written: today's date
+      # (YYYY-MM-DD) and the rolling pointer "latest" - the latter so the
+      # digest can read freshness without computing dates.
+      #
+      # ALWAYS runs - even on no-op runs where noteworthy-gate-prompt
+      # skipped the ActionView submission. This keeps the digest reader
+      # able to distinguish "tracker ran clean" (record present, hot=0)
+      # from "tracker did not run" (record absent).
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $diffJson = $args[0]
+      $gateJson = $args[1]
+      $dbPath   = $args[2]
+      $category = $args[3]
+      $dryRun   = $args[4]
+      $runId    = $args[5]
+
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      if ($dryRunBool) {
+        [pscustomobject]@{ status = 'dry-run-skipped' } | ConvertTo-Json -Compress
+        return
+      }
+
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $gate = ConvertFrom-Json -InputObject $gateJson -Depth 50  -ErrorAction Stop
+
+      $hotStates = @('failing-build','merge-conflict','needs-my-response','blocked-on-reviewers')
+      $hotItems = @($diff.prs | Where-Object { $hotStates -contains $_.state } | ForEach-Object {
+        [ordered]@{
+          prId   = $_.prId
+          title  = $_.title
+          state  = $_.state
+          reason = $_.reason
+          webUrl = $_.webUrl
+        }
+      })
+
+      $summary = [ordered]@{
+        summaryDate = (Get-Date).ToString('yyyy-MM-dd')
+        rolledAt    = (Get-Date).ToUniversalTime().ToString('o')
+        runId       = $runId
+        openCount   = [int]$diff.total
+        hotCount    = $hotItems.Count
+        byState     = [ordered]@{
+          'failing-build'        = ([int](($diff.prs | Where-Object { $_.state -eq 'failing-build' }).Count))
+          'merge-conflict'       = ([int](($diff.prs | Where-Object { $_.state -eq 'merge-conflict' }).Count))
+          'needs-my-response'    = ([int](($diff.prs | Where-Object { $_.state -eq 'needs-my-response' }).Count))
+          'blocked-on-reviewers' = ([int](($diff.prs | Where-Object { $_.state -eq 'blocked-on-reviewers' }).Count))
+          'ready-to-complete'    = ([int](($diff.prs | Where-Object { $_.state -eq 'ready-to-complete' }).Count))
+          'draft-stale'          = ([int](($diff.prs | Where-Object { $_.state -eq 'draft-stale' }).Count))
+          'healthy-in-progress'  = ([int](($diff.prs | Where-Object { $_.state -eq 'healthy-in-progress' }).Count))
+        }
+        hotItems    = $hotItems
+        noteworthy  = $gate.noteworthy
+      }
+      $payload = $summary | ConvertTo-Json -Depth 20 -Compress
+
+      $dayKey = $summary.summaryDate
+
+      function Write-SummaryKey {
+        param([string]$Key)
+        $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
+          --data $payload `
+          --author "my-prs-tracker:$runId" `
+          --reason "daily summary" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $Key `
+            --data $payload `
+            --author "my-prs-tracker:$runId" `
+            --reason "daily summary" 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Zakira write failed for $category/${Key}: $($out -join ' ')"
+          }
+        }
+      }
+
+      Write-SummaryKey -Key $dayKey
+      Write-SummaryKey -Key 'latest'
+
+      [pscustomobject]@{
+        status   = 'persisted'
+        keys     = @($dayKey, 'latest')
+        category = $category
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{diff-against-prior.output}}"
+      - "{{gate-noteworthy-activity.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraSummaryCategory}}"
+      - "{{param.dryRun}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 300
+
+  - name: generate-summary
+    type: Transform
+    dependsOn:
+      - discover-my-prs
+      - classify-state
+      - diff-against-prior
+      - update-zakira-records
+      - push-to-todo
+      - submit-actionview-entry
+      - emit-daily-summary
+    template: |
+      # my-prs-tracker Run Summary
+
+      **Run ID:** {{orchestration.runId}}
+      **Started:** {{orchestration.startedAt}}
+      **Dry run:** {{param.dryRun}}
+      **Force surface:** {{param.forceSurface}}
+      **Push to To Do:** {{param.pushToTodo}}
+
+      ## Discovery
+      ```json
+      {{discover-my-prs.output}}
+      ```
+
+      ## Classification
+      ```json
+      {{classify-state.output}}
+      ```
+
+      ## Diff
+      ```json
+      {{diff-against-prior.output}}
+      ```
+
+      ## Zakira persistence
+      ```json
+      {{update-zakira-records.output}}
+      ```
+
+      ## To Do push
+      ```text
+      {{push-to-todo.output}}
+      ```
+
+      ## ActionView submission
+      ```text
+      {{submit-actionview-entry.output}}
+      ```
+
+      ## Daily summary
+      ```text
+      {{emit-daily-summary.output}}
+      ```
+    contentType: text/markdown

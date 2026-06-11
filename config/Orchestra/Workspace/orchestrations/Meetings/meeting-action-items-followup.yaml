@@ -1,0 +1,1472 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: meeting-action-items-followup
+description: |
+  Daily follow-through tracker for meeting action items. Complements the
+  existing meeting-action-items-extractor / -processor pair (which writes
+  per-meeting markdown reports and Zakira state). This orchestration
+  closes the loop: it reads every recent markdown report under the
+  action-items directory, parses the "My Action Items" checkbox list,
+  and maintains a per-item ledger in Zakira so you can see what is
+  overdue, aging, new today, and recently closed.
+
+  For every "isMine" action item the orchestration:
+    - assigns a stable itemId hash from (meeting slug, priority,
+      normalized action text)
+    - classifies it as new / still-open / aging / overdue /
+      closed-implicit / closed-manual / dismissed / orphaned
+    - upserts a Microsoft To Do task in the "Orchestra: Action Items"
+      list (high-importance for high-priority + overdue items)
+    - surfaces the live picture in a deterministic ActionView entry
+      with per-item Mark-done / Dismiss buttons backed by the
+      Shared/scripts/mark-ledger-item.ps1 wrapper
+
+  Closure detection is two-tier:
+    1. Implicit: the source markdown file shows `- [x]` for the line
+       that originally produced the item.
+    2. Manual: the user clicked Mark done / Dismiss in ActionView,
+       which set status via mark-ledger-item.ps1. We respect those
+       statuses across runs (never reopen a manually-closed item).
+
+  Once a week (Monday) the orchestration also refreshes a single
+  Obsidian aggregator note `_INDEX.md` under actionItemsDir summarising
+  this week's open commitments grouped by meeting.
+
+version: 1.0.0
+tags: ["ZTS", "MSFT", "meetings", "action-items", "auto", "track", "followup"]
+defaultModel: claude-opus-4.7-1m-internal
+
+metadata:
+  owner: Moaid Hathot
+  ownerAlias: moaid
+  domain: productivity
+  sla: best-effort
+  schedule: "daily within ZTS profile window"
+  documentation: |
+    Reusable utilities used:
+      - Shared/todo-upsert.yaml          (per-item Microsoft To Do tasks)
+      - ActionView/actionview-submit.yaml(ActionView entry submission)
+      - Shared/scripts/mark-ledger-item.ps1 (per-item ActionView buttons)
+    Zakira categories written:
+      - action-items-ledger              (per-item records, key = ai:<itemId>)
+      - action-items-ledger:daily-summary(daily roll-up, key = YYYY-MM-DD + 'latest')
+    Source of truth for items:
+      Markdown files under actionItemsDir, written by the existing
+      meeting-action-items-processor child orchestration.
+
+inputs:
+  actionItemsDir:
+    type: string
+    description: |
+      Root directory holding the per-meeting markdown reports.
+    required: false
+    default: "{{env.USERPROFILE}}\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\Meeting Action Items"
+  lookbackDays:
+    type: string
+    description: |
+      Only consider meeting files whose file mtime falls within the last
+      <lookbackDays> days. Older files are skipped entirely on first
+      ingestion so the initial run does not flood the ledger / To Do
+      with months of historical items.
+    required: false
+    default: "30"
+  staleDaysHigh:
+    type: string
+    description: |
+      Open high-priority items with no deadline that have been in the
+      ledger for this many days are classified as "aging".
+    required: false
+    default: "2"
+  staleDaysMedium:
+    type: string
+    description: |
+      Open medium-priority items without a deadline aging threshold.
+    required: false
+    default: "5"
+  staleDaysLow:
+    type: string
+    description: |
+      Open low-priority items without a deadline aging threshold.
+    required: false
+    default: "14"
+  recentlyClosedHours:
+    type: string
+    description: |
+      Items closed within this many hours appear in the "Recently
+      closed" section of the ActionView entry.
+    required: false
+    default: "48"
+  maxNewToDoPushPerRun:
+    type: string
+    description: |
+      Cap on new Microsoft To Do task creations per run. PATCHes to
+      already-tracked tasks are not subject to this cap. Prevents the
+      first ledger-bootstrap run from flooding To Do.
+    required: false
+    default: "25"
+  pushToTodo:
+    type: boolean
+    description: |
+      When true, sync open + recently-closed items to Microsoft To Do.
+      Disable to skip the To Do side-effect entirely.
+    required: false
+    default: "true"
+  forceSurface:
+    type: boolean
+    description: |
+      When true, post the ActionView entry even if nothing changed since
+      the prior run.
+    required: false
+    default: "false"
+  dryRun:
+    type: boolean
+    description: |
+      When true, parse + reconcile but skip all writes (Zakira, To Do,
+      ActionView, Obsidian).
+    required: false
+    default: "false"
+
+variables:
+  zakiraCategory: action-items-ledger
+  zakiraSummaryCategory: "action-items-ledger:daily-summary"
+  todoListName: "Orchestra: Action Items"
+  actionViewGroupId: "action-items-{{orchestration.runId}}"
+  sharedScriptsDir: "{{orchestration.sourceDirectory}}/../Shared/scripts"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 10
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 600
+timeoutSeconds: 5400
+
+trigger:
+  type: scheduler
+  enabled: true
+  intervalSeconds: 86400
+
+steps:
+  - name: discover-and-parse-files
+    type: Script
+    shell: pwsh
+    script: |
+      # Enumerate markdown reports under actionItemsDir, filter by mtime
+      # window, and parse out the My Action Items checkbox list from
+      # each file. Output a normalized list of parsed items the
+      # downstream reconciler can hash + classify.
+      #
+      # Parsing strategy: locate the "## My Action Items" heading,
+      # capture lines until the next "## " heading, then per-line apply
+      # a layered regex that strips the source tag and optional deadline
+      # tag, leaving the action text. The format produced by
+      # generate-markdown-report (in meeting-action-items-processor) is:
+      #
+      #   - [ ] **[HIGH]** <action> *(YYYY-MM-DD[Thh:mm[:ss]])* - *source: ...*
+      #
+      # Both the deadline span and the source span are optional. The
+      # separator between action and source can be ASCII '-' or em-dash
+      # '\u2014' depending on the model's output; both are handled.
+      $ErrorActionPreference = 'Stop'
+
+      $rootDir       = $args[0]
+      $lookbackDays  = [int]$args[1]
+
+      # Orchestra does NOT expand `{{...}}` templates that appear in
+      # input defaults (it expands them in vars, arguments, prompts,
+      # etc., but not in `default:` strings). Detect a literal template
+      # leak and fall back to the canonical env-derived path so this
+      # orchestration works when invoked without an explicit
+      # actionItemsDir param.
+      if ([string]::IsNullOrWhiteSpace($rootDir) -or $rootDir -match '^\{\{') {
+        $rootDir = Join-Path $env:USERPROFILE 'OneDrive - Microsoft\Notes\Obsidian\Work\OrcStra\Meeting Action Items'
+      }
+
+      if ([string]::IsNullOrWhiteSpace($rootDir)) {
+        throw 'actionItemsDir is required.'
+      }
+      if (-not (Test-Path -LiteralPath $rootDir)) {
+        # Empty result rather than failure so first-time users with no
+        # meetings yet do not get a hard error.
+        [pscustomobject]@{
+          rootDir       = $rootDir
+          rootExists    = $false
+          filesScanned  = 0
+          filesParsed   = 0
+          items         = @()
+          parsedAt      = (Get-Date).ToUniversalTime().ToString('o')
+        } | ConvertTo-Json -Depth 50 -Compress
+        return
+      }
+
+      $cutoff = (Get-Date).AddDays(-$lookbackDays)
+
+      # Layered parse: source first, then deadline, then leftover = action.
+      $sourceRegex   = '^(.*?)\s+[-\u2014]\s+\*source:\s*([^*]+)\*\s*$'
+      $deadlineRegex = '^(.*?)\s+\*\((\d{4}-\d{2}-\d{2}(?:T[\d:.]+(?:Z|[+-]\d{2}:\d{2})?)?)\)\*\s*$'
+      $headerRegex   = '^-\s+\[([ x])\]\s+\*\*\[(HIGH|MEDIUM|LOW)\]\*\*\s+(.+)$'
+
+      function Get-NormalizedAction {
+        param([string]$Text)
+        if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+        $lower = $Text.ToLowerInvariant()
+        $stripped = $lower -replace '[^a-z0-9 ]', ''
+        $collapsed = ($stripped -replace '\s+', ' ').Trim()
+        if ($collapsed.Length -gt 120) { $collapsed = $collapsed.Substring(0, 120) }
+        return $collapsed
+      }
+
+      function Get-ItemHash {
+        param([string]$Slug, [string]$Priority, [string]$NormalizedAction)
+        $input = "$Slug|$Priority|$NormalizedAction"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($input)
+        $sha = [System.Security.Cryptography.SHA1]::Create()
+        try { $hashBytes = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
+        $hex = ($hashBytes | ForEach-Object { $_.ToString('x2') }) -join ''
+        return $hex.Substring(0, 12)
+      }
+
+      $files = Get-ChildItem -LiteralPath $rootDir -Filter '*.md' -File -ErrorAction SilentlyContinue
+      $files = $files | Where-Object { $_.LastWriteTime -ge $cutoff -and $_.Name -notlike '_*' }
+
+      $items = New-Object System.Collections.Generic.List[object]
+      $filesParsed = 0
+
+      foreach ($f in $files) {
+        try {
+          $content = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction Stop
+        } catch {
+          continue
+        }
+        $slug = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
+
+        # Extract meeting title and date from the H1 + Date line. Tolerant
+        # of missing fields; falls back to slug-derived values.
+        $titleMatch = [regex]::Match($content, '(?m)^#\s*Meeting Notes:\s*(.+?)$')
+        $meetingTitle = if ($titleMatch.Success) { $titleMatch.Groups[1].Value.Trim() } else { $slug }
+        $dateMatch = [regex]::Match($content, '(?m)^\*\*Date:\*\*\s*(.+?)$')
+        $meetingDate = if ($dateMatch.Success) { $dateMatch.Groups[1].Value.Trim() } else { '' }
+
+        # Locate the My Action Items section span.
+        $myStart = $content.IndexOf("`n## My Action Items")
+        if ($myStart -lt 0) { $myStart = $content.IndexOf('## My Action Items') }
+        if ($myStart -lt 0) { continue }
+        $afterHeader = $myStart + ('## My Action Items').Length
+        $myEnd = $content.IndexOf("`n## ", $afterHeader)
+        if ($myEnd -lt 0) { $myEnd = $content.Length }
+        $sectionBody = $content.Substring($afterHeader, $myEnd - $afterHeader)
+        $filesParsed++
+
+        foreach ($rawLine in ($sectionBody -split "`r?`n")) {
+          $line = $rawLine.Trim()
+          if ([string]::IsNullOrWhiteSpace($line)) { continue }
+          if (-not ($line -match $headerRegex)) { continue }
+
+          $checkboxChar = $Matches[1]
+          $priority = $Matches[2].ToUpperInvariant()
+          $remainder = $Matches[3].Trim()
+
+          $source = $null
+          if ($remainder -match $sourceRegex) {
+            $remainder = $Matches[1].Trim()
+            $source = $Matches[2].Trim()
+          }
+
+          $deadline = $null
+          if ($remainder -match $deadlineRegex) {
+            $remainder = $Matches[1].Trim()
+            $deadline = $Matches[2].Trim()
+          }
+
+          # Strip trailing punctuation noise (e.g., "...PR." -> "...PR")
+          $actionText = $remainder.TrimEnd(' ', '.', ',', ';', ':')
+          if ([string]::IsNullOrWhiteSpace($actionText)) { continue }
+
+          $normalized = Get-NormalizedAction -Text $actionText
+          if ([string]::IsNullOrWhiteSpace($normalized)) { continue }
+          $itemId = Get-ItemHash -Slug $slug -Priority $priority -NormalizedAction $normalized
+
+          $items.Add([pscustomobject]@{
+            itemId             = $itemId
+            zakiraKey          = "ai:$itemId"
+            sourceSlug         = $slug
+            sourceFilePath     = $f.FullName
+            sourceFileLastWrite= $f.LastWriteTime.ToUniversalTime().ToString('o')
+            meetingTitle       = $meetingTitle
+            meetingDate        = $meetingDate
+            priority           = $priority
+            action             = $actionText
+            normalizedAction   = $normalized
+            deadline           = $deadline
+            source             = $source
+            fileStatus         = if ($checkboxChar -eq 'x') { 'checked' } else { 'open' }
+          }) | Out-Null
+        }
+      }
+
+      [pscustomobject]@{
+        rootDir       = $rootDir
+        rootExists    = $true
+        filesScanned  = @($files).Count
+        filesParsed   = $filesParsed
+        items         = $items.ToArray()
+        itemCount     = $items.Count
+        parsedAt      = (Get-Date).ToUniversalTime().ToString('o')
+        lookbackDays  = $lookbackDays
+      } | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{param.actionItemsDir}}"
+      - "{{param.lookbackDays}}"
+    timeoutSeconds: 600
+
+  - name: load-ledger
+    type: Script
+    dependsOn: [discover-and-parse-files]
+    shell: pwsh
+    script: |
+      # Loads every existing action-items-ledger record so the reconciler
+      # can join against current file state. The CLI's `list` command
+      # returns keys + metadata; we follow up with `get` per key for the
+      # full payload. At realistic ledger sizes (hundreds of items) this
+      # stays well under the orchestration timeout.
+      #
+      # Limits the read to 1000 entries; if the ledger grows beyond that
+      # the surplus is silently truncated (oldest first). Closed items
+      # are kept in the ledger forever today; a future prune step can
+      # archive them.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $dbPath   = $args[0]
+      $category = $args[1]
+
+      try { Get-Command dnx -ErrorAction Stop | Out-Null } catch {
+        throw "dnx is not on PATH; cannot load ledger."
+      }
+
+      # Try to enumerate keys via `list`. The CLI's text output is parsed
+      # by extracting the first whitespace token of each content line.
+      $listOut = & dnx Zakira.Exchange --yes -- --db $dbPath list --cat $category -n 1000 2>&1
+      $listExit = $LASTEXITCODE
+
+      $keys = New-Object System.Collections.Generic.List[string]
+      if ($listExit -eq 0 -and $null -ne $listOut) {
+        foreach ($line in @($listOut)) {
+          $text = [string]$line
+          if ([string]::IsNullOrWhiteSpace($text)) { continue }
+          # Skip header / divider / informational lines.
+          if ($text -match '^\s*(Key|---|====|Listing|No entries|Found)') { continue }
+          $tokens = $text -split '\s{2,}|\t', 2
+          if ($tokens.Count -eq 0) { continue }
+          $candidate = $tokens[0].Trim()
+          if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+          # Accept any key that looks like one of our shapes; tolerate
+          # other consumers' keys (they will simply not match items).
+          [void]$keys.Add($candidate)
+        }
+      }
+
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+            $endIdx = $j; break
+          }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      $records = New-Object System.Collections.Generic.List[object]
+      foreach ($key in $keys) {
+        $out = & dnx Zakira.Exchange --yes -- --db $dbPath get $category $key 2>&1
+        if ($LASTEXITCODE -ne 0) { continue }
+        $dataJson = Get-DataJsonFromCliOutput -Lines $out
+        if (-not $dataJson) { continue }
+        try {
+          $data = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop
+          $records.Add([pscustomobject]@{
+            zakiraKey = $key
+            data      = $data
+          }) | Out-Null
+        } catch { }
+      }
+
+      [pscustomobject]@{
+        loadedAt = (Get-Date).ToUniversalTime().ToString('o')
+        category = $category
+        count    = $records.Count
+        records  = $records.ToArray()
+      } | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraCategory}}"
+    timeoutSeconds: 600
+
+  - name: reconcile
+    type: Script
+    dependsOn: [discover-and-parse-files, load-ledger]
+    shell: pwsh
+    script: |
+      # Pure deterministic reconciliation. Joins parsed file items with
+      # existing ledger records (by zakiraKey) and emits the final
+      # ledger upsert plan plus a classification rollup.
+      #
+      # Classification (per item):
+      #   new            - file item with no prior ledger entry
+      #   closed-implicit- file shows [x] on an item we had as open
+      #   closed-manual  - ledger already marks status=completed/dismissed
+      #                    (file may or may not show [x]); never reopen
+      #   overdue        - open item with deadline in the past
+      #   aging          - open item without deadline whose first-seen
+      #                    age exceeds staleDays<priority>
+      #   still-open     - open item that is neither aging nor overdue
+      #   orphaned       - ledger entry whose source file no longer
+      #                    contains the item AND the file's mtime is
+      #                    newer than the entry's lastSeenAt
+      $ErrorActionPreference = 'Stop'
+
+      $parsedJson      = $args[0]
+      $ledgerJson      = $args[1]
+      $staleDaysHigh   = [int]$args[2]
+      $staleDaysMedium = [int]$args[3]
+      $staleDaysLow    = [int]$args[4]
+      $runId           = $args[5]
+
+      $parsed = ConvertFrom-Json -InputObject $parsedJson -Depth 100 -ErrorAction Stop
+      $ledger = ConvertFrom-Json -InputObject $ledgerJson -Depth 100 -ErrorAction Stop
+
+      $now = (Get-Date).ToUniversalTime()
+      $nowIso = $now.ToString('o')
+
+      # Build lookup of ledger entries by key.
+      $ledgerMap = @{}
+      foreach ($rec in @($ledger.records)) {
+        if ($null -eq $rec) { continue }
+        $ledgerMap[[string]$rec.zakiraKey] = $rec.data
+      }
+
+      # Snapshot keys ledger has - used to detect orphans at the end.
+      $remainingLedgerKeys = New-Object System.Collections.Generic.HashSet[string]
+      foreach ($k in $ledgerMap.Keys) { [void]$remainingLedgerKeys.Add($k) }
+
+      $upserts = New-Object System.Collections.Generic.List[object]
+      $classRollup = [ordered]@{
+        new = 0; 'closed-implicit' = 0; 'closed-manual' = 0;
+        overdue = 0; aging = 0; 'still-open' = 0; orphaned = 0
+      }
+
+      foreach ($item in @($parsed.items)) {
+        if ($null -eq $item) { continue }
+        $key = [string]$item.zakiraKey
+        $prior = $null
+        if ($ledgerMap.ContainsKey($key)) {
+          $prior = $ledgerMap[$key]
+          [void]$remainingLedgerKeys.Remove($key)
+        }
+
+        $isNew = ($null -eq $prior)
+
+        # Manual-closed entries are sticky regardless of file state.
+        if (-not $isNew -and $prior.PSObject.Properties['status']) {
+          $priorStatus = [string]$prior.status
+          if ($priorStatus -eq 'completed' -or $priorStatus -eq 'dismissed' -or $priorStatus -eq 'archived') {
+            $classRollup['closed-manual'] += 1
+            # Refresh lastSeenAt but do not change status.
+            $merged = [ordered]@{}
+            foreach ($p in $prior.PSObject.Properties) { $merged[$p.Name] = $p.Value }
+            $merged['lastSeenAt'] = $nowIso
+            $merged['sourceFileLastWrite'] = $item.sourceFileLastWrite
+            $upserts.Add([pscustomobject]@{
+              op        = 'edit'
+              zakiraKey = $key
+              data      = [pscustomobject]$merged
+              classify  = 'closed-manual'
+            }) | Out-Null
+            continue
+          }
+        }
+
+        # File shows [x] -> implicit close.
+        if ($item.fileStatus -eq 'checked') {
+          $classRollup['closed-implicit'] += 1
+          $data = [ordered]@{
+            itemId         = $item.itemId
+            sourceSlug     = $item.sourceSlug
+            sourceFilePath = $item.sourceFilePath
+            meetingTitle   = $item.meetingTitle
+            meetingDate    = $item.meetingDate
+            priority       = $item.priority
+            action         = $item.action
+            normalizedAction = $item.normalizedAction
+            deadline       = $item.deadline
+            source         = $item.source
+            isMine         = $true
+            status         = 'completed'
+            closedAt       = $nowIso
+            closeReason    = 'implicit-checkbox'
+            lastSeenAt     = $nowIso
+            sourceFileLastWrite = $item.sourceFileLastWrite
+            runIdLastTouched    = $runId
+          }
+          if (-not $isNew -and $prior.PSObject.Properties['createdAt']) {
+            $data['createdAt'] = $prior.createdAt
+          } else {
+            $data['createdAt'] = $nowIso
+          }
+          $upserts.Add([pscustomobject]@{
+            op        = if ($isNew) { 'create' } else { 'edit' }
+            zakiraKey = $key
+            data      = [pscustomobject]$data
+            classify  = 'closed-implicit'
+          }) | Out-Null
+          continue
+        }
+
+        # File shows [ ] -> still open. Decide aging / overdue.
+        $createdAtIso = if ($isNew) { $nowIso } elseif ($prior.PSObject.Properties['createdAt']) { [string]$prior.createdAt } else { $nowIso }
+        $createdAtUtc = $now
+        try { $createdAtUtc = [datetimeoffset]::Parse($createdAtIso, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime } catch { }
+
+        $classification = 'still-open'
+
+        # Deadline-based overdue check.
+        $isOverdue = $false
+        if (-not [string]::IsNullOrWhiteSpace($item.deadline)) {
+          try {
+            $dl = [datetimeoffset]::Parse([string]$item.deadline, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+            if ($dl -lt $now) { $isOverdue = $true }
+          } catch { }
+        }
+        if ($isOverdue) {
+          $classification = 'overdue'
+        } else {
+          # Age-based aging check.
+          $staleDays = switch ($item.priority) {
+            'HIGH'   { $staleDaysHigh }
+            'MEDIUM' { $staleDaysMedium }
+            'LOW'    { $staleDaysLow }
+            default  { $staleDaysMedium }
+          }
+          if ($createdAtUtc.AddDays($staleDays) -lt $now) {
+            $classification = 'aging'
+          }
+        }
+
+        if ($isNew) { $classRollup['new'] += 1 }
+        else { $classRollup[$classification] += 1 }
+
+        $data = [ordered]@{
+          itemId              = $item.itemId
+          sourceSlug          = $item.sourceSlug
+          sourceFilePath      = $item.sourceFilePath
+          meetingTitle        = $item.meetingTitle
+          meetingDate         = $item.meetingDate
+          priority            = $item.priority
+          action              = $item.action
+          normalizedAction    = $item.normalizedAction
+          deadline            = $item.deadline
+          source              = $item.source
+          isMine              = $true
+          status              = 'open'
+          createdAt           = $createdAtIso
+          lastSeenAt          = $nowIso
+          closedAt            = $null
+          closeReason         = $null
+          sourceFileLastWrite = $item.sourceFileLastWrite
+          runIdLastTouched    = $runId
+          classification      = $classification
+        }
+
+        $upserts.Add([pscustomobject]@{
+          op        = if ($isNew) { 'create' } else { 'edit' }
+          zakiraKey = $key
+          data      = [pscustomobject]$data
+          classify  = if ($isNew) { 'new' } else { $classification }
+        }) | Out-Null
+      }
+
+      # Orphan detection - ledger entries whose source file no longer
+      # carries the item. Only orphan if the file actually exists and
+      # was modified after our lastSeenAt (so we know the file was
+      # re-processed and the item is gone, not just temporarily
+      # missing). Skip entries that are already terminal-closed.
+      foreach ($key in $remainingLedgerKeys) {
+        $entry = $ledgerMap[$key]
+        $status = if ($entry.PSObject.Properties['status']) { [string]$entry.status } else { 'open' }
+        if ($status -ne 'open') { continue }
+        if (-not $entry.PSObject.Properties['sourceFilePath']) { continue }
+        $filePath = [string]$entry.sourceFilePath
+        $lastSeenAt = if ($entry.PSObject.Properties['lastSeenAt']) { [string]$entry.lastSeenAt } else { '' }
+
+        $shouldOrphan = $false
+        if (Test-Path -LiteralPath $filePath) {
+          $fileMtime = (Get-Item -LiteralPath $filePath).LastWriteTimeUtc
+          if (-not [string]::IsNullOrWhiteSpace($lastSeenAt)) {
+            try {
+              $lastSeenUtc = [datetimeoffset]::Parse($lastSeenAt, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+              if ($fileMtime -gt $lastSeenUtc.AddMinutes(1)) { $shouldOrphan = $true }
+            } catch { }
+          }
+        }
+        # If the source file is gone entirely we don't auto-orphan -
+        # external file deletions are too easy to do accidentally. Let
+        # a future maintenance pass handle that.
+
+        if ($shouldOrphan) {
+          $classRollup['orphaned'] += 1
+          $merged = [ordered]@{}
+          foreach ($p in $entry.PSObject.Properties) { $merged[$p.Name] = $p.Value }
+          $merged['status']      = 'orphaned'
+          $merged['closedAt']    = $nowIso
+          $merged['closeReason'] = 'source-file-no-longer-lists-item'
+          $upserts.Add([pscustomobject]@{
+            op        = 'edit'
+            zakiraKey = $key
+            data      = [pscustomobject]$merged
+            classify  = 'orphaned'
+          }) | Out-Null
+        }
+      }
+
+      [pscustomobject]@{
+        reconciledAt = $nowIso
+        runId        = $runId
+        rollup       = $classRollup
+        upsertCount  = $upserts.Count
+        upserts      = $upserts.ToArray()
+      } | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{discover-and-parse-files.output}}"
+      - "{{load-ledger.output}}"
+      - "{{param.staleDaysHigh}}"
+      - "{{param.staleDaysMedium}}"
+      - "{{param.staleDaysLow}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 120
+
+  - name: update-ledger
+    type: Script
+    dependsOn: [reconcile]
+    shell: pwsh
+    script: |
+      # Bulk Zakira writes. Inline pattern (not tracker-item-mutate)
+      # because we are processing many items at once with a stable
+      # schema; the per-mutation orchestration is reserved for ActionView
+      # button paths where we want the indirection layer.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $reconcileJson = $args[0]
+      $dbPath        = $args[1]
+      $category      = $args[2]
+      $dryRun        = $args[3]
+      $runId         = $args[4]
+
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      if ($dryRunBool) {
+        [pscustomobject]@{ status='dry-run-skipped'; created=0; updated=0 } | ConvertTo-Json -Compress
+        return
+      }
+
+      $reconcile = ConvertFrom-Json -InputObject $reconcileJson -Depth 100 -ErrorAction Stop
+
+      $created = 0
+      $updated = 0
+      $errors  = New-Object System.Collections.Generic.List[string]
+
+      foreach ($u in @($reconcile.upserts)) {
+        if ($null -eq $u) { continue }
+        $key = [string]$u.zakiraKey
+        $payload = $u.data | ConvertTo-Json -Depth 50 -Compress
+        $reason = "$($u.classify); runId=$runId"
+
+        if ($u.op -eq 'create') {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $key `
+            --data $payload `
+            --author "meeting-action-items-followup:$runId" `
+            --reason $reason 2>&1
+          if ($LASTEXITCODE -eq 0) { $created += 1 }
+          else {
+            # Fall back to edit if the create failed because the key
+            # already exists (race condition between load-ledger and now).
+            $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $key `
+              --data $payload `
+              --author "meeting-action-items-followup:$runId" `
+              --reason $reason 2>&1
+            if ($LASTEXITCODE -eq 0) { $updated += 1 }
+            else { $errors.Add("upsert ${key}: $($out -join ' ')") | Out-Null }
+          }
+        } else {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $key `
+            --data $payload `
+            --author "meeting-action-items-followup:$runId" `
+            --reason $reason 2>&1
+          if ($LASTEXITCODE -eq 0) { $updated += 1 }
+          else { $errors.Add("edit ${key}: $($out -join ' ')") | Out-Null }
+        }
+      }
+
+      [pscustomobject]@{
+        status   = 'persisted'
+        created  = $created
+        updated  = $updated
+        errors   = $errors.ToArray()
+      } | ConvertTo-Json -Depth 10 -Compress
+    arguments:
+      - "{{reconcile.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraCategory}}"
+      - "{{param.dryRun}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 900
+
+  - name: build-todo-payloads
+    type: Script
+    dependsOn: [reconcile]
+    shell: pwsh
+    script: |
+      # Builds the list of items to upsert into Microsoft To Do.
+      # Inclusion rules:
+      #   - open items (status='open' in the planned upsert) regardless
+      #     of priority
+      #   - items just-closed in this run (status='completed' from
+      #     implicit checkbox) - sent so To Do reflects the closure
+      #   - NEW open items are capped at maxNewToDoPushPerRun to avoid
+      #     flooding To Do on the bootstrap run; existing open items are
+      #     always sent because they are PATCHes (cheap, idempotent)
+      #
+      # Items that were 'closed-manual' or 'orphaned' are not sent -
+      # they are either already in the To Do completed view (if the user
+      # closed via mark-ledger-item.ps1 we trust they cleaned To Do
+      # there too) or were never there.
+      $ErrorActionPreference = 'Stop'
+
+      $reconcileJson  = $args[0]
+      $listName       = $args[1]
+      $pushEnabledRaw = $args[2]
+      $dryRunRaw      = $args[3]
+      $maxNewCapRaw   = $args[4]
+
+      $pushEnabled = [string]::Equals($pushEnabledRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $dryRunBool  = [string]::Equals($dryRunRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $maxNewCap   = [int]$maxNewCapRaw
+
+      if (-not $pushEnabled -or $dryRunBool) {
+        [pscustomobject]@{ items = @() } | ConvertTo-Json -Compress
+        return
+      }
+
+      $reconcile = ConvertFrom-Json -InputObject $reconcileJson -Depth 100 -ErrorAction Stop
+
+      $items = New-Object System.Collections.Generic.List[object]
+      $newOpenCount = 0
+
+      foreach ($u in @($reconcile.upserts)) {
+        if ($null -eq $u) { continue }
+        $data = $u.data
+        $status = [string]$data.status
+        $classify = [string]$u.classify
+
+        # Skip orphaned / dismissed entries.
+        if ($status -eq 'orphaned' -or $status -eq 'dismissed' -or $status -eq 'archived') { continue }
+
+        # New open items: cap at maxNewCap.
+        $isNewOpen = ($status -eq 'open' -and $classify -eq 'new')
+        if ($isNewOpen) {
+          if ($newOpenCount -ge $maxNewCap) { continue }
+          $newOpenCount++
+        }
+
+        # closed-manual entries do not need to be re-PATCHed; skip.
+        if ($classify -eq 'closed-manual') { continue }
+
+        $importance = switch ($data.priority) {
+          'HIGH'   { 'high' }
+          'MEDIUM' { 'normal' }
+          'LOW'    { 'low' }
+          default  { 'normal' }
+        }
+
+        $todoStatus = if ($status -eq 'completed') { 'completed' } else { 'notStarted' }
+
+        $bodyLines = @(
+          [string]$data.action,
+          ''
+        )
+        if (-not [string]::IsNullOrWhiteSpace([string]$data.meetingTitle)) {
+          $bodyLines += "From meeting: $($data.meetingTitle) ($($data.meetingDate))"
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$data.source)) {
+          $bodyLines += "Source: $($data.source)"
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$data.sourceFilePath)) {
+          $bodyLines += "Report: $($data.sourceFilePath)"
+        }
+        $body = ($bodyLines -join "`n").TrimEnd()
+
+        # Title: short and scannable.
+        $titlePrefix = switch ($data.priority) {
+          'HIGH'   { '[HIGH]' }
+          'MEDIUM' { '[MED]'  }
+          'LOW'    { '[LOW]'  }
+          default  { '[]' }
+        }
+        $titleAction = [string]$data.action
+        if ($titleAction.Length -gt 120) { $titleAction = $titleAction.Substring(0, 117) + '...' }
+        $title = "$titlePrefix $titleAction"
+
+        $items.Add([pscustomobject]@{
+          externalId = "ai:$($data.itemId)"
+          title      = $title
+          body       = $body
+          dueDate    = if ([string]::IsNullOrWhiteSpace([string]$data.deadline)) { '' } else { [string]$data.deadline }
+          importance = $importance
+          status     = $todoStatus
+          listName   = $listName
+        }) | Out-Null
+      }
+
+      [pscustomobject]@{
+        items          = $items.ToArray()
+        count          = $items.Count
+        newOpenPushed  = $newOpenCount
+      } | ConvertTo-Json -Depth 20 -Compress
+    arguments:
+      - "{{reconcile.output}}"
+      - "{{vars.todoListName}}"
+      - "{{param.pushToTodo}}"
+      - "{{param.dryRun}}"
+      - "{{param.maxNewToDoPushPerRun}}"
+    timeoutSeconds: 60
+
+  - name: push-to-todo
+    type: Orchestration
+    dependsOn: [build-todo-payloads]
+    orchestration: todo-upsert
+    forEach: "{{build-todo-payloads.output}}"
+    forEachPath: items
+    itemParameter: todoItem
+    parameters:
+      listName: "{{vars.todoListName}}"
+      externalId: ""
+      title: ""
+      body: ""
+      dueDate: ""
+      importance: normal
+      status: notStarted
+    inputHandlerPrompt: |
+      Return ONLY a valid JSON object mapping todo-upsert parameter
+      names (listName, externalId, title, body, dueDate, importance,
+      status) to string values pulled from the supplied item. Preserve
+      listName, externalId, importance, status, and dueDate verbatim.
+      The body must be a single plain-text string (escape newlines for
+      valid JSON).
+    mode: sync
+    maxConcurrency: 3
+    continueOnItemFailure: true
+    timeoutSeconds: 1800
+
+  - name: gate-noteworthy-activity
+    type: Script
+    dependsOn: [reconcile]
+    shell: pwsh
+    script: |
+      # Determines whether this run is worth surfacing to ActionView.
+      # Noteworthy when ANY of:
+      #   - hot items present (overdue or aging)
+      #   - new items added this run
+      #   - items closed this run (implicit or manual)
+      #   - forceSurface input is true
+      # AND dryRun is false. dryRun=true forces noteworthy=false so the
+      # ActionView submission branch is skipped entirely, honouring the
+      # documented dryRun contract.
+      $ErrorActionPreference = 'Stop'
+
+      $reconcileJson = $args[0]
+      $forceRaw      = $args[1]
+      $dryRunRaw     = $args[2]
+
+      $reconcile  = ConvertFrom-Json -InputObject $reconcileJson -Depth 100 -ErrorAction Stop
+      $forceBool  = [string]::Equals($forceRaw.Trim(),  'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $dryRunBool = [string]::Equals($dryRunRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      $rollup = $reconcile.rollup
+      $hot = [int]$rollup.overdue + [int]$rollup.aging
+      $changed = [int]$rollup.new + [int]$rollup.'closed-implicit' + [int]$rollup.'closed-manual' + [int]$rollup.orphaned
+
+      $noteworthy = (-not $dryRunBool) -and ($forceBool -or ($hot -gt 0) -or ($changed -gt 0))
+
+      $reason = if ($dryRunBool) {
+        "dry-run: ActionView submission suppressed (hot=$hot, changed=$changed would otherwise surface)"
+      } elseif ($noteworthy) {
+        "noteworthy: hot=$hot, changed=$changed, force=$forceBool"
+      } else {
+        "no-op: hot=0, changed=0, force=false"
+      }
+
+      [pscustomobject]@{
+        noteworthy   = $noteworthy
+        forceSurface = $forceBool
+        dryRun       = $dryRunBool
+        hot          = $hot
+        changed      = $changed
+        reason       = $reason
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{reconcile.output}}"
+      - "{{param.forceSurface}}"
+      - "{{param.dryRun}}"
+    timeoutSeconds: 30
+
+  - name: noteworthy-gate-prompt
+    type: Prompt
+    dependsOn: [gate-noteworthy-activity]
+    systemPrompt: |
+      You read a JSON object that contains a `noteworthy` boolean. Your
+      ONLY job is to gate downstream ActionView submission.
+
+      Rules:
+      1. If `noteworthy` is exactly `true`, output the JSON object
+         verbatim with no prose, fences, or alterations.
+      2. If `noteworthy` is `false`, call the engine tool
+         `orchestra_set_status` with status `no_action` and a reason
+         that includes the supplied `reason` field. After calling the
+         tool, output the JSON object verbatim so the downstream
+         emitters still receive it for reference.
+      3. Do not call any other tools.
+      4. Do not add prose, markdown fences, or commentary in any branch.
+    userPrompt: |
+      Gate decision input:
+      {{gate-noteworthy-activity.output}}
+    outputHandlerPrompt: |
+      Output exactly one JSON object - the gate decision verbatim.
+      Strip any markdown fences, prose, or trailing whitespace.
+
+  - name: build-actionview-entry
+    type: Script
+    dependsOn: [reconcile, noteworthy-gate-prompt, update-ledger, push-to-todo]
+    shell: pwsh
+    script: |
+      # Deterministic ActionView entry builder. Per-item Mark done /
+      # Dismiss buttons invoke mark-ledger-item.ps1 via a CLI action;
+      # because the script path is resolved from the orchestration's
+      # source directory we resolve it once up-front and bake the
+      # absolute path into every action JSON.
+      $ErrorActionPreference = 'Stop'
+
+      $reconcileJson      = $args[0]
+      $todoJson           = $args[1]
+      $recentlyClosedHrs  = [int]$args[2]
+      $sharedScriptsDir   = $args[3]
+      $dbPath             = $args[4]
+      $category           = $args[5]
+      $dryRun             = $args[6]
+      $forceSurface       = $args[7]
+      $groupId            = $args[8]
+      $runId              = $args[9]
+
+      $reconcile = ConvertFrom-Json -InputObject $reconcileJson -Depth 100 -ErrorAction Stop
+      $forceBool = [string]::Equals($forceSurface.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      # Resolve the absolute path of the helper script. We do this here
+      # (rather than in the orchestration var directly) so the value
+      # baked into ActionView CLI actions is a real OS path string.
+      $resolvedSharedDir = [System.IO.Path]::GetFullPath($sharedScriptsDir)
+      $markScriptPath = Join-Path $resolvedSharedDir 'mark-ledger-item.ps1'
+
+      $rollup = $reconcile.rollup
+
+      # Bucket upserts by classification for the sections.
+      $upserts = @($reconcile.upserts)
+      $overdue       = @($upserts | Where-Object { $_.classify -eq 'overdue' } | ForEach-Object { $_.data })
+      $aging         = @($upserts | Where-Object { $_.classify -eq 'aging' } | ForEach-Object { $_.data })
+      $newToday      = @($upserts | Where-Object { $_.classify -eq 'new' } | ForEach-Object { $_.data })
+      $closedImpl    = @($upserts | Where-Object { $_.classify -eq 'closed-implicit' } | ForEach-Object { $_.data })
+      $closedManual  = @($upserts | Where-Object { $_.classify -eq 'closed-manual' } | ForEach-Object { $_.data })
+      $orphaned      = @($upserts | Where-Object { $_.classify -eq 'orphaned' } | ForEach-Object { $_.data })
+      $stillOpen     = @($upserts | Where-Object { $_.classify -eq 'still-open' } | ForEach-Object { $_.data })
+
+      # Recently-closed = closed-implicit (just closed this run) plus
+      # closed-manual entries whose closedAt is within recentlyClosedHrs.
+      $now = (Get-Date).ToUniversalTime()
+      $recentCutoff = $now.AddHours(-$recentlyClosedHrs)
+      $recentlyClosed = New-Object System.Collections.Generic.List[object]
+      foreach ($d in $closedImpl) { $recentlyClosed.Add($d) | Out-Null }
+      foreach ($d in $closedManual) {
+        if (-not $d.PSObject.Properties['closedAt']) { continue }
+        $closedAtStr = [string]$d.closedAt
+        if ([string]::IsNullOrWhiteSpace($closedAtStr)) { continue }
+        try {
+          $closedAtUtc = [datetimeoffset]::Parse($closedAtStr, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+          if ($closedAtUtc -ge $recentCutoff) { $recentlyClosed.Add($d) | Out-Null }
+        } catch { }
+      }
+
+      # Counts: total tracked is the size of the union of all parsed +
+      # ledger upserts in this run; total open is everything still 'open'.
+      $totalOpen = ($overdue.Count + $aging.Count + $newToday.Count + $stillOpen.Count)
+
+      $severity = if ($overdue.Count -gt 0) { 'high' } elseif ($aging.Count -gt 0) { 'medium' } else { 'low' }
+      $pinned   = ($overdue.Count -gt 0)
+      $title    = "Action items: $($overdue.Count) overdue, $($aging.Count) aging, $totalOpen open"
+      $subtitle = "$($newToday.Count) new, $($recentlyClosed.Count) closed in last ${recentlyClosedHrs}h, $($orphaned.Count) orphaned"
+
+      function New-ItemActions {
+        param([string]$ItemKey)
+        # Two per-item CLI actions. onSuccess='keep' so the entry remains
+        # visible after a single-item button click (other items in the
+        # entry should not vanish because you completed one).
+        return @(
+          [ordered]@{
+            label = 'Mark done'
+            style = 'success'
+            onSuccess = 'keep'
+            command = [ordered]@{
+              type    = 'cli'
+              program = 'pwsh'
+              args    = @(
+                '-NoProfile', '-NoLogo', '-File', $markScriptPath,
+                '-Category', $category,
+                '-Key',      $ItemKey,
+                '-Action',   'completed',
+                '-DatabasePath', $dbPath
+              )
+            }
+          },
+          [ordered]@{
+            label = 'Dismiss'
+            style = 'default'
+            onSuccess = 'keep'
+            command = [ordered]@{
+              type    = 'cli'
+              program = 'pwsh'
+              args    = @(
+                '-NoProfile', '-NoLogo', '-File', $markScriptPath,
+                '-Category', $category,
+                '-Key',      $ItemKey,
+                '-Action',   'dismissed',
+                '-DatabasePath', $dbPath
+              )
+            }
+          }
+        )
+      }
+
+      function New-ItemSection {
+        param([pscustomobject]$Data)
+        $titleText = "$($Data.priority) - $($Data.action)"
+        if ($titleText.Length -gt 140) { $titleText = $titleText.Substring(0, 137) + '...' }
+        $kvPairs = [ordered]@{
+          Meeting   = "$($Data.meetingTitle) ($($Data.meetingDate))"
+          Priority  = "$($Data.priority)"
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$Data.deadline)) {
+          $kvPairs['Deadline'] = [string]$Data.deadline
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$Data.source)) {
+          $kvPairs['Source'] = [string]$Data.source
+        }
+        $kvPairs['Status'] = [string]$Data.status
+        if (-not [string]::IsNullOrWhiteSpace([string]$Data.sourceFilePath)) {
+          $kvPairs['Report'] = [ordered]@{
+            type  = 'link'
+            url   = "file:///$(([string]$Data.sourceFilePath) -replace '\\','/')"
+            label = 'open report'
+          }
+        }
+        $key = "ai:$($Data.itemId)"
+        return [ordered]@{
+          type    = 'section'
+          title   = $titleText
+          defaultCollapsed = $false
+          content = @(
+            [ordered]@{ type='keyValue'; pairs=$kvPairs }
+          )
+          actions = New-ItemActions -ItemKey $key
+        }
+      }
+
+      function New-ItemListSection {
+        param([string]$Heading, [object[]]$Items, [bool]$Collapsed = $false)
+        if ($Items.Count -eq 0) { return $null }
+        $cap = 20
+        $shown = $Items | Select-Object -First $cap
+        $nestedContent = @()
+        foreach ($d in $shown) {
+          $nestedContent += New-ItemSection -Data $d
+        }
+        if ($Items.Count -gt $cap) {
+          $more = $Items.Count - $cap
+          $nestedContent += [ordered]@{
+            type = 'markdown'
+            body = "_Plus $more more not shown - see the daily summary or the Obsidian aggregator note for the full list._"
+          }
+        }
+        return [ordered]@{
+          type    = 'section'
+          title   = "$Heading ($($Items.Count))"
+          defaultCollapsed = $Collapsed
+          content = $nestedContent
+        }
+      }
+
+      $content = New-Object System.Collections.Generic.List[object]
+
+      if ($overdue.Count -gt 0) {
+        $alertBody = "**$($overdue.Count) overdue item(s):**`n`n"
+        foreach ($d in ($overdue | Select-Object -First 5)) {
+          $alertBody += "- **[${($d.priority)}]** $($d.action) _(due $($d.deadline))_`n"
+        }
+        if ($overdue.Count -gt 5) {
+          $alertBody += "- _...and $($overdue.Count - 5) more below._"
+        }
+        $content.Add([ordered]@{
+          type  = 'alert'
+          level = 'error'
+          label = 'Overdue'
+          body  = $alertBody.TrimEnd()
+        }) | Out-Null
+      }
+
+      $content.Add([ordered]@{
+        type  = 'keyValue'
+        label = 'Run Overview'
+        pairs = [ordered]@{
+          'Total open'     = "$totalOpen"
+          Overdue          = "$($overdue.Count)"
+          Aging            = "$($aging.Count)"
+          'New today'      = "$($newToday.Count)"
+          'Closed recently'= "$($recentlyClosed.Count)"
+          Orphaned         = "$($orphaned.Count)"
+        }
+      }) | Out-Null
+
+      # By-priority counts of open items.
+      $openByPriority = [ordered]@{ HIGH = 0; MEDIUM = 0; LOW = 0 }
+      foreach ($d in ($overdue + $aging + $newToday + $stillOpen)) {
+        $p = [string]$d.priority
+        if ($openByPriority.Contains($p)) { $openByPriority[$p] += 1 }
+      }
+      $content.Add([ordered]@{
+        type  = 'keyValue'
+        label = 'Open by priority'
+        pairs = [ordered]@{
+          High   = "$($openByPriority['HIGH'])"
+          Medium = "$($openByPriority['MEDIUM'])"
+          Low    = "$($openByPriority['LOW'])"
+        }
+      }) | Out-Null
+
+      $sections = @(
+        (New-ItemListSection -Heading 'Overdue'         -Items $overdue),
+        (New-ItemListSection -Heading 'Aging'           -Items $aging),
+        (New-ItemListSection -Heading 'New today'       -Items $newToday),
+        (New-ItemListSection -Heading 'Recently closed' -Items ($recentlyClosed.ToArray()) -Collapsed $true),
+        (New-ItemListSection -Heading 'Orphaned'        -Items $orphaned -Collapsed $true)
+      )
+      foreach ($s in $sections) {
+        if ($null -ne $s) { $content.Add($s) | Out-Null }
+      }
+
+      $content.Add([ordered]@{
+        type = 'markdown'
+        body = "Run id: ``$runId``  -  Dry run: ``$dryRunBool``  -  Force surface: ``$forceBool``"
+      }) | Out-Null
+
+      $entry = [ordered]@{
+        schemaVersion = '1'
+        id            = "meeting-action-items-followup-$runId"
+        type          = 'action-items-status'
+        source        = 'meeting-action-items-followup'
+        title         = $title
+        subtitle      = $subtitle
+        severity      = $severity
+        icon          = 'list-checks'
+        tags          = @('meetings','action-items','productivity','ZTS','followup')
+        groupId       = $groupId
+        pinned        = $pinned
+        content       = $content.ToArray()
+      }
+
+      $entry | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{reconcile.output}}"
+      - "{{push-to-todo.output}}"
+      - "{{param.recentlyClosedHours}}"
+      - "{{vars.sharedScriptsDir}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraCategory}}"
+      - "{{param.dryRun}}"
+      - "{{param.forceSurface}}"
+      - "{{vars.actionViewGroupId}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 180
+
+  - name: submit-actionview-entry
+    type: Orchestration
+    dependsOn: [build-actionview-entry]
+    orchestration: actionview-submit
+    parameters:
+      entryJson: "{{build-actionview-entry.output}}"
+      template: action-items-status
+      groupId: "{{vars.actionViewGroupId}}"
+    inputHandlerPrompt: |
+      Return ONLY a valid JSON object mapping actionview-submit parameter
+      names (entryJson, template, groupId) to string values. The
+      entryJson value must be the canonical JSON object serialized as a
+      string. No sentinel handling needed - noteworthy-gate-prompt
+      already skipped this branch via orchestra_set_status('no_action')
+      on no-op runs.
+    mode: sync
+    timeoutSeconds: 600
+
+  - name: weekly-obsidian-aggregator
+    type: Script
+    dependsOn: [reconcile, update-ledger]
+    shell: pwsh
+    script: |
+      # Refreshes a single _INDEX.md note under actionItemsDir on Mondays
+      # summarising this week's open commitments grouped by meeting. On
+      # any other day the step is a no-op (so the orchestration can keep
+      # firing daily without flapping the file).
+      $ErrorActionPreference = 'Stop'
+
+      $reconcileJson  = $args[0]
+      $actionItemsDir = $args[1]
+      $dryRunRaw      = $args[2]
+
+      # Same template-leak defense as discover-and-parse-files.
+      if ([string]::IsNullOrWhiteSpace($actionItemsDir) -or $actionItemsDir -match '^\{\{') {
+        $actionItemsDir = Join-Path $env:USERPROFILE 'OneDrive - Microsoft\Notes\Obsidian\Work\OrcStra\Meeting Action Items'
+      }
+
+      $dryRunBool = [string]::Equals($dryRunRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $today = Get-Date
+      if ($today.DayOfWeek -ne [System.DayOfWeek]::Monday) {
+        [pscustomobject]@{ status='skipped'; reason='not-monday'; today=$today.ToString('o') } | ConvertTo-Json -Compress
+        return
+      }
+      if ($dryRunBool) {
+        [pscustomobject]@{ status='dry-run-skipped' } | ConvertTo-Json -Compress
+        return
+      }
+      if (-not (Test-Path -LiteralPath $actionItemsDir)) {
+        [pscustomobject]@{ status='skipped'; reason='dir-missing' } | ConvertTo-Json -Compress
+        return
+      }
+
+      $reconcile = ConvertFrom-Json -InputObject $reconcileJson -Depth 100 -ErrorAction Stop
+
+      $upserts = @($reconcile.upserts)
+      $open = $upserts | Where-Object { [string]$_.data.status -eq 'open' } | ForEach-Object { $_.data }
+      $byMeeting = $open | Group-Object -Property meetingTitle
+
+      $lines = New-Object System.Collections.Generic.List[string]
+      [void]$lines.Add("# Meeting Action Items - Open Commitments")
+      [void]$lines.Add('')
+      [void]$lines.Add("_Refreshed on $(Get-Date -Format 'yyyy-MM-dd') by meeting-action-items-followup._")
+      [void]$lines.Add('')
+      [void]$lines.Add("Total open items: **$(@($open).Count)** across **$(@($byMeeting).Count)** meeting(s).")
+      [void]$lines.Add('')
+
+      foreach ($g in $byMeeting | Sort-Object -Property Name) {
+        $first = $g.Group | Select-Object -First 1
+        $relPath = $null
+        if ($first -and $first.PSObject.Properties['sourceFilePath']) {
+          $filePath = [string]$first.sourceFilePath
+          if (-not [string]::IsNullOrWhiteSpace($filePath)) {
+            try { $relPath = [System.IO.Path]::GetFileName($filePath) } catch { $relPath = $null }
+          }
+        }
+        $headerSuffix = if ($relPath) { " ([report]($relPath))" } else { '' }
+        [void]$lines.Add("## $($g.Name)$headerSuffix")
+        [void]$lines.Add('')
+        foreach ($d in $g.Group | Sort-Object -Property { $_.priority }) {
+          $deadlinePart = if (-not [string]::IsNullOrWhiteSpace([string]$d.deadline)) { " *(due $($d.deadline))*" } else { '' }
+          [void]$lines.Add("- [ ] **[$($d.priority)]** $($d.action)$deadlinePart")
+        }
+        [void]$lines.Add('')
+      }
+
+      $indexPath = Join-Path $actionItemsDir '_INDEX.md'
+      Set-Content -LiteralPath $indexPath -Value ($lines -join "`n") -Encoding utf8NoBOM
+
+      [pscustomobject]@{
+        status   = 'written'
+        path     = $indexPath
+        sections = @($byMeeting).Count
+        openCount= @($open).Count
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{reconcile.output}}"
+      - "{{param.actionItemsDir}}"
+      - "{{param.dryRun}}"
+    timeoutSeconds: 120
+
+  - name: emit-daily-summary
+    type: Script
+    dependsOn: [reconcile, update-ledger, push-to-todo, gate-noteworthy-activity]
+    shell: pwsh
+    script: |
+      # Writes the daily summary record consumed by the future
+      # daily-morning-digest orchestration. Two keys are written:
+      # today's date (YYYY-MM-DD) and the rolling "latest" pointer.
+      # Always runs, even on no-op days, so the digest reader can
+      # distinguish "tracker ran clean" from "tracker did not run".
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $reconcileJson = $args[0]
+      $gateJson      = $args[1]
+      $dbPath        = $args[2]
+      $category      = $args[3]
+      $dryRun        = $args[4]
+      $runId         = $args[5]
+
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      if ($dryRunBool) {
+        [pscustomobject]@{ status='dry-run-skipped' } | ConvertTo-Json -Compress
+        return
+      }
+
+      $reconcile = ConvertFrom-Json -InputObject $reconcileJson -Depth 100 -ErrorAction Stop
+      $gate = ConvertFrom-Json -InputObject $gateJson -Depth 50 -ErrorAction Stop
+
+      $upserts = @($reconcile.upserts)
+      $rollup  = $reconcile.rollup
+      $stillOpenCount = @($upserts | Where-Object { [string]$_.data.status -eq 'open' -and $_.classify -eq 'still-open' }).Count
+      $openCount = [int]$rollup.overdue + [int]$rollup.aging + [int]$rollup.new + $stillOpenCount
+
+      $hotItems = @($upserts | Where-Object { $_.classify -eq 'overdue' -or $_.classify -eq 'aging' } | ForEach-Object {
+        [ordered]@{
+          itemId   = $_.data.itemId
+          action   = $_.data.action
+          priority = $_.data.priority
+          deadline = $_.data.deadline
+          meeting  = $_.data.meetingTitle
+          classify = $_.classify
+        }
+      } | Select-Object -First 10)
+
+      $summary = [ordered]@{
+        summaryDate = (Get-Date).ToString('yyyy-MM-dd')
+        rolledAt    = (Get-Date).ToUniversalTime().ToString('o')
+        runId       = $runId
+        openCount   = $openCount
+        overdueCount= [int]$rollup.overdue
+        agingCount  = [int]$rollup.aging
+        newCount    = [int]$rollup.new
+        closedImplicit = [int]$rollup.'closed-implicit'
+        closedManual   = [int]$rollup.'closed-manual'
+        orphaned    = [int]$rollup.orphaned
+        hotItems    = $hotItems
+        noteworthy  = $gate.noteworthy
+      }
+      $payload = $summary | ConvertTo-Json -Depth 20 -Compress
+
+      $dayKey = $summary.summaryDate
+
+      function Write-SummaryKey {
+        param([string]$Key)
+        $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
+          --data $payload `
+          --author "meeting-action-items-followup:$runId" `
+          --reason 'daily summary' 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $Key `
+            --data $payload `
+            --author "meeting-action-items-followup:$runId" `
+            --reason 'daily summary' 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Zakira write failed for $category/${Key}: $($out -join ' ')"
+          }
+        }
+      }
+
+      Write-SummaryKey -Key $dayKey
+      Write-SummaryKey -Key 'latest'
+
+      [pscustomobject]@{
+        status   = 'persisted'
+        keys     = @($dayKey, 'latest')
+        category = $category
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{reconcile.output}}"
+      - "{{gate-noteworthy-activity.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraSummaryCategory}}"
+      - "{{param.dryRun}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 300
+
+  - name: generate-summary
+    type: Transform
+    dependsOn:
+      - discover-and-parse-files
+      - load-ledger
+      - reconcile
+      - update-ledger
+      - push-to-todo
+      - submit-actionview-entry
+      - weekly-obsidian-aggregator
+      - emit-daily-summary
+    template: |
+      # meeting-action-items-followup Run Summary
+
+      **Run ID:** {{orchestration.runId}}
+      **Started:** {{orchestration.startedAt}}
+      **Dry run:** {{param.dryRun}}
+      **Force surface:** {{param.forceSurface}}
+      **Push to To Do:** {{param.pushToTodo}}
+      **Lookback days:** {{param.lookbackDays}}
+
+      ## Discovery / parse
+      ```json
+      {{discover-and-parse-files.output}}
+      ```
+
+      ## Ledger load
+      ```json
+      {{load-ledger.output}}
+      ```
+
+      ## Reconciliation
+      ```json
+      {{reconcile.output}}
+      ```
+
+      ## Ledger persistence
+      ```json
+      {{update-ledger.output}}
+      ```
+
+      ## To Do push
+      ```text
+      {{push-to-todo.output}}
+      ```
+
+      ## ActionView submission
+      ```text
+      {{submit-actionview-entry.output}}
+      ```
+
+      ## Weekly obsidian aggregator
+      ```text
+      {{weekly-obsidian-aggregator.output}}
+      ```
+
+      ## Daily summary
+      ```text
+      {{emit-daily-summary.output}}
+      ```
+    contentType: text/markdown

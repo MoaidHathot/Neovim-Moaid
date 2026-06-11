@@ -330,10 +330,10 @@ steps:
          system prompt
       2. The user prompt MUST accept these Orchestra placeholders verbatim so
          it is drop-in for a Prompt step in pr-code-reviewer.yaml:
-         - {{prepare-pr-data.output}}
-         - {{fetch-pr-diff.output}}
-         - {{fetch-work-items.output}}
-         - {{open-review-session.output}}
+         - \{{prepare-pr-data.output}}
+         - \{{fetch-pr-diff.output}}
+         - \{{fetch-work-items.output}}
+         - \{{open-review-session.output}}
       3. The prompt should instruct the reviewer to:
          - focus only on substantive, in-scope issues this persona would
            realistically raise

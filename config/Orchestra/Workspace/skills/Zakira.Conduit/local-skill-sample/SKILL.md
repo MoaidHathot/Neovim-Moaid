@@ -8,7 +8,7 @@ into each configured target as `<target>/local-skill-sample/`.
 
 Real skills typically include:
 
-- A `SKILL.md` (this file, but with the actual skill prompt / instructions).
+- A `SKILL.md` (this file, but witA aah the actual skill prompt / instructions).
 - Supporting data files in adjacent folders (see `./data/`).
 - Anything else your agent needs to read at runtime.
 

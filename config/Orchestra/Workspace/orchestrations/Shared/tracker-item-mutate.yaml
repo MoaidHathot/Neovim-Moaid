@@ -1,0 +1,254 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: tracker-item-mutate
+description: |
+  Reusable utility that performs an idempotent Zakira.Exchange edit on a
+  single tracker item. Designed as the indirection layer behind
+  ActionView dismiss / resolve / not-an-ask buttons so the entry's
+  command body stays simple and the actual state schema lives in one
+  place per tracker.
+
+  Behaviour:
+    - Looks up <category>/<key> in the Zakira CLI.
+    - If found: deep-merges the supplied `patch` JSON object into the
+      stored `Data:` JSON payload and writes it back via `edit`.
+    - If not found:
+        * When createIfMissing=true, creates a new entry whose payload is
+          the patch itself (plus any seed metadata supplied by the caller).
+        * Otherwise, exits 0 with a result indicating no-op.
+    - Always stamps `mutatedAt` (current UTC ISO-8601) on the merged
+      payload so downstream readers can detect freshness.
+
+  Output JSON shape:
+    {
+      "category":   "...",
+      "key":        "...",
+      "operation":  "edit" | "create" | "noop",
+      "mutatedAt":  "...",
+      "previousData": <object or null>,
+      "newData":    <object>
+    }
+version: 1.0.0
+tags: ["utility", "zakira", "shared", "reusable", "actionview", "auto"]
+defaultModel: claude-opus-4.7-1m-internal
+
+metadata:
+  owner: Moaid Hathot
+  ownerAlias: moaid
+  domain: shared
+  sla: best-effort
+  documentation: |
+    Invoked synchronously as a child orchestration, or via the host's
+    REST API from an ActionView action button. The button command can
+    POST to the orchestra invoke endpoint with the four parameters
+    declared below.
+
+inputs:
+  category:
+    type: string
+    description: |
+      Zakira.Exchange category to mutate.
+    required: true
+  key:
+    type: string
+    description: |
+      Stable key within the category. The same key must be addressable by
+      the orchestration that originally wrote the record.
+    required: true
+  patch:
+    type: string
+    description: |
+      JSON object (serialized as a string) that is deep-merged into the
+      stored `Data:` payload. Top-level keys in the patch overwrite
+      same-named keys in the stored payload; nested objects are merged
+      recursively. Arrays are replaced wholesale. To unset a value, pass
+      `null`.
+    required: true
+    multiline: true
+  createIfMissing:
+    type: boolean
+    description: |
+      When true and no entry exists at <category>/<key>, create one using
+      the patch as the initial payload. When false (default), missing
+      entries result in a no-op result.
+    required: false
+    default: "false"
+  dbPath:
+    type: string
+    description: |
+      Absolute path to the Zakira SQLite database file.
+    required: false
+    default: "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+  author:
+    type: string
+    description: |
+      Optional author string recorded with the edit/create. Defaults to
+      the orchestration's run id so the audit trail traces back to this
+      mutation call.
+    required: false
+    default: ""
+  reason:
+    type: string
+    description: |
+      Optional reason string recorded with the edit/create. Useful for
+      surfacing why ActionView dismissed an item (e.g.
+      "dismissed-by-user", "marked-resolved").
+    required: false
+    default: ""
+
+defaultStepTimeoutSeconds: 300
+timeoutSeconds: 600
+
+steps:
+  - name: mutate
+    type: Script
+    shell: pwsh
+    script: |
+      $ErrorActionPreference = 'Stop'
+      # PS 7.6.1 default 'Windows' arg-passing mode strips inner quotes
+      # from JSON values when invoking native commands. The Standard mode
+      # preserves them so the Zakira CLI sees the verbatim payload.
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $category        = $args[0]
+      $key             = $args[1]
+      $patchJson       = $args[2]
+      $createIfMissing = $args[3]
+      $dbPath          = $args[4]
+      $authorArg       = $args[5]
+      $reasonArg       = $args[6]
+      $runId           = $args[7]
+
+      if ([string]::IsNullOrWhiteSpace($category))   { throw 'category is required.' }
+      if ([string]::IsNullOrWhiteSpace($key))        { throw 'key is required.' }
+      if ([string]::IsNullOrWhiteSpace($patchJson))  { throw 'patch (JSON) is required.' }
+      if ([string]::IsNullOrWhiteSpace($dbPath))     { throw 'dbPath is required.' }
+
+      $author = if ([string]::IsNullOrWhiteSpace($authorArg)) { "tracker-item-mutate:$runId" } else { $authorArg }
+      $reason = if ([string]::IsNullOrWhiteSpace($reasonArg)) { "ActionView/automation mutation" } else { $reasonArg }
+      $createIfMissingBool = [string]::Equals($createIfMissing.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      $patch = ConvertFrom-Json -InputObject $patchJson -NoEnumerate -ErrorAction Stop
+      $mutatedAt = (Get-Date).ToUniversalTime().ToString('o')
+
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+            $endIdx = $j; break
+          }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      function Merge-Deep {
+        # Recursive deep merge: patch keys override target keys; nested
+        # PSCustomObjects merge recursively; arrays and scalars in the
+        # patch replace whatever was in the target.
+        param($Target, $Patch)
+        if ($null -eq $Target) { return $Patch }
+        if ($null -eq $Patch)  { return $Target }
+        if ($Patch -isnot [pscustomobject] -or $Target -isnot [pscustomobject]) {
+          return $Patch
+        }
+        $merged = [ordered]@{}
+        foreach ($p in $Target.PSObject.Properties) {
+          $merged[$p.Name] = $p.Value
+        }
+        foreach ($p in $Patch.PSObject.Properties) {
+          if ($merged.Contains($p.Name) -and $merged[$p.Name] -is [pscustomobject] -and $p.Value -is [pscustomobject]) {
+            $merged[$p.Name] = Merge-Deep -Target $merged[$p.Name] -Patch $p.Value
+          } else {
+            $merged[$p.Name] = $p.Value
+          }
+        }
+        return [pscustomobject]$merged
+      }
+
+      $cliOutput = & dnx Zakira.Exchange --yes -- `
+        --db $dbPath `
+        get $category $key 2>&1
+      $cliExit = $LASTEXITCODE
+
+      $previousData = $null
+      $operation = 'noop'
+      $newData = $null
+
+      if ($cliExit -eq 0) {
+        $dataJson = Get-DataJsonFromCliOutput -Lines $cliOutput
+        if ($dataJson) {
+          try { $previousData = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop } catch { $previousData = $null }
+        }
+
+        $base = if ($null -eq $previousData) { [pscustomobject]@{} } else { $previousData }
+        $merged = Merge-Deep -Target $base -Patch $patch
+        if ($merged -is [pscustomobject]) {
+          $merged | Add-Member -NotePropertyName mutatedAt -NotePropertyValue $mutatedAt -Force
+        }
+        $newDataJson = $merged | ConvertTo-Json -Depth 100 -Compress
+        $editOutput = & dnx Zakira.Exchange --yes -- `
+          --db $dbPath `
+          edit $category $key `
+          --data $newDataJson `
+          --author $author `
+          --reason $reason 2>&1
+        $editExit = $LASTEXITCODE
+        if ($editExit -ne 0) {
+          $editText = if ($editOutput -is [array]) { ($editOutput -join "`n") } else { [string]$editOutput }
+          throw "Zakira edit failed (exit $editExit) for $category/${key}: $editText"
+        }
+        $operation = 'edit'
+        $newData = $merged
+      } elseif ($cliExit -eq 1) {
+        if ($createIfMissingBool) {
+          if ($patch -isnot [pscustomobject]) {
+            throw 'patch must be a JSON object when createIfMissing=true.'
+          }
+          $patch | Add-Member -NotePropertyName mutatedAt -NotePropertyValue $mutatedAt -Force
+          $newDataJson = $patch | ConvertTo-Json -Depth 100 -Compress
+          $createOutput = & dnx Zakira.Exchange --yes -- `
+            --db $dbPath `
+            create $category $key `
+            --data $newDataJson `
+            --author $author `
+            --reason $reason 2>&1
+          $createExit = $LASTEXITCODE
+          if ($createExit -ne 0) {
+            $createText = if ($createOutput -is [array]) { ($createOutput -join "`n") } else { [string]$createOutput }
+            throw "Zakira create failed (exit $createExit) for $category/${key}: $createText"
+          }
+          $operation = 'create'
+          $newData = $patch
+        } else {
+          $operation = 'noop'
+        }
+      } else {
+        $cliText = if ($cliOutput -is [array]) { ($cliOutput -join "`n") } else { [string]$cliOutput }
+        throw "Zakira get failed (exit $cliExit) for $category/${key}: $cliText"
+      }
+
+      [pscustomobject]@{
+        category     = $category
+        key          = $key
+        operation    = $operation
+        mutatedAt    = $mutatedAt
+        previousData = $previousData
+        newData      = $newData
+      } | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{param.category}}"
+      - "{{param.key}}"
+      - "{{param.patch}}"
+      - "{{param.createIfMissing}}"
+      - "{{param.dbPath}}"
+      - "{{param.author}}"
+      - "{{param.reason}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 300

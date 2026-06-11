@@ -1,0 +1,1153 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: daily-morning-digest
+description: |
+  The composer. One ActionView card per day that combines:
+    - Today's meetings (calendar MCP) with collapsible full briefs
+      pulled from meeting-prep-state Zakira + the Obsidian Meeting
+      Briefs folder.
+    - PRs needing me (from my-prs-state:daily-summary - A3).
+    - Action items: overdue / aging (from action-items-ledger:daily-summary - A1).
+    - Inbox: needs-action + @mentions (from triage-state:daily-summary - B5).
+    - Outstanding asks grouped by recipient (from
+      waiting-on-ledger:daily-summary - B4).
+    - An LLM-synthesized "Today's focus" top-3 + 2-sentence shape-of-
+      the-day, written deterministically from the rolled-up state so
+      the model has the same picture you do.
+
+  Tolerates missing tracker summaries by silently rendering "Tracker
+  has not run yet today." in the corresponding section. Lights up
+  fully as each tracker (A3/A1/B5/B4) lands its first daily summary.
+
+  Output destinations:
+    - ActionView : stable id `daily-digest-<YYYY-MM-DD>`, pinned,
+                   one card per day (next day's run posts a fresh id).
+    - Obsidian   : `OrcStra/Daily/<YYYY-MM-DD>.md` (permanent).
+    - To Do      : single task in `Orchestra: Daily Focus` with the
+                   top-3 focus items (per-day externalId so each day's
+                   focus is its own task).
+
+version: 1.0.0
+tags: ["ZTS", "daily", "digest", "auto", "track"]
+defaultModel: claude-opus-4.7-1m-internal
+
+metadata:
+  owner: Moaid Hathot
+  ownerAlias: moaid
+  domain: productivity
+  sla: best-effort
+  schedule: "daily within ZTS profile window"
+  documentation: |
+    Reusable utilities used:
+      - Shared/todo-upsert.yaml          (today's focus task)
+      - Shared/scripts/daily-state-roll.ps1 (tracker summary loader)
+      - Shared/scripts/inject-markdown-placeholders.ps1 (focus + briefs injection)
+      - ActionView/actionview-submit.yaml(submission)
+    Zakira categories read:
+      - meeting-prep-state               (per-meeting brief file path)
+      - my-prs-state:daily-summary       (A3)
+      - action-items-ledger:daily-summary(A1)
+      - triage-state:daily-summary       (B5)
+      - waiting-on-ledger:daily-summary  (B4)
+    Zakira categories written:
+      - daily-digest-state               (per-day, key = YYYY-MM-DD)
+
+inputs:
+  digestDate:
+    type: string
+    description: |
+      Optional ISO date (YYYY-MM-DD) to compose the digest for.
+      Defaults to today in the user's local timezone. Use this for
+      historical regeneration ("show me yesterday's digest").
+    required: false
+    default: ""
+  meetingLookaheadHours:
+    type: string
+    description: |
+      How far forward to look for "today's meetings". Default 14h
+      covers a standard workday from the typical 10:00 fire time.
+    required: false
+    default: "14"
+  includeFullMeetingBriefs:
+    type: boolean
+    description: |
+      When true, embed the full markdown brief from each meeting's
+      file inside a collapsed section on the digest. When false, only
+      a link to the brief file is rendered.
+    required: false
+    default: "true"
+  pushFocusToTodo:
+    type: boolean
+    description: |
+      When true, push the LLM-synthesized "Today's focus" top-3 as a
+      single task in the `Orchestra: Daily Focus` To Do list. Disable
+      to suppress the To Do side-effect.
+    required: false
+    default: "true"
+  forceSurface:
+    type: boolean
+    description: |
+      When true, post the ActionView entry even if no tracker has new
+      data today. The digest is intended to fire daily regardless of
+      novelty, so the default is also true.
+    required: false
+    default: "true"
+  dryRun:
+    type: boolean
+    description: |
+      When true, skip all writes (Zakira, To Do, ActionView, Obsidian).
+    required: false
+    default: "false"
+
+variables:
+  # The digest itself does not need per-user identity in any prompt
+  # (focus synthesis works from rolled-up tracker data alone). If a
+  # future v2 needs identity context, add a `resolve-me` step using
+  # Shared/scripts/resolve-user-identity.ps1 and reference its output.
+  obsidianDailyDir: "{{env.USERPROFILE}}\\OneDrive - Microsoft\\Notes\\Obsidian\\Work\\OrcStra\\Daily"
+  zakiraDigestCategory: daily-digest-state
+  zakiraMeetingPrepCategory: meeting-prep-state
+  todoListName: "Orchestra: Daily Focus"
+  actionViewGroupId: "daily-digest-{{orchestration.runId}}"
+  sharedScriptsDir: "{{orchestration.sourceDirectory}}/../Shared/scripts"
+  # Comma-separated list of Zakira categories the daily-state-roll
+  # script reads. New trackers slot in here as they ship.
+  trackerSummaryCategories: "my-prs-state:daily-summary,action-items-ledger:daily-summary,triage-state:daily-summary,waiting-on-ledger:daily-summary"
+
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 10
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 600
+timeoutSeconds: 5400
+
+trigger:
+  type: scheduler
+  enabled: true
+  intervalSeconds: 86400
+
+steps:
+  - name: resolve-digest-date
+    type: Script
+    shell: pwsh
+    script: |
+      # Computes the digest date + the meeting lookahead window. If
+      # the caller passed an explicit digestDate, use it; otherwise
+      # default to today (local).
+      $ErrorActionPreference = 'Stop'
+
+      $digestDateInput   = $args[0]
+      $lookaheadHours    = [int]$args[1]
+
+      $today = Get-Date
+      $digestDate = if ([string]::IsNullOrWhiteSpace($digestDateInput)) {
+        $today.ToString('yyyy-MM-dd')
+      } else {
+        # Validate the input parses; otherwise fall back to today.
+        try { ([datetime]::ParseExact($digestDateInput.Trim(), 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)).ToString('yyyy-MM-dd') }
+        catch { $today.ToString('yyyy-MM-dd') }
+      }
+
+      $windowStart = $today.ToUniversalTime()
+      $windowEnd   = $windowStart.AddHours($lookaheadHours)
+
+      [pscustomobject]@{
+        digestDate            = $digestDate
+        nowUtc                = $windowStart.ToString('o')
+        meetingWindowStartUtc = $windowStart.ToString('o')
+        meetingWindowEndUtc   = $windowEnd.ToString('o')
+        meetingLookaheadHours = $lookaheadHours
+        weekday               = $today.DayOfWeek.ToString()
+        isWeekend             = ($today.DayOfWeek -eq [System.DayOfWeek]::Saturday -or $today.DayOfWeek -eq [System.DayOfWeek]::Sunday)
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{param.digestDate}}"
+      - "{{param.meetingLookaheadHours}}"
+    timeoutSeconds: 30
+
+  - name: discover-todays-meetings
+    type: Prompt
+    dependsOn: [resolve-digest-date]
+    systemPrompt: |
+      You are a meeting discovery agent for today's digest. Use the
+      `calendar` MCP to list meetings scheduled in the supplied
+      window (today through windowEndUtc).
+
+      Rules:
+        1. Call ListCalendarView (or the closest MCP equivalent) with
+           the supplied start + end timestamps.
+        2. Include 1:1s, standups, reviews, design sessions, syncs,
+           interviews, ad-hoc calls.
+        3. Exclude cancelled events, focus-time blocks, OOF blocks,
+           and all-day placeholder events.
+        4. If zero meetings remain, output the empty array shape
+           below; do NOT call orchestra_complete (the digest still
+           wants to fire even on a meeting-free day).
+        5. For EACH meeting capture:
+           - eventId          : Graph event id
+           - iCalUId          : iCalendar UID
+           - occurrenceStart  : ISO-8601 start of this instance (use start.dateTime)
+           - title            : event subject
+           - startTime        : ISO-8601 start
+           - endTime          : ISO-8601 end
+           - timeZone         : start.timeZone if exposed
+           - organizer        : organizer display name
+           - attendees        : array of attendee display names (cap at 20)
+           - webLink          : canonical event URL
+           - description      : bodyPreview or first ~400 chars of body
+           - isOnline         : boolean (Teams meeting)
+        6. Sort by startTime ascending.
+
+      Output a single JSON object:
+      {
+        "fetchedAt":  "<UTC iso>",
+        "windowStartUtc": "...",
+        "windowEndUtc":   "...",
+        "meetings":   [ {...} ],
+        "count":      <int>
+      }
+    userPrompt: |
+      Today's window (from resolve-digest-date):
+      {{resolve-digest-date.output}}
+
+      Enumerate today's meetings via the `calendar` MCP per the rules
+      in your system prompt. Output one JSON object.
+    outputHandlerPrompt: |
+      Extract one valid JSON object only with the fields fetchedAt,
+      windowStartUtc, windowEndUtc, meetings, count. Strip markdown
+      fences, prose, and trailing whitespace.
+    mcps: [calendar]
+    retry:
+      maxRetries: 3
+      backoffSeconds: 15
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
+  - name: load-meeting-briefs
+    type: Script
+    dependsOn: [discover-todays-meetings]
+    shell: pwsh
+    script: |
+      # For each discovered meeting, compute the canonical Zakira key
+      # (same three-tier fallback the meeting-prep-briefer uses), look
+      # up meeting-prep-state to find the brief file path, then read
+      # the markdown content. Output a lookup map the downstream
+      # injector can splice into the digest.
+      #
+      # If a meeting has no brief (meeting-prep-brief has not yet run
+      # for it), the lookup entry has briefMarkdown = null and
+      # hasBrief = false. The digest renders "Brief not yet generated"
+      # in that meeting's section.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $meetingsJson = $args[0]
+      $dbPath       = $args[1]
+      $mpCategory   = $args[2]
+
+      function Get-Slug {
+        param([string]$Value, [int]$MaxLength = 50)
+        if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+        $lower = $Value.ToLowerInvariant()
+        $cleaned = [regex]::Replace($lower, '[^a-z0-9]+', '-').Trim('-')
+        if ($cleaned.Length -gt $MaxLength) { $cleaned = $cleaned.Substring(0, $MaxLength).TrimEnd('-') }
+        return $cleaned
+      }
+      function Get-ShortHash {
+        param([string]$Value, [int]$Length = 8)
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+        $sha = [System.Security.Cryptography.SHA1]::Create()
+        try { $hashBytes = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
+        $hex = ($hashBytes | ForEach-Object { $_.ToString('x2') }) -join ''
+        if ($Length -gt $hex.Length) { return $hex }
+        return $hex.Substring(0, $Length)
+      }
+      function ConvertTo-UtcTimestampString {
+        param($Value)
+        if ($null -eq $Value) { return $null }
+        $text = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+        try {
+          $parsed = [datetimeoffset]::Parse($text, [System.Globalization.CultureInfo]::InvariantCulture)
+          return $parsed.UtcDateTime.ToString('yyyyMMddHHmm', [System.Globalization.CultureInfo]::InvariantCulture)
+        } catch { return $null }
+      }
+      function Get-MeetingZakiraKey {
+        param($Meeting)
+        $eventId        = if ($Meeting.PSObject.Properties['eventId']) { [string]$Meeting.eventId } else { '' }
+        $iCalUId        = if ($Meeting.PSObject.Properties['iCalUId']) { [string]$Meeting.iCalUId } else { '' }
+        $occurrenceStart= if ($Meeting.PSObject.Properties['occurrenceStart']) { $Meeting.occurrenceStart } else { $null }
+        $title          = if ($Meeting.PSObject.Properties['title']) { [string]$Meeting.title } else { '' }
+        $startTime      = if ($Meeting.PSObject.Properties['startTime']) { $Meeting.startTime } else { $null }
+        $organizer      = if ($Meeting.PSObject.Properties['organizer']) { [string]$Meeting.organizer } else { '' }
+        $attendees      = @()
+        if ($Meeting.PSObject.Properties['attendees']) {
+          $attendees = @(@($Meeting.attendees) | ForEach-Object { [string]$_ })
+        }
+        $occurrenceStamp = ConvertTo-UtcTimestampString $occurrenceStart
+        if (-not $occurrenceStamp) { $occurrenceStamp = ConvertTo-UtcTimestampString $startTime }
+        $titleSlug = Get-Slug -Value $title -MaxLength 50
+
+        if (-not [string]::IsNullOrWhiteSpace($eventId)) {
+          return "meeting-$eventId"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($iCalUId) -and $occurrenceStamp) {
+          return "meeting-icaluid-$iCalUId-$occurrenceStamp"
+        }
+        if ($occurrenceStamp) {
+          $hashInput = ($title + '|' + $organizer + '|' + ($attendees -join ','))
+          $shortHash = Get-ShortHash -Value $hashInput -Length 8
+          $slugForKey = if ([string]::IsNullOrWhiteSpace($titleSlug)) { 'untitled' } else { $titleSlug }
+          return "meeting-$occurrenceStamp-$slugForKey-$shortHash"
+        }
+        return $null
+      }
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+            $endIdx = $j; break
+          }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      $meetings = ConvertFrom-Json -InputObject $meetingsJson -Depth 50 -ErrorAction Stop
+      $lookups = New-Object System.Collections.Generic.List[object]
+      $errors = New-Object System.Collections.Generic.List[string]
+
+      foreach ($m in @($meetings.meetings)) {
+        if ($null -eq $m) { continue }
+        $key = Get-MeetingZakiraKey -Meeting $m
+        $entry = [pscustomobject]@{
+          meeting        = $m
+          zakiraKey      = $key
+          hasBrief       = $false
+          briefFilePath  = $null
+          briefMarkdown  = $null
+          briefSlug      = $null
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($key)) {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath get $mpCategory $key 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            $dataJson = Get-DataJsonFromCliOutput -Lines $out
+            if ($dataJson) {
+              try {
+                $data = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop
+                $filePath = if ($data.PSObject.Properties['fileName']) { [string]$data.fileName } else { '' }
+                $slug = if ($data.PSObject.Properties['slug']) { [string]$data.slug } else { '' }
+                $entry.briefFilePath = $filePath
+                $entry.briefSlug = $slug
+              if (-not [string]::IsNullOrWhiteSpace($filePath) -and (Test-Path -LiteralPath $filePath)) {
+                  try {
+                    $entry.briefMarkdown = Get-Content -LiteralPath $filePath -Raw -ErrorAction Stop
+                    $entry.hasBrief = $true
+                  } catch {
+                    $errors.Add("Read ${filePath}: $($_.Exception.Message)") | Out-Null
+                  }
+                }
+              } catch {
+                $errors.Add("Parse data for ${key}: $($_.Exception.Message)") | Out-Null
+              }
+            }
+          }
+        }
+
+        $lookups.Add($entry) | Out-Null
+      }
+
+      [pscustomobject]@{
+        loadedAt = (Get-Date).ToUniversalTime().ToString('o')
+        count    = $lookups.Count
+        withBrief= @($lookups | Where-Object { $_.hasBrief }).Count
+        meetings = $lookups.ToArray()
+        errors   = $errors.ToArray()
+      } | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{discover-todays-meetings.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraMeetingPrepCategory}}"
+    timeoutSeconds: 600
+
+  - name: load-tracker-summaries
+    type: Script
+    dependsOn: [resolve-digest-date]
+    shell: pwsh
+    scriptFile: "./../Shared/scripts/daily-state-roll.ps1"
+    arguments:
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.trackerSummaryCategories}}"
+      - "{{resolve-digest-date.output}}"
+    timeoutSeconds: 300
+
+  - name: synthesize-focus
+    type: Prompt
+    dependsOn: [resolve-digest-date, discover-todays-meetings, load-tracker-summaries, load-meeting-briefs]
+    systemPrompt: |
+      You produce the "Today's focus" section of a daily digest. You
+      receive five inputs:
+
+        - the date and weekend flag
+        - today's meetings (titles, times, organizers, attendees)
+        - meeting briefs (where available - skim only for context)
+        - rolled-up tracker summaries from four trackers:
+            * my-prs-state:daily-summary       (PR state buckets + hot items)
+            * action-items-ledger:daily-summary(open/overdue/aging counts + hot items)
+            * triage-state:daily-summary       (needs-action counts + hot items)
+            * waiting-on-ledger:daily-summary  (open ask counts + hot urgent items)
+
+      A tracker summary may be absent (found=false) - that tracker has
+      not run yet today. Treat absence as a no-op (do NOT speculate).
+
+      Your output is exactly TWO things, in this order, separated by
+      a blank line:
+
+      1. A 2-sentence "Shape of the day" paragraph. Plain prose. No
+         emojis. No marketing tone. Be concrete and grounded in the
+         inputs.
+
+      2. A markdown numbered list of THREE focus items. Each item is
+         one line, in the form:
+           1. **<short imperative title>** - <one-clause reason>
+         Pick from across all sources (hot items, meeting-prep
+         outcomes, blocker resolutions). Skew toward items that block
+         someone else, are time-bound, or have explicit deadlines.
+
+      Rules:
+        - No prose before "Shape of the day", no prose after item 3.
+        - No code fences.
+        - If there is genuinely nothing to focus on (no meetings + all
+          trackers absent or zero hot items), still emit a focus list
+          - "Confirm trackers are healthy", "Triage anything new in
+          the inbox by noon", etc.
+        - Do NOT call any tools or MCPs.
+
+      Example shape (illustrative, not literal):
+
+      Shape of the day: Two reviews back-to-back this afternoon plus
+      one overdue PR; the morning is the safe window for the design
+      doc draft.
+
+      1. **Resolve PR #482 merge conflict** - blocking @danielk's deploy.
+      2. **Send pre-read for 2pm design review** - 5 attendees joining cold.
+      3. **Reply to Lia's "any update?" thread** - 3 days outstanding.
+    userPrompt: |
+      Date context:
+      {{resolve-digest-date.output}}
+
+      Today's meetings:
+      {{discover-todays-meetings.output}}
+
+      Meeting briefs (one entry per meeting; check `hasBrief`):
+      {{load-meeting-briefs.output}}
+
+      Tracker summaries:
+      {{load-tracker-summaries.output}}
+
+      Produce the "Today's focus" content per your system prompt.
+      Output ONLY the shape + numbered list as specified.
+    outputHandlerPrompt: |
+      Output exactly the two parts (shape paragraph + numbered focus
+      list) as plain markdown. No JSON, no fences, no prose outside
+      the specified shape.
+
+  - name: build-injection-lookup
+    type: Script
+    dependsOn: [load-meeting-briefs, synthesize-focus]
+    shell: pwsh
+    script: |
+      # Builds the id -> markdown lookup that inject-markdown-
+      # placeholders.ps1 consumes. Keys:
+      #   focus              -> the synthesized focus text
+      #   meeting:<zakiraKey>-> the full brief body for that meeting
+      # The compose-digest step emits placeholders with these ids.
+      $ErrorActionPreference = 'Stop'
+
+      $briefsJson = $args[0]
+      $focusText  = $args[1]
+
+      $briefs = ConvertFrom-Json -InputObject $briefsJson -Depth 100 -ErrorAction Stop
+
+      $lookup = [ordered]@{}
+      $lookup['focus'] = $focusText
+      foreach ($entry in @($briefs.meetings)) {
+        if ($null -eq $entry) { continue }
+        if (-not $entry.hasBrief) { continue }
+        $id = "meeting:$([string]$entry.zakiraKey)"
+        $lookup[$id] = [string]$entry.briefMarkdown
+      }
+
+      $lookup | ConvertTo-Json -Depth 5 -Compress
+    arguments:
+      - "{{load-meeting-briefs.output}}"
+      - "{{synthesize-focus.output}}"
+    timeoutSeconds: 60
+
+  - name: compose-digest
+    type: Script
+    dependsOn: [resolve-digest-date, discover-todays-meetings, load-meeting-briefs, load-tracker-summaries]
+    shell: pwsh
+    script: |
+      # Deterministic ActionView entry builder. Uses placeholders for
+      # the LLM focus + per-meeting brief bodies; the inject-placeholders
+      # step substitutes them in. Stable entry id per day so re-running
+      # the digest replaces in place.
+      $ErrorActionPreference = 'Stop'
+
+      $dateJson           = $args[0]
+      $meetingsJson       = $args[1]
+      $briefsJson         = $args[2]
+      $summariesJson      = $args[3]
+      $includeFullBriefs  = $args[4]
+      $forceSurface       = $args[5]
+      $groupId            = $args[6]
+      $runId              = $args[7]
+
+      $date      = ConvertFrom-Json -InputObject $dateJson      -Depth 50 -ErrorAction Stop
+      $meetings  = ConvertFrom-Json -InputObject $meetingsJson  -Depth 100 -ErrorAction Stop
+      $briefs    = ConvertFrom-Json -InputObject $briefsJson    -Depth 100 -ErrorAction Stop
+      $summaries = ConvertFrom-Json -InputObject $summariesJson -Depth 100 -ErrorAction Stop
+
+      $includeFullBriefsBool = [string]::Equals($includeFullBriefs.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      $digestDate = [string]$date.digestDate
+      $isWeekend  = [bool]$date.isWeekend
+
+      function Get-TrackerSection {
+        # Returns one section per tracker. When the tracker's summary
+        # is absent (found=false), renders a polite "tracker has not
+        # run yet today" markdown. Otherwise pulls counts + hot items.
+        param([string]$Heading, [string]$Category, [pscustomobject]$Tracker, [string]$LinkLabel)
+        $body = New-Object System.Collections.Generic.List[object]
+        if ($null -eq $Tracker -or -not $Tracker.found) {
+          $body.Add([ordered]@{
+            type = 'markdown'
+            body = "_$LinkLabel has not produced a summary yet today (category ``$Category``). When the tracker runs, its section here will light up automatically._"
+          }) | Out-Null
+        } else {
+          $data = $Tracker.data
+          # Each tracker exposes its own shape via its emit-daily-summary
+          # step; we just surface whatever fields are present in a
+          # uniform way (counts go into a keyValue; hotItems get a
+          # bullet list).
+          $countsPairs = [ordered]@{}
+          foreach ($candidate in @('openCount','hotCount','urgentCount','newCount','overdueCount','agingCount','newToday','activeCount','distinctRecipients','closedRecently','orphaned')) {
+            if ($data.PSObject.Properties[$candidate]) {
+              $value = $data.$candidate
+              if ($null -ne $value) {
+                $label = ($candidate -creplace '([A-Z])', ' $1').Trim()
+                $label = $label.Substring(0,1).ToUpper() + $label.Substring(1)
+                $countsPairs[$label] = "$value"
+              }
+            }
+          }
+          if ($data.PSObject.Properties['rolledAt']) { $countsPairs['Rolled at'] = [string]$data.rolledAt }
+          if ($countsPairs.Count -gt 0) {
+            $body.Add([ordered]@{ type='keyValue'; pairs=$countsPairs }) | Out-Null
+          }
+          $hotProperty = $null
+          foreach ($cand in @('hotItems','hotAsks')) {
+            if ($data.PSObject.Properties[$cand]) { $hotProperty = $cand; break }
+          }
+          if ($hotProperty) {
+            $hot = @($data.$hotProperty)
+            if ($hot.Count -gt 0) {
+              $lines = @()
+              foreach ($h in $hot) {
+                if ($null -eq $h) { continue }
+                $label = $null
+                foreach ($f in @('action','askText','subject')) {
+                  if ($h.PSObject.Properties[$f] -and -not [string]::IsNullOrWhiteSpace([string]$h.$f)) {
+                    $label = [string]$h.$f; break
+                  }
+                }
+                if (-not $label) { $label = '(unlabeled item)' }
+                $meta = @()
+                foreach ($f in @('priority','classify','category','state','meeting','meetingTitle','recipientName','sender','source')) {
+                  if ($h.PSObject.Properties[$f] -and -not [string]::IsNullOrWhiteSpace([string]$h.$f)) {
+                    $meta += [string]$h.$f
+                  }
+                }
+                $metaStr = if ($meta.Count -gt 0) { " (" + ($meta -join ', ') + ")" } else { '' }
+                $linkPart = ''
+                foreach ($f in @('webUrl','webLink')) {
+                  if ($h.PSObject.Properties[$f] -and -not [string]::IsNullOrWhiteSpace([string]$h.$f)) {
+                    $linkPart = " - [open]($([string]$h.$f))"; break
+                  }
+                }
+                $lines += "- $label$metaStr$linkPart"
+              }
+              if ($lines.Count -gt 0) {
+                $body.Add([ordered]@{
+                  type = 'markdown'
+                  body = "**Hot items:**`n`n" + ($lines -join "`n")
+                }) | Out-Null
+              }
+            }
+          }
+        }
+        return [ordered]@{
+          type    = 'section'
+          title   = $Heading
+          defaultCollapsed = $false
+          content = $body.ToArray()
+        }
+      }
+
+      function Format-MeetingTime {
+        param([string]$StartIso, [string]$EndIso)
+        $start = '?'; $end = '?'
+        try { $start = ([datetimeoffset]::Parse($StartIso, [System.Globalization.CultureInfo]::InvariantCulture)).ToString('HH:mm') } catch { }
+        try { $end   = ([datetimeoffset]::Parse($EndIso,   [System.Globalization.CultureInfo]::InvariantCulture)).ToString('HH:mm') } catch { }
+        return "$start - $end"
+      }
+
+      $content = New-Object System.Collections.Generic.List[object]
+
+      $headerLines = @(
+        "**Date:** $digestDate ($($date.weekday))",
+        "**Meetings ahead in next $($date.meetingLookaheadHours)h:** $($meetings.count)"
+      )
+      $content.Add([ordered]@{
+        type = 'markdown'
+        body = ($headerLines -join "  `n")
+      }) | Out-Null
+
+      # Today's focus - LLM-synthesized via placeholder.
+      $content.Add([ordered]@{
+        type    = 'section'
+        title   = "Today's focus"
+        defaultCollapsed = $false
+        content = @(
+          [ordered]@{ type='markdown'; body='<<FULL_MARKDOWN:focus>>' }
+        )
+      }) | Out-Null
+
+      # Today's meetings - table + per-meeting nested section.
+      if ($meetings.count -gt 0) {
+        $rows = @()
+        foreach ($m in @($meetings.meetings)) {
+          if ($null -eq $m) { continue }
+          $rows += ,@(
+            (Format-MeetingTime -StartIso ([string]$m.startTime) -EndIso ([string]$m.endTime)),
+            [string]$m.title,
+            [string]$m.organizer,
+            (if ($m.PSObject.Properties['attendees']) { "$(@($m.attendees).Count)" } else { '0' }),
+            (if (-not [string]::IsNullOrWhiteSpace([string]$m.webLink)) { [ordered]@{ type='link'; url=[string]$m.webLink; label='open' } } else { '-' })
+          )
+        }
+        $meetingsSection = New-Object System.Collections.Generic.List[object]
+        $meetingsSection.Add([ordered]@{
+          type    = 'table'
+          label   = "Meetings"
+          columns = @('Time','Title','Organizer','Attendees','Link')
+          rows    = $rows
+        }) | Out-Null
+
+        # Per-meeting nested sections with brief link / brief body.
+        foreach ($entry in @($briefs.meetings)) {
+          if ($null -eq $entry) { continue }
+          $m = $entry.meeting
+          $meetingTitle = "$(Format-MeetingTime -StartIso ([string]$m.startTime) -EndIso ([string]$m.endTime)) - $([string]$m.title)"
+          $nested = New-Object System.Collections.Generic.List[object]
+          $kv = [ordered]@{
+            'Organizer' = [string]$m.organizer
+            'Attendees' = "$(@($m.attendees).Count)"
+          }
+          if (-not [string]::IsNullOrWhiteSpace([string]$m.webLink)) {
+            $kv['Meeting link'] = [ordered]@{ type='link'; url=[string]$m.webLink; label='open in Outlook' }
+          }
+          if ($entry.hasBrief -and -not [string]::IsNullOrWhiteSpace([string]$entry.briefFilePath)) {
+            $url = "file:///" + (([string]$entry.briefFilePath) -replace '\\','/')
+            $kv['Brief file'] = [ordered]@{ type='link'; url=$url; label=([string]$entry.briefSlug) }
+          }
+          $nested.Add([ordered]@{ type='keyValue'; label='Meeting'; pairs=$kv }) | Out-Null
+
+          if ($includeFullBriefsBool -and $entry.hasBrief) {
+            $nested.Add([ordered]@{
+              type    = 'section'
+              title   = 'Full Brief'
+              defaultCollapsed = $true
+              content = @(
+                [ordered]@{ type='markdown'; body="<<FULL_MARKDOWN:meeting:$([string]$entry.zakiraKey)>>" }
+              )
+            }) | Out-Null
+          } elseif (-not $entry.hasBrief) {
+            $nested.Add([ordered]@{
+              type = 'markdown'
+              body = "_No brief generated yet for this meeting. The meeting-prep-brief orchestration will produce one on its next run._"
+            }) | Out-Null
+          }
+
+          $meetingsSection.Add([ordered]@{
+            type    = 'section'
+            title   = $meetingTitle
+            defaultCollapsed = $false
+            content = $nested.ToArray()
+          }) | Out-Null
+        }
+
+        $content.Add([ordered]@{
+          type    = 'section'
+          title   = "Today's meetings ($($meetings.count))"
+          defaultCollapsed = $false
+          content = $meetingsSection.ToArray()
+        }) | Out-Null
+      } else {
+        $content.Add([ordered]@{
+          type    = 'section'
+          title   = "Today's meetings (0)"
+          defaultCollapsed = $true
+          content = @([ordered]@{ type='markdown'; body='_No meetings in the window. Focus time available._' })
+        }) | Out-Null
+      }
+
+      # Tracker rollup sections. Each tracker may or may not have a
+      # daily-summary today; the helper handles both cases.
+      $trackers = $summaries.trackers
+      $content.Add((Get-TrackerSection -Heading 'PRs needing me'           -Category 'my-prs-state:daily-summary'       -Tracker $trackers.'my-prs-state:daily-summary'       -LinkLabel 'my-prs-tracker')) | Out-Null
+      $content.Add((Get-TrackerSection -Heading 'Action items'             -Category 'action-items-ledger:daily-summary' -Tracker $trackers.'action-items-ledger:daily-summary' -LinkLabel 'meeting-action-items-followup')) | Out-Null
+      $content.Add((Get-TrackerSection -Heading 'Inbox (needs action)'     -Category 'triage-state:daily-summary'        -Tracker $trackers.'triage-state:daily-summary'        -LinkLabel 'inbox-triage')) | Out-Null
+      $content.Add((Get-TrackerSection -Heading 'Waiting on'               -Category 'waiting-on-ledger:daily-summary'   -Tracker $trackers.'waiting-on-ledger:daily-summary'   -LinkLabel 'waiting-on-tracker')) | Out-Null
+
+      $content.Add([ordered]@{
+        type = 'markdown'
+        body = "Run id: ``$runId``  -  Force surface: ``$forceSurface``  -  Briefs inlined: ``$includeFullBriefsBool``"
+      }) | Out-Null
+
+      # Severity = high when any tracker reports hot/urgent items.
+      $severity = 'low'
+      foreach ($name in @($trackers.PSObject.Properties.Name)) {
+        $t = $trackers.$name
+        if (-not $t -or -not $t.found) { continue }
+        $d = $t.data
+        $hot = 0
+        foreach ($f in @('overdueCount','urgentCount','hotCount')) {
+          if ($d.PSObject.Properties[$f]) { $hot += [int]$d.$f }
+        }
+        if ($hot -gt 0) { $severity = 'high'; break }
+      }
+      if ($severity -eq 'low' -and $meetings.count -gt 0) { $severity = 'medium' }
+
+      $entry = [ordered]@{
+        schemaVersion = '1'
+        id            = "daily-digest-$digestDate"
+        type          = 'daily-digest'
+        source        = 'daily-morning-digest'
+        title         = "Daily digest - $digestDate ($($date.weekday))"
+        subtitle      = "$($meetings.count) meeting(s), $(@($trackers.PSObject.Properties).Count) tracker(s) consulted"
+        severity      = $severity
+        icon          = 'calendar-clock'
+        tags          = @('daily','digest','productivity','ZTS')
+        groupId       = $groupId
+        pinned        = $true
+        content       = $content.ToArray()
+      }
+
+      $entry | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{resolve-digest-date.output}}"
+      - "{{discover-todays-meetings.output}}"
+      - "{{load-meeting-briefs.output}}"
+      - "{{load-tracker-summaries.output}}"
+      - "{{param.includeFullMeetingBriefs}}"
+      - "{{param.forceSurface}}"
+      - "{{vars.actionViewGroupId}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 180
+
+  - name: inject-content
+    type: Script
+    dependsOn: [compose-digest, build-injection-lookup]
+    shell: pwsh
+    scriptFile: "./../Shared/scripts/inject-markdown-placeholders.ps1"
+    arguments:
+      - "{{compose-digest.output}}"
+      - "{{build-injection-lookup.output}}"
+    timeoutSeconds: 180
+
+  - name: save-daily-note-obsidian
+    type: Script
+    dependsOn: [resolve-digest-date, inject-content]
+    shell: pwsh
+    script: |
+      # Renders a permanent daily note from the injected entry. The
+      # note structure mirrors the ActionView entry but in pure
+      # markdown so it stays useful in Obsidian without any rendering
+      # plugins.
+      $ErrorActionPreference = 'Stop'
+
+      $dateJson  = $args[0]
+      $entryJson = $args[1]
+      $dailyDir  = $args[2]
+      $dryRunRaw = $args[3]
+
+      $dryRun = [string]::Equals($dryRunRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      if ($dryRun) {
+        [pscustomobject]@{ status='dry-run-skipped' } | ConvertTo-Json -Compress
+        return
+      }
+
+      $date = ConvertFrom-Json -InputObject $dateJson  -Depth 50 -ErrorAction Stop
+      $entry = ConvertFrom-Json -InputObject $entryJson -Depth 100 -ErrorAction Stop
+
+      if (-not (Test-Path -LiteralPath $dailyDir)) {
+        New-Item -ItemType Directory -Path $dailyDir -Force | Out-Null
+      }
+
+      $lines = New-Object System.Collections.Generic.List[string]
+      [void]$lines.Add("# Daily digest - $([string]$date.digestDate)")
+      [void]$lines.Add('')
+      [void]$lines.Add("_$([string]$entry.subtitle)_")
+      [void]$lines.Add('')
+
+      # Walk content blocks and render each as best-effort markdown.
+      function Format-Block {
+        param($Block, [int]$HeadingLevel = 2)
+        if ($null -eq $Block) { return @() }
+        $out = @()
+        switch ([string]$Block.type) {
+          'markdown' {
+            $out += [string]$Block.body
+            $out += ''
+          }
+          'alert' {
+            $level = [string]$Block.level
+            $label = [string]$Block.label
+            $out += "> **$($level.ToUpper()): $label**"
+            foreach ($line in ([string]$Block.body) -split "`n") { $out += "> $line" }
+            $out += ''
+          }
+          'keyValue' {
+            if ($Block.label) { $out += ('#' * ($HeadingLevel + 1)) + ' ' + [string]$Block.label }
+            foreach ($prop in $Block.pairs.PSObject.Properties) {
+              $val = $prop.Value
+              if ($val -is [pscustomobject] -and $val.PSObject.Properties['type']) {
+                if ([string]$val.type -eq 'link') {
+                  $out += "- **$($prop.Name):** [$([string]$val.label)]($([string]$val.url))"
+                } else {
+                  $out += "- **$($prop.Name):** $val"
+                }
+              } else {
+                $out += "- **$($prop.Name):** $val"
+              }
+            }
+            $out += ''
+          }
+          'table' {
+            if ($Block.label) { $out += ('#' * ($HeadingLevel + 1)) + ' ' + [string]$Block.label }
+            $cols = @($Block.columns)
+            $out += '| ' + ($cols -join ' | ') + ' |'
+            $out += '|' + (($cols | ForEach-Object { '---' }) -join '|') + '|'
+            foreach ($row in @($Block.rows)) {
+              $cells = @()
+              foreach ($c in @($row)) {
+                if ($c -is [pscustomobject] -and $c.PSObject.Properties['type'] -and [string]$c.type -eq 'link') {
+                  $cells += "[$([string]$c.label)]($([string]$c.url))"
+                } else {
+                  $cells += [string]$c
+                }
+              }
+              $out += '| ' + ($cells -join ' | ') + ' |'
+            }
+            $out += ''
+          }
+          'section' {
+            $out += ('#' * $HeadingLevel) + ' ' + [string]$Block.title
+            $out += ''
+            foreach ($child in @($Block.content)) {
+              $out += Format-Block -Block $child -HeadingLevel ($HeadingLevel + 1)
+            }
+          }
+          default {
+            # Unknown - just dump as JSON for diagnostics.
+            $out += '```json'
+            $out += ($Block | ConvertTo-Json -Depth 10)
+            $out += '```'
+            $out += ''
+          }
+        }
+        return ,$out
+      }
+
+      foreach ($block in @($entry.content)) {
+        $lines.AddRange((Format-Block -Block $block -HeadingLevel 2)) | Out-Null
+      }
+
+      $path = Join-Path $dailyDir ("$([string]$date.digestDate).md")
+      Set-Content -LiteralPath $path -Value ($lines -join "`n") -Encoding utf8NoBOM
+
+      [pscustomobject]@{
+        status = 'written'
+        path   = $path
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{resolve-digest-date.output}}"
+      - "{{inject-content.output}}"
+      - "{{vars.obsidianDailyDir}}"
+      - "{{param.dryRun}}"
+    timeoutSeconds: 120
+
+  - name: submit-actionview-entry
+    type: Orchestration
+    dependsOn: [inject-content]
+    orchestration: actionview-submit
+    parameters:
+      entryJson: "{{inject-content.output}}"
+      template: daily-digest
+      groupId: "{{vars.actionViewGroupId}}"
+    inputHandlerPrompt: |
+      Return ONLY a valid JSON object mapping actionview-submit
+      parameter names (entryJson, template, groupId) to string values.
+      The entryJson value is the canonical entry JSON serialized as a
+      string.
+    mode: sync
+    timeoutSeconds: 600
+
+  - name: build-focus-todo-payload
+    type: Script
+    dependsOn: [resolve-digest-date, synthesize-focus]
+    shell: pwsh
+    script: |
+      # Builds a single-element items array for the push-to-todo
+      # forEach loop. The external id is per-day so each day's focus
+      # is its own task; the body is the synthesized focus text.
+      $ErrorActionPreference = 'Stop'
+
+      $dateJson    = $args[0]
+      $focusText   = $args[1]
+      $listName    = $args[2]
+      $pushEnabled = $args[3]
+      $dryRunRaw   = $args[4]
+
+      $pushBool = [string]::Equals($pushEnabled.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      $dryRunBool = [string]::Equals($dryRunRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+
+      if (-not $pushBool -or $dryRunBool) {
+        [pscustomobject]@{ items = @() } | ConvertTo-Json -Compress
+        return
+      }
+
+      $date = ConvertFrom-Json -InputObject $dateJson -Depth 50 -ErrorAction Stop
+      $digestDate = [string]$date.digestDate
+
+      # Pull the top item from the numbered list (if present) for the
+      # task title; otherwise use a generic title.
+      $titleSuffix = "Today's focus"
+      $lines = $focusText -split "`r?`n"
+      foreach ($line in $lines) {
+        if ($line -match '^\s*1\.\s+\*\*(.+?)\*\*') {
+          $titleSuffix = $Matches[1].Trim()
+          break
+        }
+      }
+      if ($titleSuffix.Length -gt 100) { $titleSuffix = $titleSuffix.Substring(0, 97) + '...' }
+      $title = "$digestDate - $titleSuffix"
+
+      $items = @(
+        [pscustomobject]@{
+          externalId = "daily-focus:$digestDate"
+          title      = $title
+          body       = $focusText
+          dueDate    = ''
+          importance = 'high'
+          status     = 'notStarted'
+          listName   = $listName
+        }
+      )
+
+      [pscustomobject]@{ items = $items; count = 1 } | ConvertTo-Json -Depth 10 -Compress
+    arguments:
+      - "{{resolve-digest-date.output}}"
+      - "{{synthesize-focus.output}}"
+      - "{{vars.todoListName}}"
+      - "{{param.pushFocusToTodo}}"
+      - "{{param.dryRun}}"
+    timeoutSeconds: 30
+
+  - name: push-focus-to-todo
+    type: Orchestration
+    dependsOn: [build-focus-todo-payload]
+    orchestration: todo-upsert
+    forEach: "{{build-focus-todo-payload.output}}"
+    forEachPath: items
+    itemParameter: todoItem
+    parameters:
+      listName: "{{vars.todoListName}}"
+      externalId: ""
+      title: ""
+      body: ""
+      dueDate: ""
+      importance: high
+      status: notStarted
+    inputHandlerPrompt: |
+      Return ONLY a valid JSON object mapping todo-upsert parameter
+      names (listName, externalId, title, body, dueDate, importance,
+      status) to string values pulled from the supplied item. Preserve
+      listName, externalId, importance, status verbatim. body must be
+      a single plain-text string with newlines escaped for valid JSON.
+    mode: sync
+    maxConcurrency: 1
+    continueOnItemFailure: true
+    timeoutSeconds: 600
+
+  - name: emit-digest-state
+    type: Script
+    dependsOn: [resolve-digest-date, inject-content, save-daily-note-obsidian, submit-actionview-entry, push-focus-to-todo]
+    shell: pwsh
+    script: |
+      # Persists a per-day record of the digest run so a future caller
+      # can ask "did the digest fire today?" without re-running. Also
+      # writes a 'latest' pointer for daily-state-roll consumers.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $dateJson  = $args[0]
+      $dbPath    = $args[1]
+      $category  = $args[2]
+      $dryRunRaw = $args[3]
+      $runId     = $args[4]
+      $notePathJson = $args[5]
+      $submitJson   = $args[6]
+
+      $dryRun = [string]::Equals($dryRunRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      if ($dryRun) {
+        [pscustomobject]@{ status='dry-run-skipped' } | ConvertTo-Json -Compress
+        return
+      }
+
+      $date = ConvertFrom-Json -InputObject $dateJson -Depth 50 -ErrorAction Stop
+      $digestDate = [string]$date.digestDate
+
+      $notePath = $null
+      try {
+        $noteObj = ConvertFrom-Json -InputObject $notePathJson -Depth 5 -ErrorAction Stop
+        if ($noteObj.PSObject.Properties['path']) { $notePath = [string]$noteObj.path }
+      } catch { }
+
+      $payload = [ordered]@{
+        digestDate    = $digestDate
+        completedAt   = (Get-Date).ToUniversalTime().ToString('o')
+        runId         = $runId
+        obsidianNote  = $notePath
+        actionViewSummary = if (-not [string]::IsNullOrWhiteSpace($submitJson)) { $submitJson.Substring(0, [Math]::Min(500, $submitJson.Length)) } else { '' }
+      } | ConvertTo-Json -Depth 10 -Compress
+
+      function Write-DigestKey {
+        param([string]$Key)
+        $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
+          --data $payload --author "daily-morning-digest:$runId" --reason 'daily digest run' 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $Key `
+            --data $payload --author "daily-morning-digest:$runId" --reason 'daily digest run' 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Zakira write failed for $category/${Key}: $($out -join ' ')"
+          }
+        }
+      }
+
+      Write-DigestKey -Key $digestDate
+      Write-DigestKey -Key 'latest'
+
+      [pscustomobject]@{
+        status = 'persisted'
+        keys   = @($digestDate, 'latest')
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{resolve-digest-date.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraDigestCategory}}"
+      - "{{param.dryRun}}"
+      - "{{orchestration.runId}}"
+      - "{{save-daily-note-obsidian.output}}"
+      - "{{submit-actionview-entry.output}}"
+    timeoutSeconds: 300
+
+  - name: generate-summary
+    type: Transform
+    dependsOn:
+      - resolve-digest-date
+      - discover-todays-meetings
+      - load-meeting-briefs
+      - load-tracker-summaries
+      - synthesize-focus
+      - compose-digest
+      - inject-content
+      - save-daily-note-obsidian
+      - submit-actionview-entry
+      - push-focus-to-todo
+      - emit-digest-state
+    template: |
+      # daily-morning-digest Run Summary
+
+      **Run ID:** {{orchestration.runId}}
+      **Started:** {{orchestration.startedAt}}
+      **Dry run:** {{param.dryRun}}
+      **Include full briefs:** {{param.includeFullMeetingBriefs}}
+      **Push focus to To Do:** {{param.pushFocusToTodo}}
+
+      ## Date
+      ```json
+      {{resolve-digest-date.output}}
+      ```
+
+      ## Today's meetings
+      ```json
+      {{discover-todays-meetings.output}}
+      ```
+
+      ## Meeting briefs
+      ```json
+      {{load-meeting-briefs.output}}
+      ```
+
+      ## Tracker summaries
+      ```json
+      {{load-tracker-summaries.output}}
+      ```
+
+      ## Synthesized focus
+      ```text
+      {{synthesize-focus.output}}
+      ```
+
+      ## Composed digest (with placeholders)
+      ```json
+      {{compose-digest.output}}
+      ```
+
+      ## Injected digest
+      ```json
+      {{inject-content.output}}
+      ```
+
+      ## Obsidian save
+      ```text
+      {{save-daily-note-obsidian.output}}
+      ```
+
+      ## ActionView submission
+      ```text
+      {{submit-actionview-entry.output}}
+      ```
+
+      ## Focus -> To Do push
+      ```text
+      {{push-focus-to-todo.output}}
+      ```
+
+      ## Persistence
+      ```text
+      {{emit-digest-state.output}}
+      ```
+    contentType: text/markdown

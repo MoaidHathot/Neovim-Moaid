@@ -30,7 +30,7 @@ defaultRetryPolicy:
   backoffMultiplier: 2.0
   retryOnTimeout: true
 
-defaultStepTimeoutSeconds: 120
+defaultStepTimeoutSeconds: 240
 timeoutSeconds: 600
 
 steps:
