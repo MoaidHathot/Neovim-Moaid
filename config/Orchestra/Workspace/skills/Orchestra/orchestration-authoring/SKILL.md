@@ -1,6 +1,6 @@
 ---
 name: orchestration-authoring
-description: Creates and validates Orchestra orchestration files (JSON/YAML) that define DAGs of steps (Prompt, Command, Script, Http, Transform, Approval, Orchestration) with triggers, hooks, MCPs, subagents, loops, typed inputs, human-in-the-loop pauses, and template expressions. Use when authoring new orchestrations, generating orchestration files from descriptions, reviewing existing orchestrations for correctness, or debugging orchestration issues.
+description: Creates and validates Orchestra orchestration files (JSON/YAML) that define DAGs of steps (Prompt, Command, Script, Http, Transform, Approval, Orchestration) with triggers, hooks, MCPs, subagents, loops, typed inputs, human-in-the-loop pauses, per-step Copilot controls (model tuning, working directory, auth, permission policies, sandboxing), and template expressions. Use when authoring new orchestrations, generating orchestration files from descriptions, reviewing existing orchestrations for correctness, or debugging orchestration issues.
 ---
 
 # Orchestra Orchestration Authoring Reference
@@ -59,6 +59,8 @@ YAML modelines work in VS Code (Red Hat YAML extension), JetBrains IDEs, and any
 | `hooks` | Hook[] | No | [] | Lifecycle hooks that run after step or orchestration outcomes |
 | `pauseTimeoutDuringWait` | bool | No | true | When true, the orchestration timeout clock pauses while a step is awaiting human input (Approval step or `orchestra_request_user_input`). Set to false for hard SLAs that include human response latency. |
 | `defaultEnableTools` | string[] | No | [] | Opt-in engine tool names enabled by default for every Prompt step that does not specify its own `enableTools`. Currently supports `"request_user_input"`. |
+| `defaultPermissionPolicy` | PermissionPolicy | No | null | Default Copilot permission policy for every Prompt step that does not specify its own `permissionPolicy` (see Permission Policy). Null = auto-approve. |
+| `defaultSandboxPolicy` | SandboxPolicy | No | null | Default opt-in sandbox for every Prompt step that does not specify its own `sandbox` (see Sandbox). Null = no sandbox. |
 | `metadata` | object | No | {} | Free-form metadata (any JSON shape: string, number, bool, array, nested object). Not inspected by the runtime; for authors and managers only. Use for datetime, owners, ticket links, environment, SLA, etc. |
 
 ## Typed Inputs (InputDefinition)
@@ -187,6 +189,13 @@ Calls an LLM.
 | `outputHandlerPrompt` | string | No | null |
 | `outputHandlerPromptFile` | string | No | null |
 | `reasoningLevel` | string | No | null |
+| `reasoningSummary` | string | No | null |
+| `contextTier` | string | No | null |
+| `workingDirectory` | string | No | null |
+| `githubToken` | string | No | null |
+| `humanInput` | bool | No | false |
+| `permissionPolicy` | PermissionPolicy | No | null |
+| `sandbox` | SandboxPolicy | No | null |
 | `systemPromptMode` | string | No | null |
 | `systemPromptSections` | object | No | null |
 | `infiniteSessions` | object | No | null |
@@ -258,6 +267,53 @@ Each attachment has a `type`:
 | `data` | string | Yes | Base64-encoded image data. Supports template expressions. |
 | `mimeType` | string | Yes | MIME type (e.g., `"image/png"`, `"image/jpeg"`) |
 | `displayName` | string | No | Display name for the attachment |
+
+### Model Tuning, Working Directory & Authentication (Copilot)
+
+Per-step Copilot controls, all opt-in (omit to inherit the host/provider default):
+
+- `reasoningSummary` — `none` / `concise` / `detailed`. Verbosity of the model's reasoning summary (distinct from `reasoningLevel`, the reasoning *effort*).
+- `contextTier` — `default` / `longContext`. Opts into the model's extended context window where supported.
+- `workingDirectory` — the agent's working directory for shell/file tools and config discovery (custom instructions, `.github/agents`, `.github/mcp.json`). Template-resolved (`{{param.*}}`/`{{env.*}}`/`{{vars.*}}`) and validated to exist at run time.
+- `githubToken` — authenticates this step's Copilot session, overriding the host default. Prefer `{{env.GITHUB_TOKEN}}` over a literal secret. Host-level default: `orchestra.json` `copilot.gitHubToken` / `copilot.useLoggedInUser`.
+
+### Human-in-the-Loop (`humanInput`)
+
+`humanInput: true` routes the agent's **elicitation** and **exit-plan-mode (plan approval)** requests to Orchestra's human-in-the-loop — the same pending-input surface as the `Approval` step and `orchestra_request_user_input` (answer via `POST /api/orchestrations/{name}/runs/{runId}/respond`). Session-bound (does NOT survive a host restart). Default (off) resolves them autonomously. Pairs naturally with `permissionPolicy: requireHumanApproval`.
+
+### Permission Policy (`permissionPolicy`)
+
+Controls how the agent's permission requests (shell, file read/write, url, mcp, …) are resolved.
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `mode` | string | `approveAll` | `approveAll` (default), `denyList` (approve unless a deny glob matches), or `requireHumanApproval` (route each request to a human operator; serialized per step). |
+| `deny` | string[] | [] | Globs (case-insensitive, `*`/`?` wildcards) matched against a request's kind (`read`/`write`/`shell`/`url`/`mcp`/…) or target (path/command/url/tool). Used only when `mode` is `denyList`. |
+
+```json
+{ "permissionPolicy": { "mode": "denyList", "deny": ["shell", "url", "*.env"] } }
+```
+
+### Sandbox (`sandbox`)
+
+Constrains the agent's shell/file/network tool access, applied to the live session via the runtime's options-update RPC. Sandbox paths are passed verbatim (not template-resolved); enforcement is provided on Linux/macOS.
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | true | When false, the policy is ignored (no sandbox). |
+| `filesystem.readonly` / `.readwrite` / `.denied` | string[] | [] | Paths the agent may read-only / read-write / not access. |
+| `network.allowedHosts` / `.blockedHosts` | string[] | [] | Host allow-list / deny-list. |
+| `network.allowOutbound` / `.allowLocalNetwork` | bool | provider default | Whether outbound / loopback+private-range access is permitted. |
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "filesystem": { "readonly": ["/work/repo"], "denied": ["/etc"] },
+    "network": { "allowOutbound": false }
+  }
+}
+```
 
 ### Http Step (type: "Http")
 
@@ -845,6 +901,31 @@ Auto-acknowledge a low-priority alert if no one responds within 5 minutes.
   defaultResponse: acknowledge
 ```
 
+### 18. Governed Prompt Step (Permission Policy + Sandbox + HITL)
+Constrain a read-only review agent: deny shell/url tools, sandbox the filesystem and network,
+and route any elicitation/plan-approval to a human. All controls are opt-in.
+```yaml
+- name: review
+  type: Prompt
+  systemPrompt: |
+    You are a read-only reviewer. Do not run shell commands, fetch URLs, or modify
+    files. Ask the operator if you need a decision.
+  userPrompt: "{{param.question}}"
+  model: claude-opus-4.6
+  workingDirectory: /work/repo
+  humanInput: true
+  permissionPolicy:
+    mode: denyList
+    deny: [shell, url]
+  sandbox:
+    enabled: true
+    filesystem:
+      readonly: [/work/repo]
+      denied: [/etc]
+    network:
+      allowOutbound: false
+```
+
 ## Registering Orchestrations
 
 Orchestrations can be registered in Orchestra via:
@@ -881,6 +962,10 @@ Orchestrations can be registered in Orchestra via:
 23. **`enableTools` only accepts opt-in tool names** (currently just `"request_user_input"`). Always-on tools (`orchestra_set_status`, `orchestra_complete`, file save/read) are not listed here.
 24. **`orchestra_request_user_input` does NOT survive host restarts.** Agent sessions are volatile. Use the declarative `Approval` step for long-lived gates that must endure restarts.
 25. **Approval and engine-tool waits both fire `step.awaitingInput`** — use a single hook to handle notifications for both paths.
+26. **`humanInput` waits do NOT survive host restarts.** Like `orchestra_request_user_input`, elicitation/plan-approval pauses are session-bound. Use the declarative `Approval` step for restart-durable gates.
+27. **`permissionPolicy.deny` is only used in `denyList` mode.** In `approveAll` (default) and `requireHumanApproval` modes the `deny` list is ignored.
+28. **Sandbox paths are passed verbatim** (NOT template-resolved), and sandbox enforcement is provided on Linux/macOS. By contrast, `workingDirectory` and `githubToken` ARE template-resolved via `{{env.*}}`/`{{param.*}}`/`{{vars.*}}`.
+29. **Per-step Copilot controls are opt-in.** `reasoningSummary`, `contextTier`, `workingDirectory`, `githubToken`, `humanInput`, `permissionPolicy`, and `sandbox` all default to off/unset — existing orchestrations are unchanged.
 
 ## Naming Conventions
 

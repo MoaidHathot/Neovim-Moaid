@@ -73,6 +73,8 @@ steps:
 | `hooks` | `Hook[]` | No | `[]` | Lifecycle hooks that run after step or orchestration outcomes. Hooks receive structured JSON payloads on stdin and can execute follow-up scripts. |
 | `pauseTimeoutDuringWait` | `bool` | No | `true` | When true, the orchestration timeout clock pauses while a step (Approval or `orchestra_request_user_input`) is waiting for human input. Set to `false` for hard SLAs that include human response latency. Implemented via the `ClockPauseTracker`: on `BeginWait` the orchestration timeout CTS is suspended, on `EndWait` it is re-armed with `(originalTimeout + totalWaitElapsed - alreadyElapsed)` so the wait is excluded from the budget. |
 | `defaultEnableTools` | `string[]` | No | `[]` | Opt-in engine tool names enabled by default for every Prompt step that does not specify its own `enableTools`. Currently supports `"request_user_input"`. Always-on tools (`orchestra_set_status`, `orchestra_complete`, file save/read) are unaffected. |
+| `defaultPermissionPolicy` | `PermissionPolicy` | No | `null` | Default Copilot permission policy for every Prompt step that does not specify its own `permissionPolicy`. See [Permission Policy](#permission-policy). Null = auto-approve. |
+| `defaultSandboxPolicy` | `SandboxPolicy` | No | `null` | Default opt-in sandbox for every Prompt step that does not specify its own `sandbox`. See [Sandbox](#sandbox). Null = no sandbox. |
 | `metadata` | `object` | No | `{}` | Free-form metadata. Values may be any JSON type (string, number, boolean, array, nested object). Purely informational -- the runtime never inspects this dictionary. Use for authorship, datetime, ticket links, environment, SLA, or any other semi-structured data. |
 
 ---
@@ -296,6 +298,13 @@ Sends a prompt to an LLM and captures the response as output. Supports input/out
 | `outputHandlerPrompt` | `string` | No | `null` | An LLM prompt that post-processes the main LLM output. |
 | `outputHandlerPromptFile` | `string` | No | `null` | Path to file containing the output handler prompt. Mutually exclusive with `outputHandlerPrompt`. |
 | `reasoningLevel` | `string` | No | `null` | Controls the model's extended thinking. Values: `"Low"`, `"Medium"`, `"High"`. |
+| `reasoningSummary` | `string` | No | `null` | Verbosity of the model's reasoning summary. Values: `"none"`, `"concise"`, `"detailed"`. Opt-in. |
+| `contextTier` | `string` | No | `null` | Context-window tier. `"default"` or `"longContext"` (opts into the model's extended context window where supported). Opt-in. |
+| `workingDirectory` | `string` | No | `null` | Working directory for the agent's shell/file tools and config discovery (custom instructions, `.github/agents`, `.github/mcp.json`). Template-resolved (`{{param.*}}`/`{{env.*}}`/`{{vars.*}}`) and validated to exist at run time. |
+| `githubToken` | `string` | No | `null` | GitHub token for this step's Copilot session, overriding the host default. Prefer a template reference such as `{{env.GITHUB_TOKEN}}`; never logged. Falls back to `orchestra.json` `copilot.gitHubToken`/`useLoggedInUser`, then the CLI's stored credentials. |
+| `humanInput` | `bool` | No | `false` | When `true`, the agent's elicitation and exit-plan-mode (plan approval) requests are routed to Orchestra's human-in-the-loop instead of resolving autonomously. See [Human-in-the-Loop](#human-in-the-loop). |
+| `permissionPolicy` | `PermissionPolicy` | No | `null` | Controls how the agent's permission requests (shell/file/url/mcp/…) are resolved. See [Permission Policy](#permission-policy). Overrides `defaultPermissionPolicy`; omit for auto-approve. |
+| `sandbox` | `SandboxPolicy` | No | `null` | Opt-in filesystem/network sandbox for this step's tool access. See [Sandbox](#sandbox). Overrides `defaultSandboxPolicy`; omit for no sandbox. |
 | `systemPromptMode` | `string` | No | `null` | How the system prompt interacts with the SDK's built-in prompts. `"append"` adds to them; `"replace"` removes them; `"customize"` selectively overrides individual sections. |
 | `systemPromptSections` | `object` | No | `null` | Section-level overrides when using `"customize"` mode. See [System Prompt Section Overrides](#system-prompt-section-overrides). |
 | `infiniteSessions` | `object` | No | `null` | Configuration for infinite sessions (automatic context compaction). See [Infinite Sessions](#infinite-sessions). |
@@ -400,6 +409,73 @@ attachments:
   - type: blob
     data: "{{screenshot-step.output}}"
     mimeType: "image/png"
+```
+
+---
+
+#### Model Tuning, Working Directory & Authentication
+
+These per-step Copilot controls are all opt-in; omit a field to inherit the host/provider default.
+
+- `reasoningSummary` — `"none"` / `"concise"` / `"detailed"`. Verbosity of the model's reasoning summary (distinct from `reasoningLevel`, which is the reasoning *effort*).
+- `contextTier` — `"default"` / `"longContext"`. Opts into the model's extended context window where the provider supports it.
+- `workingDirectory` — the agent's working directory for shell/file tools and config discovery. Template-resolved (`{{param.*}}`/`{{env.*}}`/`{{vars.*}}`) and validated to exist at run time.
+- `githubToken` — authenticates this step's Copilot session, overriding the host default. Prefer `{{env.GITHUB_TOKEN}}` over a literal secret. The host-level default is `orchestra.json` `copilot.gitHubToken` / `copilot.useLoggedInUser`.
+
+```json
+{
+  "name": "analyze",
+  "type": "Prompt",
+  "model": "claude-opus-4.6",
+  "reasoningSummary": "concise",
+  "contextTier": "longContext",
+  "workingDirectory": "{{env.PROJECT_DIR}}",
+  "githubToken": "{{env.GITHUB_TOKEN}}"
+}
+```
+
+#### Human-in-the-Loop
+
+`humanInput: true` routes the agent's **elicitation** and **exit-plan-mode (plan approval)** requests to Orchestra's human-in-the-loop — the same pending-input surface as the `Approval` step and `orchestra_request_user_input` (operators answer via `POST /api/orchestrations/{name}/runs/{runId}/respond`). Like the engine-tool variant, these waits are session-bound and do **not** survive a host restart. Default (off) resolves them autonomously. Pairs naturally with `permissionPolicy: requireHumanApproval`.
+
+#### Permission Policy
+
+`permissionPolicy` controls how the agent's permission requests (shell, file read/write, url, mcp, …) are resolved.
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `mode` | `string` | `approveAll` | `approveAll` (auto-approve everything — default), `denyList` (approve unless a deny glob matches), or `requireHumanApproval` (route each request to a human operator; serialized per step; falls back to "user not available" with no operator). |
+| `deny` | `string[]` | `[]` | Globs matched (case-insensitive, `*`/`?` wildcards) against a request's kind (`read`/`write`/`shell`/`url`/`mcp`/…) or target (path/command/url/tool). Used only when `mode` is `denyList`. |
+
+```json
+{ "permissionPolicy": { "mode": "denyList", "deny": ["shell", "url", "*.env"] } }
+```
+
+#### Sandbox
+
+`sandbox` constrains the agent's shell/file/network tool access, applied to the live session via the runtime's options-update RPC.
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `bool` | `true` | When `false`, the policy is ignored (no sandbox). |
+| `filesystem.readonly` | `string[]` | `[]` | Paths the agent may read but not write. |
+| `filesystem.readwrite` | `string[]` | `[]` | Paths the agent may read and write. |
+| `filesystem.denied` | `string[]` | `[]` | Paths the agent may not access. |
+| `network.allowedHosts` | `string[]` | `[]` | Hosts the agent's tools may reach (allow-list). |
+| `network.blockedHosts` | `string[]` | `[]` | Hosts the agent's tools may not reach (deny-list). |
+| `network.allowOutbound` | `bool` | provider default | Whether outbound network access is permitted at all. |
+| `network.allowLocalNetwork` | `bool` | provider default | Whether loopback / private-range access is permitted. |
+
+Sandbox paths are passed to the runtime verbatim (not template-resolved). Enforcement is provided on Linux/macOS.
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "filesystem": { "readonly": ["/work/repo"], "denied": ["/etc"] },
+    "network": { "allowOutbound": false }
+  }
+}
 ```
 
 ---
