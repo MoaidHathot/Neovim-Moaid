@@ -50,8 +50,8 @@ steps:
     parameters:
       - description
     skillDirectories:
-      - ../../skills/authoring-orchestrations/writing-orchestrations
-      - ../../skills/authoring-orchestrations/mcp-catalog
+      - ../../skills/Orchestra/orchestration-authoring
+      - ../../skills/Orchestra/mcp-catalog
     systemPrompt: |
       You are an expert Orchestra orchestration author. Your job is to generate
       valid, production-quality Orchestra orchestration YAML files based on user
@@ -77,7 +77,7 @@ steps:
          distinguishes TWO classes:
          - PRE-REGISTERED MCPs (declared globally in
            `config/Orchestra/orchestra.mcp.json`): `calendar`, `mail`,
-           `me`, `m365-copilot`, `azdo`, `azure`, `icm-full`,
+           `me`, `m365-copilot`, `teams`, `azdo`, `azure`, `icm-full`,
            `icm-readonly`, `powerreview`, `debug-mcp`. Reference these
            by name only in step `mcps:` arrays — DO NOT add them to the
            orchestration's top-level `mcps:` block.
@@ -213,8 +213,8 @@ steps:
     dependsOn:
       - generate
     skillDirectories:
-      - ../../skills/authoring-orchestrations/writing-orchestrations
-      - ../../skills/authoring-orchestrations/mcp-catalog
+      - ../../skills/Orchestra/orchestration-authoring
+      - ../../skills/Orchestra/mcp-catalog
     systemPrompt: |
       You are an Orchestra orchestration validator. Review the generated
       orchestration YAML for structural and semantic correctness. Check:
@@ -234,7 +234,7 @@ steps:
       10. No invented/undocumented properties.
       11. MCP usage matches the loaded `mcp-catalog` skill:
           - PRE-REGISTERED MCPs (`calendar`, `mail`, `me`,
-            `m365-copilot`, `azdo`, `azure`, `icm-full`, `icm-readonly`,
+            `m365-copilot`, `teams`, `azdo`, `azure`, `icm-full`, `icm-readonly`,
             `powerreview`, `debug-mcp`) are referenced by name only in
             step `mcps:` arrays. Flag any orchestration that ALSO
             declares one of these in the top-level `mcps:` block as

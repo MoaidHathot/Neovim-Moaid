@@ -79,10 +79,12 @@ inputs:
     type: boolean
     description: |
       When true, push the LLM-synthesized "Today's focus" top-3 as a
-      single task in the `Orchestra: Daily Focus` To Do list. Disable
-      to suppress the To Do side-effect.
+      single task in the `Orchestra: Daily Focus` To Do list. Opt-in:
+      defaults to false so the digest's ActionView card, Obsidian note,
+      and Zakira state never depend on a Microsoft Graph Tasks token.
+      Pass pushFocusToTodo=true on a run to enable the To Do side-effect.
     required: false
-    default: "true"
+    default: "false"
   forceSurface:
     type: boolean
     description: |
@@ -642,8 +644,8 @@ steps:
             (Format-MeetingTime -StartIso ([string]$m.startTime) -EndIso ([string]$m.endTime)),
             [string]$m.title,
             [string]$m.organizer,
-            (if ($m.PSObject.Properties['attendees']) { "$(@($m.attendees).Count)" } else { '0' }),
-            (if (-not [string]::IsNullOrWhiteSpace([string]$m.webLink)) { [ordered]@{ type='link'; url=[string]$m.webLink; label='open' } } else { '-' })
+            $(if ($m.PSObject.Properties['attendees']) { "$(@($m.attendees).Count)" } else { '0' }),
+            $(if (-not [string]::IsNullOrWhiteSpace([string]$m.webLink)) { [ordered]@{ type='link'; url=[string]$m.webLink; label='open' } } else { '-' })
           )
         }
         $meetingsSection = New-Object System.Collections.Generic.List[object]
@@ -814,41 +816,46 @@ steps:
       # Walk content blocks and render each as best-effort markdown.
       function Format-Block {
         param($Block, [int]$HeadingLevel = 2)
-        if ($null -eq $Block) { return @() }
-        $out = @()
+        # Accumulate in a List[string] so the result is a real string[]:
+        # List[string].AddRange (below and at the call site) needs an
+        # IEnumerable[string], and an object[] - even one full of strings -
+        # will not convert. Nested 'section' blocks AddRange their children
+        # so the output stays one flat string[] instead of a jagged object[].
+        $out = New-Object System.Collections.Generic.List[string]
+        if ($null -eq $Block) { return ,$out.ToArray() }
         switch ([string]$Block.type) {
           'markdown' {
-            $out += [string]$Block.body
-            $out += ''
+            $out.Add([string]$Block.body)
+            $out.Add('')
           }
           'alert' {
             $level = [string]$Block.level
             $label = [string]$Block.label
-            $out += "> **$($level.ToUpper()): $label**"
-            foreach ($line in ([string]$Block.body) -split "`n") { $out += "> $line" }
-            $out += ''
+            $out.Add("> **$($level.ToUpper()): $label**")
+            foreach ($line in ([string]$Block.body) -split "`n") { $out.Add("> $line") }
+            $out.Add('')
           }
           'keyValue' {
-            if ($Block.label) { $out += ('#' * ($HeadingLevel + 1)) + ' ' + [string]$Block.label }
+            if ($Block.label) { $out.Add(('#' * ($HeadingLevel + 1)) + ' ' + [string]$Block.label) }
             foreach ($prop in $Block.pairs.PSObject.Properties) {
               $val = $prop.Value
               if ($val -is [pscustomobject] -and $val.PSObject.Properties['type']) {
                 if ([string]$val.type -eq 'link') {
-                  $out += "- **$($prop.Name):** [$([string]$val.label)]($([string]$val.url))"
+                  $out.Add("- **$($prop.Name):** [$([string]$val.label)]($([string]$val.url))")
                 } else {
-                  $out += "- **$($prop.Name):** $val"
+                  $out.Add("- **$($prop.Name):** $val")
                 }
               } else {
-                $out += "- **$($prop.Name):** $val"
+                $out.Add("- **$($prop.Name):** $val")
               }
             }
-            $out += ''
+            $out.Add('')
           }
           'table' {
-            if ($Block.label) { $out += ('#' * ($HeadingLevel + 1)) + ' ' + [string]$Block.label }
+            if ($Block.label) { $out.Add(('#' * ($HeadingLevel + 1)) + ' ' + [string]$Block.label) }
             $cols = @($Block.columns)
-            $out += '| ' + ($cols -join ' | ') + ' |'
-            $out += '|' + (($cols | ForEach-Object { '---' }) -join '|') + '|'
+            $out.Add('| ' + ($cols -join ' | ') + ' |')
+            $out.Add('|' + (($cols | ForEach-Object { '---' }) -join '|') + '|')
             foreach ($row in @($Block.rows)) {
               $cells = @()
               foreach ($c in @($row)) {
@@ -858,30 +865,32 @@ steps:
                   $cells += [string]$c
                 }
               }
-              $out += '| ' + ($cells -join ' | ') + ' |'
+              $out.Add('| ' + ($cells -join ' | ') + ' |')
             }
-            $out += ''
+            $out.Add('')
           }
           'section' {
-            $out += ('#' * $HeadingLevel) + ' ' + [string]$Block.title
-            $out += ''
+            $out.Add(('#' * $HeadingLevel) + ' ' + [string]$Block.title)
+            $out.Add('')
             foreach ($child in @($Block.content)) {
-              $out += Format-Block -Block $child -HeadingLevel ($HeadingLevel + 1)
+              $childLines = Format-Block -Block $child -HeadingLevel ($HeadingLevel + 1)
+              if ($null -ne $childLines) { $out.AddRange([string[]]$childLines) }
             }
           }
           default {
             # Unknown - just dump as JSON for diagnostics.
-            $out += '```json'
-            $out += ($Block | ConvertTo-Json -Depth 10)
-            $out += '```'
-            $out += ''
+            $out.Add('```json')
+            $out.Add(($Block | ConvertTo-Json -Depth 10))
+            $out.Add('```')
+            $out.Add('')
           }
         }
-        return ,$out
+        return ,$out.ToArray()
       }
 
       foreach ($block in @($entry.content)) {
-        $lines.AddRange((Format-Block -Block $block -HeadingLevel 2)) | Out-Null
+        $blockLines = Format-Block -Block $block -HeadingLevel 2
+        if ($null -ne $blockLines) { $lines.AddRange([string[]]$blockLines) }
       }
 
       $path = Join-Path $dailyDir ("$([string]$date.digestDate).md")
@@ -982,20 +991,14 @@ steps:
     forEach: "{{build-focus-todo-payload.output}}"
     forEachPath: items
     itemParameter: todoItem
+    # The engine injects each payload item as todo-upsert's `todoItem`
+    # input, and todo-upsert backfills externalId / title / body / dueDate
+    # from it deterministically (no LLM input handler). Only parameters
+    # that drive list resolution or override the item are set here.
     parameters:
       listName: "{{vars.todoListName}}"
-      externalId: ""
-      title: ""
-      body: ""
-      dueDate: ""
       importance: high
       status: notStarted
-    inputHandlerPrompt: |
-      Return ONLY a valid JSON object mapping todo-upsert parameter
-      names (listName, externalId, title, body, dueDate, importance,
-      status) to string values pulled from the supplied item. Preserve
-      listName, externalId, importance, status verbatim. body must be
-      a single plain-text string with newlines escaped for valid JSON.
     mode: sync
     maxConcurrency: 1
     continueOnItemFailure: true

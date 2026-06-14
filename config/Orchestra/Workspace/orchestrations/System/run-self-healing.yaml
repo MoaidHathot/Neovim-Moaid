@@ -251,7 +251,7 @@ steps:
     dependsOn: [validate-inputs]
     mcps: [orchestra]
     skillDirectories:
-      - ../../skills/authoring-orchestrations
+      - ../../skills/Orchestra
     # HAND-SYNC POINT: this value MUST equal the $controllerTimeoutSeconds
     # constant inside the validate-inputs script body. Orchestra's step-level
     # timeoutSeconds is parsed as a plain int and does NOT accept template

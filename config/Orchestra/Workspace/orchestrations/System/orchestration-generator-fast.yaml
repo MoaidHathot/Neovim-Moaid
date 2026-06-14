@@ -48,8 +48,8 @@ steps:
     parameters:
       - description
     skillDirectories:
-      - ../../skills/authoring-orchestrations/writing-orchestrations
-      - ../../skills/authoring-orchestrations/mcp-catalog
+      - ../../skills/Orchestra/orchestration-authoring
+      - ../../skills/Orchestra/mcp-catalog
     reasoningLevel: Low
     systemPrompt: |
       You are an expert Orchestra orchestration author. Generate a single
@@ -98,7 +98,7 @@ steps:
       i. The catalog has TWO classes:
          - PRE-REGISTERED MCPs (declared globally in
            `config/Orchestra/orchestra.mcp.json`): currently `calendar`,
-           `mail`, `me`, `m365-copilot`, `azdo`, `azure`, `icm-full`,
+           `mail`, `me`, `m365-copilot`, `teams`, `azdo`, `azure`, `icm-full`,
            `icm-readonly`, `powerreview`, `debug-mcp`. For these, just
            reference the name in a step's `mcps:` array. **Do NOT add
            them to your orchestration's top-level `mcps:` block** —

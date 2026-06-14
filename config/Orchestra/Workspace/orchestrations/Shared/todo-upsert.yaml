@@ -78,12 +78,21 @@ inputs:
       Caller-stable external id used to deduplicate. Mapped to the Graph
       taskId via Zakira.Exchange so re-invocations PATCH instead of
       POST-ing a duplicate.
-    required: true
+
+      Optional at the engine level so `forEach` dispatchers can supply it
+      via the auto-injected `todoItem` object instead (see `todoItem`).
+      The `upsert-task` step hard-fails when it is still empty after the
+      item backfill, so the "must be present" guarantee is preserved.
+    required: false
+    default: ""
   title:
     type: string
     description: |
-      Task title (single line).
-    required: true
+      Task title (single line). Optional at the engine level; may instead
+      be supplied via the auto-injected `todoItem` object. The
+      `upsert-task` step hard-fails when it is still empty after backfill.
+    required: false
+    default: ""
   body:
     type: string
     description: |
@@ -128,9 +137,26 @@ inputs:
     type: string
     description: |
       Absolute path to the Zakira SQLite database file used for the
-      externalId -> taskId mapping and list-id cache.
+      externalId -> taskId mapping and list-id cache. The default below
+      uses a template token, which the engine does NOT expand inside input
+      default values; the steps resolve XDG_CONFIG_HOME (falling back to
+      ~/.config) at runtime when the literal token or an empty value
+      arrives, so child/forEach dispatches still hit the real db.
     required: false
     default: "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+  todoItem:
+    type: string
+    description: |
+      Auto-injected per-item object when this orchestration is dispatched
+      from a parent `forEach` step that declares `itemParameter: todoItem`.
+      The engine passes the whole current item here by name. It is a JSON
+      object whose fields (externalId, title, body, dueDate, importance,
+      status, listName) backfill the matching scalar inputs whenever those
+      are left empty. This is the deterministic, LLM-free path for forEach
+      dispatch and replaces the need for an `inputHandlerPrompt` mapping.
+      Ignored when empty (e.g. direct, non-forEach callers).
+    required: false
+    default: ""
 
 defaultRetryPolicy:
   maxRetries: 2
@@ -158,8 +184,31 @@ steps:
       $ErrorActionPreference = 'Stop'
       $PSNativeCommandArgumentPassing = 'Standard'
 
-      $listName  = $args[0]
-      $dbPath    = $args[1]
+      $listName    = $args[0]
+      $dbPath      = $args[1]
+      $todoItemRaw = $args[2]
+
+      # Resolve dbPath. The input default is '{{env.XDG_CONFIG_HOME}}/...',
+      # but the engine does NOT expand template tokens inside input default
+      # values (only inside direct step fields), so a child/forEach dispatch
+      # can arrive here with the literal '{{...}}' path. Rebuild it from the
+      # environment so the Zakira cache lands on the real db instead of a
+      # bogus literal path (which would defeat externalId -> taskId dedupe
+      # and create duplicate tasks every run).
+      if ([string]::IsNullOrWhiteSpace($dbPath) -or $dbPath -like '*{{*') {
+        $cfgHome = $env:XDG_CONFIG_HOME
+        if ([string]::IsNullOrWhiteSpace($cfgHome)) { $cfgHome = Join-Path $env:USERPROFILE '.config' }
+        $dbPath = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $cfgHome 'orchestra') 'zakira.db'))
+      }
+
+      # Backfill listName from the auto-injected forEach item when the
+      # caller left the scalar empty (deterministic, no LLM handler).
+      if ([string]::IsNullOrWhiteSpace($listName) -and -not [string]::IsNullOrWhiteSpace($todoItemRaw)) {
+        try {
+          $item = ConvertFrom-Json -InputObject $todoItemRaw -ErrorAction Stop
+          if ($item.PSObject.Properties['listName']) { $listName = [string]$item.listName }
+        } catch { }
+      }
 
       if ([string]::IsNullOrWhiteSpace($listName)) { throw 'listName is required.' }
       if ([string]::IsNullOrWhiteSpace($dbPath))   { throw 'dbPath is required.' }
@@ -300,6 +349,7 @@ steps:
     arguments:
       - "{{param.listName}}"
       - "{{param.dbPath}}"
+      - "{{param.todoItem}}"
     timeoutSeconds: 180
 
   - name: upsert-task
@@ -328,9 +378,42 @@ steps:
       $status         = $args[6]
       $categoriesRaw  = $args[7]
       $dbPath         = $args[8]
+      $todoItemRaw    = $args[9]
 
-      if ([string]::IsNullOrWhiteSpace($externalId)) { throw 'externalId is required.' }
-      if ([string]::IsNullOrWhiteSpace($title))      { throw 'title is required.' }
+      # Resolve dbPath - see resolve-list-id: template tokens in input
+      # default values are not expanded by the engine, so rebuild the real
+      # Zakira db path from the environment when a literal '{{...}}' (or an
+      # empty value) arrives. Keeps the externalId -> taskId mapping write
+      # on the same db the cache was read from.
+      if ([string]::IsNullOrWhiteSpace($dbPath) -or $dbPath -like '*{{*') {
+        $cfgHome = $env:XDG_CONFIG_HOME
+        if ([string]::IsNullOrWhiteSpace($cfgHome)) { $cfgHome = Join-Path $env:USERPROFILE '.config' }
+        $dbPath = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $cfgHome 'orchestra') 'zakira.db'))
+      }
+
+      # Backfill any unset scalar inputs from the auto-injected forEach
+      # item (parent step's `itemParameter: todoItem`). This is the
+      # deterministic, LLM-free mapping path: a parent that iterates a
+      # payload array only needs each per-item object to carry these
+      # fields - no `inputHandlerPrompt` required. Explicit scalar inputs,
+      # when non-empty, always win over the item's values.
+      if (-not [string]::IsNullOrWhiteSpace($todoItemRaw)) {
+        try {
+          $item = ConvertFrom-Json -InputObject $todoItemRaw -ErrorAction Stop
+        } catch {
+          throw "Failed to parse todoItem JSON: $($_.Exception.Message)"
+        }
+        if ([string]::IsNullOrWhiteSpace($externalId)    -and $item.PSObject.Properties['externalId']) { $externalId    = [string]$item.externalId }
+        if ([string]::IsNullOrWhiteSpace($title)         -and $item.PSObject.Properties['title'])      { $title         = [string]$item.title }
+        if ([string]::IsNullOrWhiteSpace($body)          -and $item.PSObject.Properties['body'])       { $body          = [string]$item.body }
+        if ([string]::IsNullOrWhiteSpace($dueDate)       -and $item.PSObject.Properties['dueDate'])    { $dueDate       = [string]$item.dueDate }
+        if ([string]::IsNullOrWhiteSpace($importance)    -and $item.PSObject.Properties['importance']) { $importance    = [string]$item.importance }
+        if ([string]::IsNullOrWhiteSpace($status)        -and $item.PSObject.Properties['status'])     { $status        = [string]$item.status }
+        if ([string]::IsNullOrWhiteSpace($categoriesRaw) -and $item.PSObject.Properties['categories']) { $categoriesRaw = [string]$item.categories }
+      }
+
+      if ([string]::IsNullOrWhiteSpace($externalId)) { throw 'externalId is required (supply it directly or via todoItem).' }
+      if ([string]::IsNullOrWhiteSpace($title))      { throw 'title is required (supply it directly or via todoItem).' }
 
       $listId = (ConvertFrom-Json -InputObject $listJson).listId
       if ([string]::IsNullOrWhiteSpace($listId)) { throw 'No listId.' }
@@ -504,4 +587,5 @@ steps:
       - "{{param.status}}"
       - "{{param.categories}}"
       - "{{param.dbPath}}"
+      - "{{param.todoItem}}"
     timeoutSeconds: 300
