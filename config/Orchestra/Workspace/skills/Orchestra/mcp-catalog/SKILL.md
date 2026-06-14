@@ -34,7 +34,7 @@ If a name is not in this catalog, it is not registered — do not fabricate.
 |---|---|
 | Microsoft 365 calendar (events, attendees, scheduling) | `calendar` or `workiq` |
 | Microsoft 365 mail (Outlook, send/read) | `mail` or `workiq` |
-| Microsoft Teams chats / channel messages / meeting transcripts | `workiq` |
+| Microsoft Teams chats / channel messages / meeting transcripts | `teams` or `workiq` |
 | Microsoft 365 People / contact lookup / "about me" | `me` or `workiq` |
 | Microsoft 365 Copilot capabilities | `m365-copilot` |
 | Azure DevOps (PRs, work items, repositories, comments) | `azdo` |
@@ -61,8 +61,8 @@ of these** — Orchestra resolves them automatically. Just list the name in a
 step's `mcps:` array.
 
 The pre-registered set in this workspace:
-`calendar`, `mail`, `me`, `m365-copilot`, `azdo`, `azure`, `icm-full`,
-`icm-readonly`, `powerreview`, `debug-mcp`.
+`calendar`, `mail`, `me`, `m365-copilot`, `teams`, `azdo`, `azure`,
+`icm-full`, `icm-readonly`, `powerreview`, `debug-mcp`.
 
 Each entry below describes purpose, when-to-use, when-NOT-to-use, and a
 copy-paste step-level reference snippet.
@@ -147,6 +147,36 @@ steps:
   - name: search-m365-content
     type: Prompt
     mcps: [m365-copilot]
+```
+
+---
+
+## `teams` — Microsoft Teams (local stdio)
+
+**Pre-registered, but NOT served by the HTTP proxy.** Unlike `calendar` /
+`mail` / `me` / `m365-copilot` (which are HTTP endpoints on port `5113`),
+`teams` is a **local stdio** MCP (`McpProxy.Samples.Teams.Mcp` via `dnx`)
+registered in `orchestra.mcp.json`. It uses `user-auth` against
+`${CORP_TENANT_ID}` / `${VSCODE_CLIENT_ID}` with a deferred connection, so
+the first step that touches it in a new session triggers auth. Reference it
+by name only — do **NOT** add a top-level `mcps:` entry.
+
+**Use for:** dedicated Microsoft Teams tooling — chat messages, channel
+posts, meeting transcripts, Teams search.
+**Do not use for:** calendar / mail / profile work — pick the matching
+focused proxy MCP, or `workiq`.
+
+**`teams` vs `workiq` for Teams:** prefer **`teams`** for a focused,
+Teams-only toolset when the step needs nothing else. Prefer **`workiq`**
+when the same step also needs calendar / mail / people / AzDO, so one MCP
+covers every concern.
+**Step-level reference:**
+
+```yaml
+steps:
+  - name: read-team-channel
+    type: Prompt
+    mcps: [teams]
 ```
 
 ---
@@ -481,7 +511,7 @@ The companion signal: `get_orchestration_status` for active runs now returns `co
 ```yaml
 - name: attempt-1
   type: Orchestration
-  orchestrationName: build-and-test
+  orchestration: build-and-test
   mode: sync
 
 - name: repair
