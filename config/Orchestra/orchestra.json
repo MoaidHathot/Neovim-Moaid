@@ -24,7 +24,7 @@
 	},
 	"autoResumeCheckpointsOnStartup": true,
 	"shutdownTimeoutSeconds": 30,
-	"logLevel": "Debug",
+	"logLevel": "Warning",
 	"retention": {
 		"maxRunsPerOrchestration": 0,
 		"maxRunAgeDays": 0
