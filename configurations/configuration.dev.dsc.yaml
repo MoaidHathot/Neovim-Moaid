@@ -152,6 +152,15 @@ properties:
         source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: DevToys
+      directives:
+        description: Install DevToys
+        allowPrerelease: true
+      settings:
+        id: DevToys-app.DevToys
+        source: winget
+
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: Visual_Studio_Code
       directives:
         description: Install Visual Studio Code
