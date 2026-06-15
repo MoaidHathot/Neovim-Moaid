@@ -86,8 +86,11 @@ inputs:
     description: |
       When true, sync aging needs-action items to Microsoft To Do.
       Disable to suppress the To Do side-effect entirely.
+      Default is false: Microsoft Graph To Do auth is currently disabled
+      (todo-upsert was returning 401 Unauthorized). Re-enable by passing
+      true once `az login` / Tasks.ReadWrite consent is restored.
     required: false
-    default: "true"
+    default: "false"
   dryRun:
     type: boolean
     description: |

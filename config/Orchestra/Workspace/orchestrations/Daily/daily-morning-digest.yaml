@@ -209,16 +209,33 @@ steps:
         "meetings":   [ {...} ],
         "count":      <int>
       }
+
+      OUTPUT CONTRACT (critical - a downstream step parses this verbatim):
+        - Your FINAL message MUST be exactly that JSON object: raw,
+          parseable JSON that starts with '{' and ends with '}'.
+        - Do NOT narrate or summarize what you did (no "Enumerated...",
+          no "Final digest contains..."). Do NOT wrap the JSON in
+          markdown fences or backticks. Do NOT add any prose before or
+          after it.
+        - Use the tools/MCP to gather the data, but the LAST thing you
+          emit is the JSON object and nothing else.
+        - On a meeting-free day emit the same object with
+          "meetings": [] and "count": 0. Do NOT call orchestra_complete.
     userPrompt: |
       Today's window (from resolve-digest-date):
       {{resolve-digest-date.output}}
 
       Enumerate today's meetings via the `calendar` MCP per the rules
-      in your system prompt. Output one JSON object.
+      in your system prompt. Your final message must be the JSON object
+      only - no prose, no narration, no markdown fences.
     outputHandlerPrompt: |
-      Extract one valid JSON object only with the fields fetchedAt,
-      windowStartUtc, windowEndUtc, meetings, count. Strip markdown
-      fences, prose, and trailing whitespace.
+      Return ONE valid JSON object only, with the fields fetchedAt,
+      windowStartUtc, windowEndUtc, meetings, count, so the result
+      starts with '{' and ends with '}'. Strip any markdown fences,
+      prose, narration, or trailing whitespace. If the assistant text is
+      prose that names meetings, reconstruct the object from it. If there
+      is genuinely no meeting data, return
+      {"fetchedAt":"","windowStartUtc":"","windowEndUtc":"","meetings":[],"count":0}.
     mcps: [calendar]
     retry:
       maxRetries: 3
@@ -226,9 +243,100 @@ steps:
       backoffMultiplier: 2.0
       retryOnTimeout: true
 
+  - name: normalize-meetings
+    type: Prompt
+    dependsOn: [resolve-digest-date, discover-todays-meetings]
+    # Deterministic-ish safety net between the agentic discovery step and
+    # the PowerShell consumers (load-meeting-briefs / compose-digest) that
+    # parse this output with ConvertFrom-Json. The discovery agent is
+    # supposed to emit pure JSON, but being agentic it sometimes narrates
+    # ("Enumerated today's meetings..."). This single-purpose, tool-free
+    # prompt coerces whatever it produced into the strict schema (or the
+    # empty shape) so a prose hiccup can never hard-fail the whole digest.
+    systemPrompt: |
+      You are a strict JSON normalizer. You receive the raw output of a
+      meeting-discovery agent. That output SHOULD be a JSON object but may
+      arrive as prose, markdown-fenced JSON, or JSON with extra commentary.
+      Your only job is to emit ONE clean, valid JSON object that a
+      downstream PowerShell script parses verbatim.
+
+      Target schema (emit EXACTLY these top-level fields):
+      {
+        "fetchedAt":      "<UTC iso8601 or empty string>",
+        "windowStartUtc": "<UTC iso8601 or empty string>",
+        "windowEndUtc":   "<UTC iso8601 or empty string>",
+        "meetings": [
+          {
+            "eventId":         "<graph event id or empty>",
+            "iCalUId":         "<icaluid or empty>",
+            "occurrenceStart": "<iso start of this instance or empty>",
+            "title":           "<subject>",
+            "startTime":       "<iso start>",
+            "endTime":         "<iso end>",
+            "timeZone":        "<tz or empty>",
+            "organizer":       "<display name or empty>",
+            "attendees":       [ "<name>" ],
+            "webLink":         "<url or empty>",
+            "description":     "<short text or empty>",
+            "isOnline":        true
+          }
+        ],
+        "count": 0
+      }
+
+      Rules:
+        1. Output RAW JSON only - start with '{', end with '}'. No
+           markdown fences, no prose, no "Here is", no trailing notes.
+        2. If the input already contains a JSON object matching the
+           schema, pass it through. Repair any missing optional field
+           with "" (or [] for attendees, false for isOnline) and set
+           "count" to equal meetings.length.
+        3. If the input is prose that NAMES meetings (titles/times) but
+           lacks structured fields, reconstruct one object per meeting
+           from the prose, filling unknown fields with "" / [] and
+           isOnline=false when unknown. Keep every title/time you can read.
+        4. Never invent meetings that are not present in the input.
+        5. Do NOT call any tools or MCPs.
+
+      No-data case (NOT an error): if the input is empty, says there are
+      no meetings, reports zero events, or carries an empty meetings
+      array, return the EMPTY shape exactly (see Example B). The digest is
+      designed to fire on meeting-free days, so prefer the empty shape
+      over failing.
+
+      WHEN TO FAIL: call orchestra_set_status with status 'failed' and a
+      one-line reason ONLY if the input is a genuine error/stack trace
+      from the discovery step (so you cannot even tell whether meetings
+      exist). In every other ambiguous case emit the empty shape instead
+      of failing - downstream tolerates zero meetings but NOT invalid JSON.
+
+      Example A (input already good -> pass through, count corrected):
+      {"fetchedAt":"2026-06-15T09:43:17Z","windowStartUtc":"2026-06-15T09:43:17Z","windowEndUtc":"2026-06-15T23:43:17Z","meetings":[{"eventId":"AAMk...","iCalUId":"040000...","occurrenceStart":"2026-06-15T15:00:00Z","title":"ANS Standup","startTime":"2026-06-15T15:00:00Z","endTime":"2026-06-15T15:30:00Z","timeZone":"UTC","organizer":"Karim Al sebaali","attendees":["Karim Al sebaali"],"webLink":"https://outlook.office365.com/...","description":"","isOnline":true}],"count":1}
+
+      Example B (no data -> empty shape, NOT a failure):
+      {"fetchedAt":"","windowStartUtc":"","windowEndUtc":"","meetings":[],"count":0}
+    userPrompt: |
+      Window (authoritative timestamps from resolve-digest-date):
+      {{resolve-digest-date.output}}
+
+      Raw discovery output to normalize:
+      {{discover-todays-meetings.output}}
+
+      Emit ONE clean JSON object per your system prompt. When the window
+      object above has values, copy windowStartUtc / windowEndUtc / a
+      fetchedAt from it. Output JSON only - no prose, no fences.
+    outputHandlerPrompt: |
+      Return exactly one JSON object - raw, starting with '{' and ending
+      with '}'. Strip any markdown fences, prose, or trailing whitespace.
+    retry:
+      maxRetries: 2
+      backoffSeconds: 10
+      backoffMultiplier: 2.0
+      retryOnTimeout: true
+
   - name: load-meeting-briefs
     type: Script
-    dependsOn: [discover-todays-meetings]
+    dependsOn: [normalize-meetings]
     shell: pwsh
     script: |
       # For each discovered meeting, compute the canonical Zakira key
@@ -376,7 +484,7 @@ steps:
         errors   = $errors.ToArray()
       } | ConvertTo-Json -Depth 100 -Compress
     arguments:
-      - "{{discover-todays-meetings.output}}"
+      - "{{normalize-meetings.output}}"
       - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
       - "{{vars.zakiraMeetingPrepCategory}}"
     timeoutSeconds: 600
@@ -394,7 +502,7 @@ steps:
 
   - name: synthesize-focus
     type: Prompt
-    dependsOn: [resolve-digest-date, discover-todays-meetings, load-tracker-summaries, load-meeting-briefs]
+    dependsOn: [resolve-digest-date, normalize-meetings, load-tracker-summaries, load-meeting-briefs]
     systemPrompt: |
       You produce the "Today's focus" section of a daily digest. You
       receive five inputs:
@@ -448,7 +556,7 @@ steps:
       {{resolve-digest-date.output}}
 
       Today's meetings:
-      {{discover-todays-meetings.output}}
+      {{normalize-meetings.output}}
 
       Meeting briefs (one entry per meeting; check `hasBrief`):
       {{load-meeting-briefs.output}}
@@ -497,7 +605,7 @@ steps:
 
   - name: compose-digest
     type: Script
-    dependsOn: [resolve-digest-date, discover-todays-meetings, load-meeting-briefs, load-tracker-summaries]
+    dependsOn: [resolve-digest-date, normalize-meetings, load-meeting-briefs, load-tracker-summaries]
     shell: pwsh
     script: |
       # Deterministic ActionView entry builder. Uses placeholders for
@@ -759,7 +867,7 @@ steps:
       $entry | ConvertTo-Json -Depth 100 -Compress
     arguments:
       - "{{resolve-digest-date.output}}"
-      - "{{discover-todays-meetings.output}}"
+      - "{{normalize-meetings.output}}"
       - "{{load-meeting-briefs.output}}"
       - "{{load-tracker-summaries.output}}"
       - "{{param.includeFullMeetingBriefs}}"
@@ -1081,6 +1189,7 @@ steps:
     dependsOn:
       - resolve-digest-date
       - discover-todays-meetings
+      - normalize-meetings
       - load-meeting-briefs
       - load-tracker-summaries
       - synthesize-focus
@@ -1104,8 +1213,13 @@ steps:
       {{resolve-digest-date.output}}
       ```
 
-      ## Today's meetings
+      ## Today's meetings (normalized)
       ```json
+      {{normalize-meetings.output}}
+      ```
+
+      ## Raw discovery output (pre-normalize)
+      ```text
       {{discover-todays-meetings.output}}
       ```
 
