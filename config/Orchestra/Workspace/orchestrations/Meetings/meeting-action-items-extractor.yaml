@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
 name: meeting-action-items-extractor
 description: |
-  Scheduler + dispatcher for meeting action-items extraction. Every 8 hours
-  it discovers recent meetings in the last 8 hours via the Calendar MCP,
+  Scheduler + dispatcher for meeting action-items extraction. Every 3 hours
+  it discovers recent meetings in the last 5 hours via the Calendar MCP,
   filters out ones whose canonical Zakira key already has a 'processed'
   record, then dispatches one synchronous `meeting-action-items-processor`
   child per remaining meeting via the Orchestra data-plane MCP. The child
@@ -21,7 +21,7 @@ metadata:
   ownerAlias: moaid
   domain: productivity
   sla: best-effort
-  schedule: "every 8h, 8h look-back"
+  schedule: "every 3h, 5h look-back"
   documentation: |
     Sibling per-meeting child orchestration:
     `meeting-action-items-processor.yaml`.
@@ -33,10 +33,13 @@ inputs:
   lookBackHours:
     type: string
     description: |
-      Look-back window in hours from now. Default matches the scheduler
-      cadence so every recently-finished meeting is seen exactly once.
+      Look-back window in hours from now. Intentionally longer than the
+      3h scheduler cadence so consecutive runs overlap: if a run is
+      delayed or fails, the next one still covers the gap. Re-seeing a
+      meeting is harmless - the Zakira 'processed' dedup skips anything
+      already handled.
     required: false
-    default: "8"
+    default: "5"
   meetingFilter:
     type: string
     description: |
@@ -102,7 +105,7 @@ mcps:
 trigger:
   type: scheduler
   enabled: true
-  intervalSeconds: 28800
+  intervalSeconds: 10800
 
 steps:
   - name: get-timezone
@@ -166,12 +169,23 @@ steps:
          - `recurrence`     : recurrence object if present, else null.
       5. Apply the meetingFilter (case-insensitive substring match on
          title) when non-empty. Otherwise keep every meeting.
-      6. If zero meetings remain after filtering, call
-         orchestra_complete with status 'success' and reason 'No
-         meetings in the last {{param.lookBackHours}} hours' (substitute
-         the filter clause when relevant).
-      7. Output a single JSON array of meeting objects. No prose, no
-         fences.
+      6. If zero meetings remain after filtering, output an empty JSON
+         array: []   Do NOT call orchestra_complete or
+         orchestra_set_status for this case - the pipeline treats an
+         empty array as a clean no-op.
+      7. OUTPUT CONTRACT (critical - a downstream Script parses this
+         verbatim with ConvertFrom-Json):
+         - Your FINAL message MUST be exactly the JSON array: raw,
+           parseable JSON that starts with '[' and ends with ']'.
+         - Do NOT narrate or summarize (no "Enumerated N meetings...").
+           Do NOT wrap the array in markdown fences. Do NOT add any
+           prose before or after it.
+         - Do NOT call orchestra_set_status or orchestra_complete on the
+           success path. Calling a status tool with a prose reason
+           REPLACES your array output with that prose and breaks the
+           next step - just emit the array.
+         - Use the tools/MCP to gather data, but the LAST thing you emit
+           is the JSON array and nothing else.
     userPrompt: |
       Timezone and window:
       {{get-timezone.output}}
@@ -180,11 +194,15 @@ steps:
       Meeting filter (substring, empty = no filter): "{{param.meetingFilter}}"
 
       Enumerate calendar events in the look-back window with every field
-      listed in your system prompt. Return a JSON array.
+      listed in your system prompt. Your final message must be the JSON
+      array only - raw, starting with '[' and ending with ']', no prose,
+      no narration, no markdown fences, and do NOT call any status tool.
     outputHandlerPrompt: |
-      Extract one valid JSON array only. Strip markdown fences, prose,
-      and trailing whitespace. Preserve every field returned by the
-      calendar MCP. Output only the JSON array.
+      Return ONE valid JSON array only, starting with '[' and ending with
+      ']'. Strip any markdown fences, prose, narration, or trailing
+      whitespace. Preserve every field returned by the calendar MCP. If
+      there are no meetings - or the assistant text is prose with no JSON
+      array - return [].
     mcps: [calendar]
 
   - name: normalize-meetings-array
@@ -218,7 +236,7 @@ steps:
         for ($i = 0; $i -lt $trimmed.Length; $i++) {
           if ($trimmed[$i] -eq '{' -or $trimmed[$i] -eq '[') { $start = $i; break }
         }
-        if ($start -lt 0) { throw 'No JSON object or array was found in discover-recent-meetings output.' }
+        if ($start -lt 0) { return $null }
         return $trimmed.Substring($start)
       }
 
@@ -261,12 +279,48 @@ steps:
       }
 
       $raw = $args[0]
+
+      # Differentiate a genuine "no meetings" result from an UNPARSEABLE
+      # discovery output - they must NOT be conflated:
+      #   * No result   -> discovery returned a valid JSON array. An empty
+      #                    array [] is a real answer ("no meetings in the
+      #                    window") and flows through as a clean no-op.
+      #   * Unparseable -> discovery returned prose / no JSON / malformed
+      #                    JSON (e.g. it narrated "Enumerated 3
+      #                    meetings..."). FAIL loudly here: a prose
+      #                    summary can hide real meetings, and silently
+      #                    emitting [] would let them age out of the
+      #                    look-back window unprocessed.
+      function Stop-Unparseable {
+        param([Parameter(Mandatory)][string]$Reason)
+        $preview = if ([string]::IsNullOrEmpty($raw)) { '<empty>' }
+                   else { $raw.Substring(0, [Math]::Min(500, $raw.Length)) }
+        throw ("discover-recent-meetings did not return a parseable JSON array " +
+               "($Reason). Refusing to treat this as zero meetings: a prose / " +
+               "non-JSON answer can hide real meetings that would then silently " +
+               "age out of the look-back window. The discovery step must emit a " +
+               "raw JSON array ([] when there are none). Raw output preview: $preview")
+      }
+
       if ([string]::IsNullOrWhiteSpace($raw)) {
-        throw 'discover-recent-meetings output is empty.'
+        Stop-Unparseable -Reason 'output was empty'
       }
 
       $candidate = Get-JsonCandidate -Text $raw
-      $list = ConvertFrom-Json -InputObject $candidate -NoEnumerate -ErrorAction Stop
+      if ([string]::IsNullOrWhiteSpace($candidate)) {
+        Stop-Unparseable -Reason 'no JSON array found (looks like a prose summary)'
+      }
+
+      try {
+        $list = ConvertFrom-Json -InputObject $candidate -NoEnumerate -ErrorAction Stop
+      } catch {
+        Stop-Unparseable -Reason "JSON parse failed: $($_.Exception.Message)"
+      }
+
+      # A successfully-parsed array - including an empty one - is a real
+      # result: an empty $list simply yields an empty enriched array and
+      # the pipeline's existing no-op path (filter -> 0/0 dispatch ->
+      # gate-noteworthy-activity completes with no ActionView entry) runs.
 
       $enriched = New-Object System.Collections.Generic.List[object]
       foreach ($m in @($list)) {
@@ -320,7 +374,11 @@ steps:
       }
 
       $arr = $enriched.ToArray()
-      $arr | ConvertTo-Json -Depth 50 -Compress -AsArray
+      # Use -InputObject (not the pipeline) so an empty result serializes
+      # as "[]" rather than producing no output: piping an empty array
+      # sends zero objects to ConvertTo-Json and prints nothing, which
+      # would hand the downstream filter an empty string instead of [].
+      ConvertTo-Json -InputObject $arr -Depth 50 -Compress -AsArray
     arguments:
       - "{{discover-recent-meetings.output}}"
     timeoutSeconds: 120

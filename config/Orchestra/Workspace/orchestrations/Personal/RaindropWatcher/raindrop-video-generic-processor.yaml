@@ -38,33 +38,64 @@ timeoutSeconds: 5400
 
 steps:
   - name: zakira-analyze
-    type: Command
-    command: dnx
-    arguments:
-      - Zakira.Replay
-      - "--yes"
-      - "--"
-      - analyze
-      - "{{param.url}}"
-      # Light baseline so the user always sees SOME visual evidence even
-      # if the targeted-pick step decides nothing is essential. ~1 frame
-      # per minute -> ~10-15 frames for a typical 10-15 min video.
+    type: Script
+    shell: pwsh
+    # Invoke Zakira.Replay through `dotnet dnx` (the real dotnet.exe) from a
+    # pwsh Script step instead of a Command step. A Command step runs the
+    # whole line through `cmd.exe /c`, and the `dnx` launcher is itself a cmd
+    # shim (dnx.cmd = `dotnet.exe dnx %*`); either path lets cmd.exe treat an
+    # unquoted `&` in the video URL (e.g. `...watch?v=ID&t=652s`) as a command
+    # separator, which truncates the URL AND drops every flag after it (so the
+    # step also loses --output-format json and produces no usable output).
+    # A Script step launches pwsh directly (no cmd.exe) and calls dotnet.exe
+    # (a real PE, not a batch shim), so `&` is passed through verbatim.
+    # Repro: run c7289a4871dd failed with "'t' is not recognized ...".
+    script: |
+      $ErrorActionPreference = 'Stop'
+      # Gate success on the process exit code, not on whether the tool wrote
+      # to stderr (Zakira.Replay sends progress text there).
+      $PSNativeCommandUseErrorActionPreference = $false
+
+      $url   = $args[0]
+      $runId = $args[1]
+
+      $errLog = Join-Path ([System.IO.Path]::GetTempPath()) "zakira-replay-analyze-$runId.err"
+
+      # `dotnet dnx <pkg> --yes -- <args>` is exactly what `dnx` runs
+      # (dnx.cmd = `dotnet.exe dnx %*`) minus the cmd.exe round-trip.
       # --frames-per-minute requires an INTEGER (Zakira.Replay 0.14.x);
-      # --allow-media-download is needed for sources yt-dlp can't directly
-      # resolve (e.g., some YouTube videos with cookie/region issues).
-      - "--frame-strategy"
-      - interval
-      - "--frames-per-minute"
-      - "1"
-      - "--max-ai-frames"
-      - "12"
-      - "--allow-media-download"
-      - "--cache"
-      - "--output-format"
-      - json
-      - "--correlation-id"
+      # --allow-media-download covers sources yt-dlp can't directly resolve
+      # (e.g. some YouTube videos with cookie/region issues).
+      $stdout = & dotnet dnx Zakira.Replay --yes -- analyze $url `
+        --frame-strategy interval `
+        --frames-per-minute 1 `
+        --max-ai-frames 12 `
+        --allow-media-download `
+        --cache `
+        --output-format json `
+        --correlation-id $runId 2> $errLog
+      $exit = $LASTEXITCODE
+
+      $errText = ''
+      if (Test-Path -LiteralPath $errLog) {
+        $errText = Get-Content -LiteralPath $errLog -Raw -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $errLog -ErrorAction SilentlyContinue
+      }
+
+      if ($exit -ne 0) {
+        throw "Zakira.Replay analyze failed (exit $exit) for '$url'.`n$errText"
+      }
+
+      # Emit the JSON document Zakira.Replay wrote to stdout; the downstream
+      # read-artifacts step parses it for artifactDirectory + runId.
+      $json = ($stdout -join "`n").Trim()
+      if ([string]::IsNullOrWhiteSpace($json)) {
+        throw "Zakira.Replay analyze produced no stdout for '$url'.`n$errText"
+      }
+      $json
+    arguments:
+      - "{{param.url}}"
       - "{{orchestration.runId}}"
-    includeStdErr: false
     timeoutSeconds: 3600
 
   - name: read-artifacts

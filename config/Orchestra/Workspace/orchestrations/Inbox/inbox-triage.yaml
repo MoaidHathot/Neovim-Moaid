@@ -272,7 +272,21 @@ steps:
         3. Items without a `webLink` must be dropped.
         4. Cap at 200 messages total. If the cap is hit, prefer
            @-mentions, then Focused, then Inbox by recency.
-        5. Output a single JSON object:
+        5. TOOL DISCIPLINE: use ONLY the `mail` MCP tools to gather data.
+           Do NOT read the local filesystem or any repository, and do NOT
+           try to inspect, debug, or work around the MCP server itself. If
+           a tool rejects an argument or errors, try at most ONE
+           alternative `mail` tool, then move on.
+        6. GRACEFUL DEGRADATION (IMPORTANT): you have a hard time budget.
+           Do NOT spend many turns retrying a failing tool or inventing
+           workarounds. If a tool errors or times out ~2-3 times, or you
+           have made many calls without converging, STOP and output the
+           JSON object with whatever messages you have gathered so far -
+           an empty `messages` array is acceptable - and record the
+           failure in `notes` (e.g. "mail MCP failed: <error>"). A fast
+           partial/empty result is REQUIRED; never keep going until the
+           step is forcibly timed out.
+        7. Output a single JSON object:
            {
              "windowStartUtc":  "...",
              "windowEndUtc":    "...",
@@ -298,10 +312,15 @@ steps:
       whitespace. Output only the JSON object.
     mcps: [mail]
     retry:
-      maxRetries: 3
+      # Discovery is a long agentic MCP step. Retrying a TIMEOUT just
+      # repeats the full ~600s budget (this run burned 4x600s + backoffs =
+      # ~41m before failing), and a timeout almost always means the MCP is
+      # slow/broken - a retry won't fix that. Only retry genuine transient
+      # (non-timeout) errors, once.
+      maxRetries: 1
       backoffSeconds: 15
       backoffMultiplier: 2.0
-      retryOnTimeout: true
+      retryOnTimeout: false
 
   - name: discover-teams
     type: Prompt
@@ -345,7 +364,22 @@ steps:
         4. Cap at 150 messages total.
         5. If the `teamsChannelAllowlist` is empty, return DMs only -
            do NOT crawl every channel I am a member of.
-        6. Output a single JSON object:
+        6. TOOL DISCIPLINE: use ONLY the `teams` MCP tools to gather data.
+           Do NOT read the local filesystem or any repository, and do NOT
+           try to inspect, debug, or work around the MCP server itself
+           (e.g. don't fight the `ListChats` proxy bug). If a tool rejects
+           an argument or errors, try at most ONE alternative `teams`
+           tool, then move on.
+        7. GRACEFUL DEGRADATION (IMPORTANT): you have a hard time budget.
+           Do NOT spend many turns retrying a failing tool or inventing
+           workarounds. If a tool errors or times out ~2-3 times, or you
+           have made many calls without converging, STOP and output the
+           JSON object with whatever messages you have gathered so far -
+           an empty `messages` array is acceptable - and record the
+           failure in `notes` (e.g. "teams MCP ListChats failed: <error>").
+           A fast partial/empty result is REQUIRED; never keep going until
+           the step is forcibly timed out.
+        8. Output a single JSON object:
            {
              "windowStartUtc":  "...",
              "windowEndUtc":    "...",
@@ -372,10 +406,13 @@ steps:
       whitespace. Output only the JSON object.
     mcps: [teams]
     retry:
-      maxRetries: 3
+      # See discover-mail: do not retry on timeout (it just repeats the
+      # full ~600s budget when the teams MCP is slow/broken). Retry only
+      # genuine transient non-timeout errors, once.
+      maxRetries: 1
       backoffSeconds: 15
       backoffMultiplier: 2.0
-      retryOnTimeout: true
+      retryOnTimeout: false
 
   - name: merge-and-dedupe
     type: Script

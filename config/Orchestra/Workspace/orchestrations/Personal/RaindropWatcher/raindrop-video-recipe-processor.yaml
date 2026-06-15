@@ -66,27 +66,49 @@ timeoutSeconds: 7200
 
 steps:
   - name: zakira-analyze
-    type: Command
-    command: dnx
+    type: Script
+    shell: pwsh
+    # See raindrop-video-generic-processor: a Command step runs through
+    # cmd.exe /c, and the `dnx` launcher is itself a cmd shim (dnx.cmd =
+    # `dotnet.exe dnx %*`), so an unquoted `&` in the video URL
+    # (e.g. `...watch?v=ID&t=652s`) is parsed by cmd as a command separator -
+    # truncating the URL and dropping every flag after it. Calling the real
+    # dotnet.exe from a pwsh Script step keeps `&` intact (no cmd.exe).
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandUseErrorActionPreference = $false
+
+      $url   = $args[0]
+      $runId = $args[1]
+      $errLog = Join-Path ([System.IO.Path]::GetTempPath()) "zakira-replay-analyze-$runId.err"
+
+      $stdout = & dotnet dnx Zakira.Replay --yes -- analyze $url `
+        --frame-strategy scene `
+        --ocr `
+        --vision `
+        --cache `
+        --max-ai-frames 80 `
+        --allow-media-download `
+        --output-format json `
+        --correlation-id $runId 2> $errLog
+      $exit = $LASTEXITCODE
+
+      $errText = ''
+      if (Test-Path -LiteralPath $errLog) {
+        $errText = Get-Content -LiteralPath $errLog -Raw -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $errLog -ErrorAction SilentlyContinue
+      }
+      if ($exit -ne 0) {
+        throw "Zakira.Replay analyze failed (exit $exit) for '$url'.`n$errText"
+      }
+      $json = ($stdout -join "`n").Trim()
+      if ([string]::IsNullOrWhiteSpace($json)) {
+        throw "Zakira.Replay analyze produced no stdout for '$url'.`n$errText"
+      }
+      $json
     arguments:
-      - Zakira.Replay
-      - "--yes"
-      - "--"
-      - analyze
       - "{{param.url}}"
-      - "--frame-strategy"
-      - scene
-      - "--ocr"
-      - "--vision"
-      - "--cache"
-      - "--max-ai-frames"
-      - "80"
-      - "--allow-media-download"
-      - "--output-format"
-      - json
-      - "--correlation-id"
       - "{{orchestration.runId}}"
-    includeStdErr: false
     timeoutSeconds: 5400
 
   - name: read-artifacts

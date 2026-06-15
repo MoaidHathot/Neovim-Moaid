@@ -219,8 +219,11 @@ steps:
           after it.
         - Use the tools/MCP to gather the data, but the LAST thing you
           emit is the JSON object and nothing else.
+        - Do NOT call orchestra_set_status or orchestra_complete on the
+          success path: setting a status with a prose reason replaces
+          your JSON output with that prose and breaks the next step.
         - On a meeting-free day emit the same object with
-          "meetings": [] and "count": 0. Do NOT call orchestra_complete.
+          "meetings": [] and "count": 0 (still no status-tool call).
     userPrompt: |
       Today's window (from resolve-digest-date):
       {{resolve-digest-date.output}}
