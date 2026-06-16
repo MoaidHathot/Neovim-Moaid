@@ -237,11 +237,12 @@ steps:
            Focused side specifically when the MCP exposes that toggle;
            otherwise rely on the Inbox query and let downstream classify
            decide.
-        3. Messages where I am @-mentioned anywhere in my mailbox in
-           the lookback window (NOT scoped to a single folder). My
-           identity (uniqueName / displayName / id) is supplied in the
-           user prompt as a JSON object - use uniqueName for the
-           @-mention filter; never guess or hardcode an address.
+        3. (Best-effort) Messages where I am @-mentioned. Do NOT filter on
+           `mentionsPreview` / `mentions` server-side — those properties are
+           not queryable on the message type and the call WILL error. Derive
+           `isMention` from fields already returned by the folder queries
+           when present; otherwise set `isMention:false` and skip this
+           sub-query rather than retrying it.
 
       For each surfaced message capture ALL of:
         - id                : Graph message id (REQUIRED, used to dedup
@@ -263,6 +264,21 @@ steps:
         - bodyPreview       : the first ~400 characters of the body
                               (no HTML, no tracking pixels). Truncate
                               cleanly at a word boundary.
+
+      HOW TO QUERY (the `mail` MCP caps each response at ~51,200 bytes —
+      a broad query WILL fail with "Response size exceeds maximum"):
+        - ALWAYS pass `$select` with a minimal field set AND a small `$top`
+          (<= 10) on the FIRST call. Never issue an unbounded query.
+        - Recommended call (SearchMessagesQueryParameters, preferTextBody=true):
+            ?$filter=parentFolderId eq 'inbox' and receivedDateTime ge <windowStartUtc>
+            &$select=id,subject,from,receivedDateTime,conversationId,webLink,importance,isRead,hasAttachments,bodyPreview,toRecipients,parentFolderId
+            &$top=10
+        - Do NOT combine `$orderby` with `$filter` (Graph may reject it as
+          inefficient); sort client-side if you need ordering.
+        - Page with the returned `@odata.nextLink`, but at MOST 12 pages —
+          then stop even if more remain and note it.
+        - Read each page's JSON directly; do NOT write or run scripts to
+          parse tool output.
 
       Rules:
         1. Dedup BY `id` - the @-mention sub-query will overlap with
