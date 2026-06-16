@@ -9,11 +9,11 @@ The `actionview-mcp` server exposes ActionView's queue to AI agents over the Mod
 ### `list_entries`
 List active (non-archived) entries.
 
-**Args:** `type?`, `severity?`, `source?`, `search?` (all optional).
+**Args (all optional):** `type`, `severity`, `source`, `tags` (comma-separated), `tagMode` (`any`/`all` — how multiple tags combine; defaults to the server config), `search`, `view` (apply a saved view by id or name, which supplies its `type` + `tags`), `sort` (`created`/`priority`/`severity`/`title`), `dir` (`asc`/`desc`).
 
 **Returns:** `{ count, entries[] }`. Each entry includes its full `content` and `actions`.
 
-Use this first when the user says "what's in my queue" or before deciding what to act on.
+Use this first when the user says "what's in my queue" or before deciding what to act on. With no `sort`, entries come back in the dashboard's canonical order (pinned → priority → severity → createdAt). `tagMode=all` is handy for narrowing (e.g. `tags="work,urgent"` + `tagMode=all`).
 
 ### `get_entry`
 Fetch one entry by ID. Supports prefix matching — `get_entry("a3f")` works if there's exactly one entry whose ID starts with `a3f`. Returns `{ error: "Ambiguous ID", matches: [...] }` if multiple match.
@@ -119,9 +119,11 @@ See [templates.md](templates.md).
 | User says... | Tool(s) |
 |--------------|---------|
 | "What's pending?" / "Show my queue" | `list_entries` |
+| "Show only my work items" / "What's in the Personal view?" | `list_entries` (`view="work"` / `view="personal"`) |
 | "Tell me about the PR review for #482" | `list_entries` (filter `type=pr-review`) → `get_entry` |
 | "Bump that PR review to high severity" | `get_entry` → `update_entry` |
 | "Add an `urgent` tag to all critical alerts" | `list_entries` (filter `severity=critical`) → loop `update_entry` |
+| "Which backend items are also urgent?" | `list_entries` (`tags="backend,urgent"`, `tagMode=all`) |
 | "Append this finding to the deploy entry" | `get_entry` → `update_entry` with the appended `content` array |
 | "Approve PR #482" / "Post that comment" | Not an MCP operation. Direct the user to click the button in the dashboard. |
 | "Dismiss the disk-usage alert" | `list_entries` → `dismiss_entry` |

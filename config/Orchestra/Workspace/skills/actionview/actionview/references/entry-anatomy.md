@@ -15,7 +15,7 @@ Full schema reference for ActionView entries (schema v1). Source of truth: `sche
 | `subtitle` | string | no | — | Secondary text. Good for repo/branch/author one-liners. |
 | `severity` | enum | no | `medium` | `low` \| `medium` \| `high` \| `critical`. Drives sort order and color. |
 | `icon` | string | no | — | Lucide icon name (e.g., `git-pull-request`, `alert-triangle`). |
-| `tags` | string[] | no | `[]` | Free-form filter tags. |
+| `tags` | string[] | no | `[]` | Free-form filter tags. Power the dashboard's filtering and **saved views** (e.g. a "Work" view = entries tagged `work`), so tag consistently. |
 | `content` | block[] | no | `[]` | Body — see [content-blocks.md](content-blocks.md). |
 | `actions` | action[] | no | `[]` | Entry-level buttons — see [actions.md](actions.md). |
 | `groupId` | string | no | — | Group related entries (same CI run, same repo). |
@@ -25,7 +25,7 @@ Full schema reference for ActionView entries (schema v1). Source of truth: `sche
 
 ## Sort order in the dashboard
 
-Pinned → priority (desc) → severity (desc) → createdAt (desc).
+Default: pinned → priority (desc) → severity (desc) → createdAt (desc). The user can also re-sort the list by created / priority / severity / title in either direction, and slice it with **saved views** (filter presets by tag and/or type).
 
 ## Severity guidance
 
