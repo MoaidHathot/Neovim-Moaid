@@ -1,4 +1,5 @@
 {
+	"defaultReadinessTimeoutSeconds": 7,
 	"services": [
 		{
 			"name": "m365-remote-mcps",
@@ -21,9 +22,7 @@
 				"ASPNETCORE_ENVIRONMENT": "Production"
 			},
 			"readiness": {
-				"stdoutPattern": "Now listening on",
-				"healthCheckUrl": "http://localhost:5113/mcp",
-				"timeoutSeconds": 3
+				"stdoutPattern": "Now listening on"
 			}
 		},
 		{
@@ -37,8 +36,7 @@
 			"required": false,
 			"forceKill": true,
 			"readiness": {
-				"stdoutPattern": "Now listening on",
-				"timeoutSeconds": 3
+				"stdoutPattern": "Now listening on"
 			}
 		}
 	]
