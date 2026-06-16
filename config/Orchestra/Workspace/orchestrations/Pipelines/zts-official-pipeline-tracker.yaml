@@ -3,7 +3,7 @@ name: zts-official-pipeline-tracker
 description: scheduled tracker for active Azure DevOps pipeline runs
 version: 1.0.0
 tags: ["ZTS", "pipelines", "MSFT", "Azure-DevOps", "Pipeline", "Tracker", "auto"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 timeoutSeconds: 7200
 variables:
   pollIntervalSeconds: "300"

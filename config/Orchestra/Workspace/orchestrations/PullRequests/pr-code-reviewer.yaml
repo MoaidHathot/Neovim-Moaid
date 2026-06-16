@@ -3,7 +3,7 @@ description: |
   Reviews or follows up on a single Pull Request using six expert reviewers (.NET Expert, Principal Software Engineer, Security Expert, DurableTasksFramework Expert, liabadi persona, ohads persona). Uses PowerReview open to create or refresh the session, then reviewers use PowerReview MCP on demand for metadata, diffs, files, threads, replies, and draft comments. Handles new PRs, new PR iterations, and replies to comments created by reviewer agents. Correlates with WorkIQ for related organizational context. Tracks PR review state via Zakira.Exchange. Produces an ActionView summary of all draft feedback.
 version: 1.1.0
 tags: ["ZTS", "MSFT", "PR", "Code-Review", "auto"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 
 inputs:
   prData:
@@ -785,7 +785,7 @@ steps:
     dependsOn: [open-review-session]
     systemPromptFile: "{{vars.liabadiDir}}/pr.persona.liabadi.systemPrompt.md"
     userPromptFile: "{{vars.liabadiDir}}/pr.persona.liabadi.userPrompt.md"
-    model: claude-opus-4.6
+    model: claude-opus-4.8
     mcps: [powerreview]
     reasoningLevel: High
     skillDirectories:
@@ -797,7 +797,7 @@ steps:
     dependsOn: [open-review-session]
     systemPromptFile: "{{vars.ohadsDir}}/pr.persona.ohads.systemPrompt.md"
     userPromptFile: "{{vars.ohadsDir}}/pr.persona.ohads.userPrompt.md"
-    model: claude-opus-4.6
+    model: claude-opus-4.8
     mcps: [powerreview]
     reasoningLevel: High
     skillDirectories:

@@ -8,7 +8,7 @@ description: |
   meetings, etc.) and verify connectivity end to end.
 version: 1.0.0
 tags: ["debug", "diagnostics", "m365", "teams"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 defaultStepTimeoutSeconds: 380
 
 inputs:

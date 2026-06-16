@@ -8,7 +8,7 @@ description: |
   step produces the final markdown.
 version: 3.0.0
 tags: ["ZTS", "pipelines", "MSFT", "Pipeline", "Tracker", "on-demand", "favorite"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 timeoutSeconds: 7200
 
 trigger:

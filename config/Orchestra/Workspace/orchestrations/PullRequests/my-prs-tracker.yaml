@@ -25,7 +25,7 @@ description: |
 
 version: 1.0.0
 tags: ["ZTS", "MSFT", "PR", "auto", "track", "my-prs"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 
 metadata:
   owner: Moaid Hathot

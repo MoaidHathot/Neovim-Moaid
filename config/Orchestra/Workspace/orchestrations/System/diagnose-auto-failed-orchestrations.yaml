@@ -25,7 +25,7 @@ description: |
 
 version: 1.0.0
 tags: ["system", "diagnostics", "self-healing", "scheduled", "orchestra"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 
 variables:
   runsRoot: "{{env.LOCALAPPDATA}}/Orchestra/runs"

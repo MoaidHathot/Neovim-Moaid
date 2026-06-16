@@ -44,7 +44,7 @@ description: |
     }
 version: 1.0.0
 tags: ["utility", "microsoft-todo", "graph", "shared", "reusable", "auto"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 
 metadata:
   owner: Moaid Hathot

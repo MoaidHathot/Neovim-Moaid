@@ -20,7 +20,7 @@ description: |
   production-quality long-lived orchestrations.
 version: 1.0.0
 tags: [meta, generator, tooling, system, fast]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 
 inputs:
   description:
@@ -77,7 +77,7 @@ steps:
 
       a. Use only documented Orchestra properties (refer to your loaded
          skills). Never invent fields.
-      b. Set `defaultModel: claude-opus-4.7-1m-internal` at the top level. Do NOT repeat
+      b. Set `defaultModel: claude-opus-4.8` at the top level. Do NOT repeat
          `model:` on every step.
       c. Use kebab-case for orchestration and step names; camelCase for
          variables and inputs.

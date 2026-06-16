@@ -2,7 +2,7 @@
 name: pr-review-as-ohads
 description: Review a single PR using the ohads persona by loading the matching skill and emitting structured review comments.
 skill: pr-review-as-ohads
-model: claude-opus-4.6
+model: claude-opus-4.8
 reasoningLevel: high
 ---
 

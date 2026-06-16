@@ -8,7 +8,7 @@ trigger:
 inputs:
   modelName:
     type: string
-    description: The model name to test, such as claude-opus-4.7-1m-internal.
+    description: The model name to test, such as claude-opus-4.8.
     required: true
 steps:
   - name: test-model

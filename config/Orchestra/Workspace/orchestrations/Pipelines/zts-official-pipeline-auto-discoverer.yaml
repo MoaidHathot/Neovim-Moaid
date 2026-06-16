@@ -23,7 +23,7 @@ description: |
   transition (success) or by the investigator (failure).
 version: 2.1.0
 tags: ["ZTS", "pipelines", "MSFT", "Azure-DevOps", "Pipeline", "auto-discovery", "auto"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 timeoutSeconds: 7200
 trigger:
   type: scheduler

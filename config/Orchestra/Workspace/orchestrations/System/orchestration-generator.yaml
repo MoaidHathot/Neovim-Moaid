@@ -7,7 +7,7 @@ description: >
   during generation. Dedicated steps handle file saving and optional registration.
 version: 2.0.0
 tags: [meta, generator, tooling, system]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 
 inputs:
   description:
@@ -62,7 +62,7 @@ steps:
          or commentary in your final output.
       2. Use the knowledge from your loaded skills to ensure correctness. Only
          use documented properties — never invent fields.
-      3. Use 'claude-opus-4.7-1m-internal' as the default model unless the user specifies
+      3. Use 'claude-opus-4.8' as the default model unless the user specifies
          otherwise.
       4. Use kebab-case for orchestration and step names, camelCase for
          variables and inputs.

@@ -1,7 +1,7 @@
 name: pr-extract-persona
 description: |
   Mines an engineer's last 200 PR review comments from Azure DevOps and uses
-  claude-opus-4.7-1m-internal with high reasoning to distill their reviewing expertise into a
+  claude-opus-4.8 with high reasoning to distill their reviewing expertise into a
   reusable Agent Skill (per agentskills.io spec) plus companion system and
   user prompts that another agent can use to review a PR through that
   engineer's persona.
@@ -12,7 +12,7 @@ description: |
   step.
 version: 1.0.0
 tags: ["PR", "Code-Review", "persona", "skills", "MSFT", "manual"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 
 inputs:
   engineerName:
@@ -131,7 +131,7 @@ steps:
   - name: analyze-persona
     type: Prompt
     dependsOn: [fetch-review-comments]
-    model: claude-opus-4.7-1m-internal
+    model: claude-opus-4.8
     systemPrompt: |
       You are an expert at distilling an engineer's reviewing persona from
       their actual PR review comments. You will read up to 200 of their real
@@ -201,7 +201,7 @@ steps:
   - name: generate-skill
     type: Prompt
     dependsOn: [resolve-engineer, analyze-persona]
-    model: claude-opus-4.7-1m-internal
+    model: claude-opus-4.8
     systemPrompt: |
       You generate Agent Skills that follow the spec at https://agentskills.io/what-are-skills.
 
@@ -263,7 +263,7 @@ steps:
   - name: generate-system-prompt
     type: Prompt
     dependsOn: [resolve-engineer, analyze-persona, generate-skill]
-    model: claude-opus-4.7-1m-internal
+    model: claude-opus-4.8
     systemPrompt: |
       You generate a reusable PR review system prompt that another
       orchestration step can drop in alongside the matching Skill produced in
@@ -314,7 +314,7 @@ steps:
   - name: generate-user-prompt
     type: Prompt
     dependsOn: [resolve-engineer, analyze-persona, generate-skill, generate-system-prompt]
-    model: claude-opus-4.7-1m-internal
+    model: claude-opus-4.8
     systemPrompt: |
       You generate a reusable PR review user prompt that another
       orchestration step can drop in alongside the matching Skill and system

@@ -3,7 +3,7 @@ description: |
   Shared dispatcher for PR code reviews. Accepts either a PR URL or PR data, opens or refreshes the PowerReview session, uses Zakira.Exchange plus PowerReview session/thread state to decide whether review work is needed, builds the enriched prData contract, and invokes pr-code-reviewer. Used by both scheduled and manual PR review entrypoints.
 version: 1.0.0
 tags: ["ZTS", "MSFT", "PR", "Code-Review", "dispatcher"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 
 inputs:
   prUrl:

@@ -30,7 +30,7 @@ description: |
   the next tracker tick will skip the item (it is no longer in AI-Inbox).
 version: 1.1.0
 tags: ["personal", "raindrop", "auto", "processor"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 
 inputs:
   raindropId:

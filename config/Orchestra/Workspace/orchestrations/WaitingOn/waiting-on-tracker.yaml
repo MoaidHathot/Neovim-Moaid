@@ -27,7 +27,7 @@ description: |
 
 version: 1.0.0
 tags: ["ZTS", "MSFT", "waiting-on", "auto", "track", "followup"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 
 metadata:
   owner: Moaid Hathot

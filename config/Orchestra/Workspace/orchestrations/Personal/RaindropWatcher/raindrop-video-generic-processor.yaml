@@ -11,7 +11,7 @@ description: |
   without doing a full vision pass.
 version: 1.1.0
 tags: ["personal", "raindrop", "auto", "video", "generic"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 
 inputs:
   raindropId: { type: string, required: true }

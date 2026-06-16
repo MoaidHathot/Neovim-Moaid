@@ -47,7 +47,7 @@ description: |
   temp files from prior orchestrator crashes).
 version: 1.0.0
 tags: ["cleanup", "system"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 
 inputs:
   dryRun:

@@ -14,7 +14,7 @@ description: |
   the watched workspace directory only.
 version: 1.0.0
 tags: ["meta", "ephemeral", "self-healing", "system", "manual", "favorite"]
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 # Orchestration-level cap. Must hold the self-healing-controller step's
 # timeoutSeconds (130000) plus a small buffer for validate-inputs (~60s)
 # and format-output (Transform, ~ms). 132000 = 130000 + 2000s headroom.

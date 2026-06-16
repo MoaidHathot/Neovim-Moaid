@@ -4,7 +4,7 @@ version: "2.1.0"
 tags: ["research", "utils", "manual", "grounded"]
 trigger:
   type: manual
-defaultModel: claude-opus-4.7-1m-internal
+defaultModel: claude-opus-4.8
 timeoutSeconds: 43200
 defaultRetryPolicy:
   maxRetries: 2
