@@ -101,8 +101,7 @@
         "--auth-mode=user-auth",
         "--tenant-id=${CORP_TENANT_ID}",
         "--public-client-id=${VSCODE_CLIENT_ID}",
-        "--token-cache-name=mcp-proxy",
-        "--defer-connection"
+        "--token-cache-name=mcp-proxy"
       ],
       "environment": {
         "AZURE_SCOPES": "${VSCODE_AUDIENCE}/.default"
