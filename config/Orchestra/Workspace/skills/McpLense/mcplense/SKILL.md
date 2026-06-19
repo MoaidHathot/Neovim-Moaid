@@ -1,58 +1,62 @@
 ---
 name: mcplense
-description: Inspect and scan Model Context Protocol (MCP) servers - list tools/resources/prompts, classify auth surface (anonymous / RFC 9728 OAuth / Bearer / custom challenge), capture TLS posture, audit OAuth/RFC 8414 authorization-server metadata, run behavioural probes (server-initiated sampling/elicitation/roots, call-non-existent-tool), and produce structured JSON reports with diff/baseline support. Use when the user asks to "inspect / scan / audit / list / test / observe an MCP server", "list tools/resources/prompts on an MCP", "diff two MCP scans", "find leaky tool descriptions", "check OAuth/auth setup of an MCP", "fetch a resource from an MCP", "set per-target headers on an MCP", or works with the `mcplense` CLI / `McpLense.Cli` dotnet tool / `McpLense` NuGet library.
+description: Explore, debug, and security-scan Model Context Protocol (MCP) servers - list tools/resources/prompts, call tools (and generate example args), classify auth surface (anonymous / RFC 9728 OAuth / Bearer / custom challenge), capture TLS posture, audit OAuth/RFC 8414 authorization-server metadata, run behavioural probes (server-initiated sampling/elicitation/roots, call-non-existent-tool, malformed-input handling), and produce stable JSON reports with diff/baseline support. The opt-in `analyze` layer turns the facts into severity-rated security findings (prompt-injection signals, anonymous destructive tools, weak CORS, TLS issues, rug-pull / tool-poisoning detection) with a `--fail-on` CI gate and SARIF output. Also: `explain` (plain-language summary), `doctor` (connectivity triage), `--trace` (JSON-RPC wire log), and `serve` (run McpLense itself as an MCP server). Use when the user asks to "inspect / scan / audit / analyze / explain / debug an MCP server", "list or call tools on an MCP", "find prompt injection or insecure tools", "diff two MCP scans", "check OAuth/auth setup of an MCP", "why won't my MCP connect", or works with the `mcplense` CLI / `McpLense.Cli` dotnet tool / `McpLense` NuGet library.
 license: Unlicense
-compatibility: Requires the `mcplense` dotnet tool (`dotnet tool install -g McpLense.Cli`) and the .NET 10 runtime. Network access required for remote MCPs. Optional - Azure CLI / interactive browser for Entra-protected MCPs.
+compatibility: Requires the .NET 10 runtime. Run without installing via `dnx McpLense.Cli <args>`, or install the tool with `dotnet tool install -g McpLense.Cli` (command: `mcplense`). Network access required for remote MCPs. Optional - Azure CLI / interactive browser for Entra-protected MCPs.
 metadata:
   author: Moaid Hathot
   source: https://github.com/MoaidHathot/McpLense
-  version: "0.4.0"
+  version: "0.17.0"
 ---
 
 # mcplense
 
-`mcplense` is a CLI + library for inspecting and scanning **Model Context Protocol (MCP)** servers. It connects, classifies auth, enumerates capabilities, captures TLS facts, runs behavioural probes, and emits a stable structured JSON report. Fact-only: the tool extracts data, consumers classify.
+`mcplense` is a CLI + library for exploring, debugging, and security-scanning **Model Context Protocol (MCP)** servers. It connects, classifies auth, enumerates capabilities, captures TLS facts, runs behavioural probes, and emits a stable structured JSON report. The scan is fact-only (it extracts data, never labels it); the opt-in `analyze` layer is a separate consumer that turns the facts into severity-rated security **findings**.
 
 ## When to invoke this skill
 
 Trigger whenever the user wants to:
 
 - **List or audit an MCP server**: tools / resources / prompts / capabilities / instructions.
+- **Call a tool** (or generate an example call from its input schema).
+- **Security-scan / analyze an MCP**: severity-rated findings, a CI gate, SARIF, rug-pull detection.
+- **Explain an MCP** in plain language ("what is this and is it safe?").
 - **Classify auth**: anonymous? RFC 9728 OAuth? bearer-without-metadata? custom challenge?
-- **Run a full audit**: `scan` produces a structured per-check JSON report.
-- **Compare two scans**: `diff` produces a structural delta between baselines.
+- **Diagnose connectivity** ("why won't my MCP connect?") or **trace** the JSON-RPC wire.
+- **Compare two scans** (`diff`) or **detect drift** since an approved baseline.
 - **Observe server-initiated traffic**: sampling, elicitation, roots, notifications.
-- **Fetch a resource verbatim** from an MCP.
-- **Call a tool** with arguments and capture the response.
 - **Add per-target headers** (organization / project / tenant identifiers) to an MCP fleet.
 - **Set up Entra ID / Azure CLI / Bearer auth** for an MCP.
+- **Run McpLense as an MCP server** so an agent can audit other MCPs.
 
 ## Quickstart
 
 ```bash
-# Install once
-dotnet tool install -g McpLense.Cli
+# Run without installing (.NET 10) - or `dotnet tool install -g McpLense.Cli` then use `mcplense`
+dnx McpLense.Cli inspect https://mcp.example.com/ --format json
 
-# Inspect what an MCP exposes
-mcplense inspect https://mcp.example.com/ --format json
+# Security findings (opt-in analysis layer over the fact-only scan) + CI gate
+dnx McpLense.Cli analyze https://mcp.example.com/ --fail-on high
+dnx McpLense.Cli analyze https://mcp.example.com/ --format sarif > mcplense.sarif
 
-# Full audit (every check, JSON report)
-mcplense scan https://mcp.example.com/ --format json
+# Plain-language summary / connectivity triage
+dnx McpLense.Cli explain https://mcp.example.com/
+dnx McpLense.Cli doctor  https://mcp.example.com/
 
-# List capability subset
-mcplense tools     https://mcp.example.com/ --format json
-mcplense resources https://mcp.example.com/ --format json
-mcplense prompts   https://mcp.example.com/ --format json
+# Full fact-only audit (every check, JSON report)
+dnx McpLense.Cli scan https://mcp.example.com/ --format json
 
-# Call a tool
-mcplense call <tool-name> https://mcp.example.com/ --args '{"arg":"value"}'
+# Call a tool (or generate a ready-to-edit example from its schema)
+dnx McpLense.Cli call <tool-name> https://mcp.example.com/ --args '{"arg":"value"}'
+dnx McpLense.Cli call <tool-name> https://mcp.example.com/ --example
 
-# Save a baseline + diff later
-mcplense scan https://mcp.example.com/ --baseline ./baselines/
-mcplense scan https://mcp.example.com/ --diff ./baselines/mcp.example.com/<ts>.json
+# Save a baseline + diff later; or rug-pull detection
+dnx McpLense.Cli scan https://mcp.example.com/ --baseline ./baselines/
+dnx McpLense.Cli analyze https://mcp.example.com/ --approve approved.json
+dnx McpLense.Cli analyze https://mcp.example.com/ --since approved.json --fail-on high
 ```
 
-The `--format text|json|dumpify` flag controls output. **Default to `json`** when piping into other tools or when you want stable wire shape. Use the bare command + `text` for human reading.
+The `--format text|json|markdown|sarif|dumpify` flag controls output. **Default to `json`** when piping into other tools. Use `text` (the default) for human reading, `markdown` for a shareable write-up, and `sarif` for findings in CI.
 
 ## Choosing the right command
 
@@ -60,16 +64,53 @@ The `--format text|json|dumpify` flag controls output. **Default to `json`** whe
 | --- | --- |
 | "What tools does this MCP have?" | `mcplense tools <url> --format json` |
 | "Inspect this MCP" | `mcplense inspect <url> --format json` |
-| "Audit / scan / security-check this MCP" | `mcplense scan <url> --format json` |
+| "Explain / summarize this MCP" | `mcplense explain <url>` |
+| "Is this MCP secure / find vulnerabilities" | `mcplense analyze <url>` (add `--fail-on high` for a gate, `--format sarif` for CI) |
+| "Audit / scan this MCP (facts only)" | `mcplense scan <url> --format json` |
+| "Did this MCP's tools change since I approved it?" | `mcplense analyze <url> --approve f.json` then `--since f.json` |
 | "Is this MCP authed? what kind?" | `mcplense auth-scan <url> --format json` OR `mcplense scan <url> --classify-only` |
-| "Diff two scans" | `mcplense diff <before>.json <after>.json` |
+| "Why won't this MCP connect?" | `mcplense doctor <url>` |
+| "Show me the JSON-RPC traffic" | add `--trace` to any command |
+| "Re-run as it changes" | add `--watch <seconds>` to a read-only command |
+| "How do I call this tool?" | `mcplense call <tool> <url> --example` |
 | "Call this tool" | `mcplense call <tool> <url> --args '<json>'` |
 | "Read this resource" | `mcplense read <uri> <url>` OR `mcplense fetch-resource <uri> <url>` |
-| "Send a prompt" | `mcplense prompt <name> <url> --args '<json>'` |
+| "Diff two scans" | `mcplense diff <before>.json <after>.json` |
 | "Watch server-initiated traffic" | `mcplense observe <url> --timeout 30` |
+| "Run McpLense as an MCP server" | `mcplense serve` |
 | "Log in / out to my MCP profile" | `mcplense login --profile <name>` / `mcplense logout` |
 
 See [`references/COMMANDS.md`](references/COMMANDS.md) for every command + flag.
+
+## Security findings (`analyze`)
+
+`scan` is fact-only. `mcplense analyze <url>` runs the same scan, then applies a built-in rule pack
+and emits a `FindingsReport` (`servers[].findings[]`, each with `ruleId`, `severity` info→critical,
+`evidencePath` into the scan facts, and `remediation`). Rules cover prompt-injection signals (hidden
+bidi/zero-width chars + instruction-hijacking phrases in tool descriptions), anonymous servers
+exposing destructive/open-world tools, open-shape input schemas, weak CORS, mixed content, TLS
+posture, error info-leak, and rug-pull (tool changed vs an approved baseline).
+
+- `--fail-on <severity>` exits non-zero at/above the threshold (CI gate).
+- `--format sarif` emits SARIF 2.1.0 for GitHub code scanning.
+- `--approve <file>` snapshots the current tool hashes; `--since <file>` flags any change as `rug-pull`.
+- Rules + severities are config-driven via the top-level `analysis` block in `McpLense.Config.json`
+  (`analysis.rules.<id>.enabled` / `.severity`, `analysis.failOn`).
+
+See [`docs/analysis-rules.md`](../../docs/analysis-rules.md) for the rule reference.
+
+## Learning & debugging
+
+- `mcplense explain <url>` - plain-language narrative (identity, auth, what it exposes, notable tools,
+  findings summary). `--format markdown` for a shareable write-up.
+- `mcplense call <tool> <url> --example` - generate a filled-in `--args` template from the tool's
+  input schema (does not invoke).
+- `mcplense doctor <url>` - staged connectivity triage (DNS → TCP → TLS → MCP initialize → auth) with
+  a fix-it hint per failed stage; non-zero exit on failure.
+- `--trace` - log every HTTP MCP request/response (method, URL, JSON-RPC body, status, timing) to stderr.
+- `--watch <seconds>` - re-run a read-only command on an interval, flagging when the output changed.
+- `mcplense serve` - run McpLense as a stdio MCP server (tools: `mcplense_inspect` / `_scan` /
+  `_analyze` / `_explain`) so an agent can audit other MCPs.
 
 ## Authentication: pick one strategy
 
@@ -170,6 +211,7 @@ See [`references/CONFIG.md`](references/CONFIG.md) for the full config schema.
         "resources":            { ... },
         "stdio":                { ... },   // stdio-only
         "behavior.callNonExistentTool": { ... },
+        "behavior.callMalformed":       { ... },   // opt-in: malformed-input handling
         "behavior.serverInitiated":     { ... },   // opt-in observation
         "metrics":              { ... },   // per-text-field char/line/url counts
         "hashing":              { ... }    // per-item contentHash + serverFingerprint
@@ -180,19 +222,27 @@ See [`references/CONFIG.md`](references/CONFIG.md) for the full config schema.
 }
 ```
 
-Every field is a fact, not a label. Downstream classification = jq filters; see [`references/CLASSIFICATION.md`](references/CLASSIFICATION.md) for ready-made recipes and [`scripts/`](scripts/) for handy one-liners.
+Every field is a fact, not a label. To turn facts into severity-rated findings use `mcplense analyze`
+(the built-in rule pack); for custom downstream classification, jq filters work too — see
+[`references/CLASSIFICATION.md`](references/CLASSIFICATION.md) and [`scripts/`](scripts/).
 
 ## Frequently useful flags
 
 | Flag | Effect |
 | --- | --- |
-| `--format json` | Stable JSON wire shape (recommended for piping). |
+| `--format json` | Stable JSON wire shape (recommended for piping). `markdown`, `sarif`, `dumpify` also available. |
+| `--findings` (scan) / `analyze` | Run the analysis layer; `analyze` emits a `FindingsReport`. |
+| `--fail-on <severity>` | CI gate: exit non-zero if a finding ≥ severity (info/low/medium/high/critical). |
+| `--approve <file>` / `--since <file>` | Snapshot tool hashes / detect rug-pull drift since the snapshot. |
+| `--example` (call) | Print a generated `--args` template from the tool's input schema (no invocation). |
+| `--trace` | Log every HTTP MCP request/response (JSON-RPC body, status, timing) to stderr. |
+| `--watch <seconds>` | Re-run a read-only command on an interval; flag when output changed. |
 | `--quiet` | Suppress all stderr chatter. |
 | `--verbose` | Show overlay header values + auth-resolution trace + per-probe diagnostics. |
 | `--no-auth` | Skip every auth path; useful for diff'ing the bare unauthenticated surface. |
 | `--profile <name>` | Force a specific profile, bypass auto-pick. |
 | `--header NAME=VALUE` | Override / add a header for this run only. |
-| `--enable <id>` / `--disable <id>` | Force a scan check on / off. |
+| `--enable <id>` / `--disable <id>` | Force a scan check on / off (e.g. `--enable behavior.callMalformed`). |
 | `--baseline <dir>` | After scan, write the report under `<dir>/<host>/<UTC-timestamp>.json`. |
 | `--diff <baseline.json>` | After scan, emit a structural diff vs the baseline instead of the report. |
 | `--parallel-servers N` | Fleet scans: how many servers concurrently (default 1). |
@@ -221,8 +271,9 @@ Prefer **default `text`** for one-off human inspection. Use **`dumpify`** when t
 ## See also
 
 - [`references/COMMANDS.md`](references/COMMANDS.md) — every command + flag.
-- [`references/CONFIG.md`](references/CONFIG.md) — full `McpLense.Config.json` schema (`targets[]`, `targetPatterns[]`, `scan.checks.*`, `output`).
+- [`references/CONFIG.md`](references/CONFIG.md) — full `McpLense.Config.json` schema (`targets[]`, `targetPatterns[]`, `scan.checks.*`, `analysis.*`, `output`).
 - [`references/AUTH.md`](references/AUTH.md) — auth profiles, scope substitution, MSAL cache, Azure CLI flow.
 - [`references/CHECKS.md`](references/CHECKS.md) — per-`IScanCheck` reference: what each check emits and how it's enabled.
 - [`references/CLASSIFICATION.md`](references/CLASSIFICATION.md) — jq recipes for downstream policy / risk classification.
+- [`docs/analysis-rules.md`](../../docs/analysis-rules.md) — built-in `analyze` findings rules, the `analysis` config block, SARIF, and rug-pull detection.
 - [`scripts/`](scripts/) — copy-paste-ready jq one-liners (top scopes, tools without annotations, expired TLS certs, etc.).

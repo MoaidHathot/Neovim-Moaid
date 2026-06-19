@@ -183,6 +183,7 @@ steps:
 
   - name: gate-empty
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [list-inbox]
     systemPrompt: |
       You are a gate-check assistant. Your only job is to decide whether the
@@ -202,168 +203,256 @@ steps:
     timeoutSeconds: 120
 
   - name: load-state
-    type: Prompt
+    type: Script
+    shell: pwsh
     dependsOn: [gate-empty]
-    systemPrompt: |
-      You are a state retrieval assistant. You have Zakira.Exchange MCP tools.
-      The category is locked to raindrop-watcher-state. The memory key is the
-      raindrop id (as a string). Stored records carry status, noteHash,
-      attempts, lastError, queuedAt, startedAt, processedAt, etc.
-    userPrompt: |
-      For every raindrop in this array, look up its existing memory record
-      using the raindrop's `_id` (as a string) as the key. Use get_memory.
-      If no record exists, treat the entry as null.
+    # Deterministic Zakira state lookup. Previously an LLM Prompt step that intermittently
+    # finished with a prose "record exists" status instead of the record fields, which forced
+    # the downstream scheduler to improvise raw zakira.db queries (the _qz.py scratch files).
+    # Mirrors the proven pattern in zakira-find-or-skip / daily-morning-digest: shell out to the
+    # Zakira.Exchange CLI and parse the `Data:` JSON payload. No LLM in the data path, so the
+    # records always arrive complete and structured.
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
 
-      Raindrops:
-      {{gate-empty.output}}
+      $raindropsJson = $args[0]
+      $dbPath        = $args[1]
+      if ([string]::IsNullOrWhiteSpace($raindropsJson)) { throw 'raindrops JSON is required.' }
+      if ([string]::IsNullOrWhiteSpace($dbPath))        { throw 'dbPath is required.' }
 
-      Output a single JSON object mapping raindrop id (string) to either the
-      stored record JSON or null. Output ONLY the JSON, no commentary.
-    mcps: [zakira]
+      $category  = 'raindrop-watcher-state'
+      $raindrops = ConvertFrom-Json -InputObject $raindropsJson -NoEnumerate -DateKind String -ErrorAction Stop
+
+      # Extract the `Data:` JSON payload from the Zakira CLI's human-formatted record output.
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+            $endIdx = $j; break
+          }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      $map = [ordered]@{}
+      foreach ($r in @($raindrops)) {
+        if ($null -eq $r) { continue }
+        $idProp = $r.PSObject.Properties['_id']
+        $key = if ($idProp) { [string]$idProp.Value } else { '' }
+        if ([string]::IsNullOrWhiteSpace($key)) { continue }
+
+        $cliOutput = & dnx Zakira.Exchange --yes -- --db $dbPath get $category $key 2>&1
+        $cliExit = $LASTEXITCODE
+
+        if ($cliExit -ne 0) {
+          # exit 1 = not found; any other non-zero = transient CLI error. Either way report null
+          # so the scheduler's R6 (new) treats it as fresh rather than silently dropping it.
+          $map[$key] = $null
+          continue
+        }
+
+        $dataJson = Get-DataJsonFromCliOutput -Lines $cliOutput
+        if ([string]::IsNullOrWhiteSpace($dataJson)) { $map[$key] = $null; continue }
+        try { $map[$key] = (ConvertFrom-Json -InputObject $dataJson -DateKind String -ErrorAction Stop) }
+        catch { $map[$key] = $null }
+      }
+
+      # Always emit an object (even {}), so downstream gets clean JSON to ConvertFrom-Json.
+      if ($map.Count -eq 0) { '{}' } else { $map | ConvertTo-Json -Depth 100 -Compress }
+    arguments:
+      - "{{gate-empty.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
     timeoutSeconds: 300
 
   - name: select-dispatchable
-    type: Prompt
+    type: Script
+    shell: pwsh
     dependsOn: [gate-empty, load-state]
-    systemPrompt: |
-      You are a queue scheduler. You have access to orchestra_complete.
+    # Deterministic queue scheduler. Previously an LLM Prompt step that, when its input was
+    # incomplete, improvised raw zakira.db queries (the _qz.py scratch). Scheduling is pure,
+    # rule-based logic (R1-R6 on status/attempts/age) -- ported verbatim to PowerShell so it is
+    # reproducible and never scripts or miscalculates. The fuzzy work (classification) stays an
+    # LLM step in raindrop-processor. Output shape is identical to the old prompt, so every
+    # downstream step (mark-queued, strip-workflow-tags, dead-letter-move, dispatch,
+    # publish-rolling-status) is unchanged.
+    #
+    # RULES (first match wins), with now = current UTC:
+    #   R1 in-flight     status in {queued,processing} AND ageMinutes <= stuck -> skip
+    #   R2 stuck         status in {queued,processing} AND ageMinutes >  stuck -> treat as failed
+    #   R3 dead-letter   failed AND attempts >= maxAttempts                    -> deadLetter (no dispatch)
+    #   R4 retry         failed AND attempts <  maxAttempts                    -> dispatch (retry-failed/stuck-retry)
+    #   R5 reprocess     status in {completed,dead-lettered}                   -> dispatch (priorAttempts=0)
+    #   R6 new           no record / unknown status                           -> dispatch (priorAttempts=0)
+    # Cap: first maxDispatchPerTick dispatchables -> selected, rest -> deferred. Dead-letter uncapped.
+    script: |
+      $ErrorActionPreference = 'Stop'
 
-      ## CORE CONTRACT (read this twice)
+      $raindropsJson = $args[0]
+      $stateJson     = $args[1]
+      $maxDispatch   = 0; try { $maxDispatch = [int]$args[2] } catch { $maxDispatch = 0 }
+      $maxAttempts   = 0; try { $maxAttempts = [int]$args[3] } catch { $maxAttempts = 0 }
+      $stuckMin      = 0; try { $stuckMin    = [int]$args[4] } catch { $stuckMin    = 0 }
 
-      Being in `AI-Inbox` IS the trigger for processing. Anything the user
-      drops or drags into `AI-Inbox` will be (re)processed on the next
-      tick. There is exactly ONE thing that prevents dispatch:
-
-        IN-FLIGHT PROTECTION
-        --------------------
-        If a raindrop's existing state record says status in
-        {queued, processing} AND its ageMinutes is <= stuckThresholdMinutes,
-        we are already processing it RIGHT NOW. Re-dispatching would race
-        with the in-flight processor. So we SKIP this tick and wait.
-
-      Everything else gets DISPATCHED. The state record is used only to
-      pick (a) what `reason` and `priorAttempts` to record, and (b) whether
-      to instead route the item to the dead-letter collection because the
-      retry budget is exhausted.
-
-      ## RULES (apply per item, first match wins)
-
-      R1. IN-FLIGHT PROTECTION
-          status in {"queued","processing"} AND ageMinutes <= stuckThresholdMinutes
-          -> SKIP (reason: "in-flight").
-
-      R2. STUCK RECLASSIFICATION (in-flight check expired)
-          status in {"queued","processing"} AND ageMinutes > stuckThresholdMinutes
-          -> Treat as failed (it must have died silently), then fall through
-             to R3/R4/R5/R6 below using the failed semantics. Record this
-             in the `stuckReclassified` output array for observability.
-
-      R3. DEAD-LETTER (only path that does NOT dispatch)
-          status == "failed" AND attempts >= maxAttempts
-          -> Add to the `deadLetter` output array. The dead-letter-move step
-             will move the raindrop OUT of AI-Inbox into AI-DeadLetter and
-             publish a critical ActionView entry. Do NOT also dispatch.
-
-      R4. RETRY FAILED
-          status == "failed" AND attempts < maxAttempts
-          -> DISPATCH (reason: "retry-failed"), priorAttempts = attempts
-             (continues the retry budget).
-
-      R5. USER REPROCESS
-          status in {"completed", "dead-lettered"}
-          -> DISPATCH (reason: "user-reprocess" for completed,
-             "user-recovery-from-dead-letter" for dead-lettered),
-             priorAttempts = 0 (fresh start).
-          Rationale: the processor moves completed items OUT to
-          AI-Processed; dead-letter-move puts failed items in
-          AI-DeadLetter. The ONLY way a raindrop with one of these
-          statuses ends up back in AI-Inbox is if the user manually
-          moved it. That is an unambiguous reprocess intent.
-
-      R6. NEW
-          No state record present
-          -> DISPATCH (reason: "new"), priorAttempts = 0.
-
-      ## HARD CAPS
-
-      - At most `maxDispatchPerTick` items can be in `selected` per tick.
-        If the cap is hit, surface the remainder in the `deferred` array.
-      - The dead-letter path is NOT subject to the cap; all qualifying
-        items go into `deadLetter` every tick.
-
-      ## NOTEHASH
-
-      Compute the noteHash for every selected/dispatched item as SHA-256
-      of the raindrop's `note` field (UTF-8; empty string when null). This
-      gets recorded in Zakira so future ticks can tell whether the user
-      edited the note. Note: under the new rules, a note edit doesn't
-      change dispatch behavior (R5 fires regardless), but the hash is
-      still useful for debugging and auditing.
-
-      ## EARLY EXIT
-
-      If after applying the rules nothing is selected AND nothing is to be
-      dead-lettered, call orchestra_complete with status 'success' and
-      reason 'Nothing to dispatch this tick.'
-
-    userPrompt: |
-      Inputs:
-        - now                  = current UTC time (compute it yourself).
-        - maxDispatchPerTick   = {{vars.maxDispatchPerTick}}
-        - maxAttempts          = {{vars.maxAttempts}}
-        - stuckThresholdMinutes = {{vars.stuckThresholdMinutes}}
-
-      Raindrops:
-      {{gate-empty.output}}
-
-      Existing state records (keyed by raindrop id as string):
-      {{load-state.output}}
-
-      Output a single JSON object exactly like this (no commentary):
-
-      {
-        "selected": [
-          {
-            "raindropId": "<id-as-string>",
-            "url": "<link>",
-            "title": "<title>",
-            "note": "<note or empty>",
-            "noteHash": "<sha256 hex>",
-            "tags": ["..."],
-            "addedAt": "<created>",
-            "reason": "<new|note-changed|retry-failed|stuck-retry|user-reprocess|user-recovery-from-dead-letter>",
-            "priorAttempts": <int>
-          }
-        ],
-        "skipped": [
-          { "raindropId": "<id-as-string>", "reason": "<short reason>" }
-        ],
-        "deferred": [
-          { "raindropId": "<id-as-string>", "reason": "max-dispatch-per-tick-reached" }
-        ],
-        "deadLetter": [
-          {
-            "raindropId": "<id-as-string>",
-            "url": "<link>",
-            "title": "<title>",
-            "attempts": <int>,
-            "lastError": "<short error string>",
-            "reason": "max-attempts-exceeded"
-          }
-        ],
-        "stuckReclassified": [
-          {
-            "raindropId": "<id-as-string>",
-            "priorStatus": "queued|processing",
-            "ageMinutes": <int>,
-            "newAttempts": <int>
-          }
-        ]
+      $nowUtc = (Get-Date).ToUniversalTime()
+      $raindrops = ConvertFrom-Json -InputObject $raindropsJson -NoEnumerate -DateKind String -ErrorAction Stop
+      $state = $null
+      if (-not [string]::IsNullOrWhiteSpace($stateJson)) {
+        try { $state = ConvertFrom-Json -InputObject $stateJson -DateKind String -ErrorAction Stop } catch { $state = $null }
       }
+
+      function Get-Field($obj, [string]$name) {
+        if ($null -eq $obj) { return $null }
+        $p = $obj.PSObject.Properties[$name]
+        if ($p) { return $p.Value } else { return $null }
+      }
+
+      function Get-NoteHash([string]$note) {
+        if ($null -eq $note) { $note = '' }
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+          $bytes = [System.Text.Encoding]::UTF8.GetBytes($note)
+          return (($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }) -join '')
+        } finally { $sha.Dispose() }
+      }
+
+      # Age basis: when the item entered its current in-flight state. Missing timestamps -> very
+      # old (never wedge an item in-flight forever).
+      function Get-AgeMinutes($rec, [string]$status, [datetime]$nowUtc) {
+        $candidates = New-Object System.Collections.Generic.List[string]
+        if ($status -eq 'processing') { $candidates.Add([string](Get-Field $rec 'startedAt')) }
+        $candidates.Add([string](Get-Field $rec 'queuedAt'))
+        $candidates.Add([string](Get-Field $rec 'startedAt'))
+        $candidates.Add([string](Get-Field $rec 'lastFailedAt'))
+        $candidates.Add([string](Get-Field $rec 'firstSeenAt'))
+        foreach ($c in $candidates) {
+          if (-not [string]::IsNullOrWhiteSpace($c)) {
+            try {
+              $ts = [datetimeoffset]::Parse($c, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+              return [int][math]::Floor(($nowUtc - $ts).TotalMinutes)
+            } catch { }
+          }
+        }
+        return [int]::MaxValue
+      }
+
+      $selected   = New-Object System.Collections.Generic.List[object]
+      $skipped    = New-Object System.Collections.Generic.List[object]
+      $deferred   = New-Object System.Collections.Generic.List[object]
+      $deadLetter = New-Object System.Collections.Generic.List[object]
+      $stuck      = New-Object System.Collections.Generic.List[object]
+      $dispatch   = New-Object System.Collections.Generic.List[object]   # candidates, capped later
+
+      function New-Dispatch($id, $url, $title, $note, $noteHash, $tags, $addedAt, $reason, [int]$priorAttempts) {
+        [pscustomobject][ordered]@{
+          raindropId = $id; url = $url; title = $title; note = $note; noteHash = $noteHash
+          tags = @($tags); addedAt = $addedAt; reason = $reason; priorAttempts = $priorAttempts
+        }
+      }
+
+      foreach ($r in @($raindrops)) {
+        if ($null -eq $r) { continue }
+        $id = [string](Get-Field $r '_id')
+        if ([string]::IsNullOrWhiteSpace($id)) { continue }
+
+        $url     = [string](Get-Field $r 'link')
+        $title   = [string](Get-Field $r 'title')
+        $note    = [string](Get-Field $r 'note')
+        $tags    = Get-Field $r 'tags'; if ($null -eq $tags) { $tags = @() }
+        $addedAt = [string](Get-Field $r 'created')
+        $noteHash = Get-NoteHash $note
+
+        $rec = if ($state) { Get-Field $state $id } else { $null }
+
+        if ($null -eq $rec) {
+          # R6 NEW
+          $dispatch.Add((New-Dispatch $id $url $title $note $noteHash $tags $addedAt 'new' 0))
+          continue
+        }
+
+        $status = ([string](Get-Field $rec 'status')).Trim().ToLowerInvariant()
+        $attempts = 0; $aRaw = Get-Field $rec 'attempts'
+        if ($null -ne $aRaw) { try { $attempts = [int]$aRaw } catch { $attempts = 0 } }
+
+        $treatAsFailed = $false
+        $dispatchReason = 'retry-failed'
+
+        if ($status -eq 'queued' -or $status -eq 'processing') {
+          $age = Get-AgeMinutes $rec $status $nowUtc
+          if ($age -le $stuckMin) {
+            # R1 in-flight
+            $skipped.Add([pscustomobject][ordered]@{ raindropId = $id; reason = 'in-flight' })
+            continue
+          }
+          # R2 stuck reclassification -> treat as failed (record for observability)
+          $stuck.Add([pscustomobject][ordered]@{ raindropId = $id; priorStatus = $status; ageMinutes = $age; newAttempts = $attempts })
+          $treatAsFailed = $true
+          $dispatchReason = 'stuck-retry'
+        }
+
+        if ($treatAsFailed -or $status -eq 'failed') {
+          if ($attempts -ge $maxAttempts) {
+            # R3 dead-letter
+            $deadLetter.Add([pscustomobject][ordered]@{
+              raindropId = $id; url = $url; title = $title; attempts = $attempts
+              lastError = [string](Get-Field $rec 'lastError'); reason = 'max-attempts-exceeded'
+            })
+            continue
+          }
+          # R4 retry failed
+          $dispatch.Add((New-Dispatch $id $url $title $note $noteHash $tags $addedAt $dispatchReason $attempts))
+          continue
+        }
+
+        if ($status -eq 'completed') {
+          # R5 user reprocess
+          $dispatch.Add((New-Dispatch $id $url $title $note $noteHash $tags $addedAt 'user-reprocess' 0))
+          continue
+        }
+        if ($status -eq 'dead-lettered') {
+          $dispatch.Add((New-Dispatch $id $url $title $note $noteHash $tags $addedAt 'user-recovery-from-dead-letter' 0))
+          continue
+        }
+
+        # Unknown status -> fail-open to dispatch (being in AI-Inbox is the trigger).
+        $dispatch.Add((New-Dispatch $id $url $title $note $noteHash $tags $addedAt 'new' 0))
+      }
+
+      # Per-tick dispatch cap (dead-letter is uncapped).
+      for ($i = 0; $i -lt $dispatch.Count; $i++) {
+        if ($i -lt $maxDispatch) {
+          $selected.Add($dispatch[$i])
+        } else {
+          $deferred.Add([pscustomobject][ordered]@{ raindropId = $dispatch[$i].raindropId; reason = 'max-dispatch-per-tick-reached' })
+        }
+      }
+
+      [pscustomobject][ordered]@{
+        selected          = @($selected.ToArray())
+        skipped           = @($skipped.ToArray())
+        deferred          = @($deferred.ToArray())
+        deadLetter        = @($deadLetter.ToArray())
+        stuckReclassified = @($stuck.ToArray())
+      } | ConvertTo-Json -Depth 100 -Compress
+    arguments:
+      - "{{gate-empty.output}}"
+      - "{{load-state.output}}"
+      - "{{vars.maxDispatchPerTick}}"
+      - "{{vars.maxAttempts}}"
+      - "{{vars.stuckThresholdMinutes}}"
     timeoutSeconds: 300
 
   - name: mark-queued
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [select-dispatchable]
     systemPrompt: |
       You are a state-persistence assistant. You have Zakira.Exchange MCP tools.
@@ -452,6 +541,7 @@ steps:
 
   - name: dispatch
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [bootstrap-config, select-dispatchable, mark-queued, dead-letter-move, strip-workflow-tags]
     systemPrompt: |
       You are a fan-out dispatcher. You have the Orchestra control-plane MCP
@@ -496,6 +586,7 @@ steps:
 
   - name: tracker-summary
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [bootstrap-config, select-dispatchable, dispatch, dead-letter-move]
     systemPrompt: |
       You are a reporting assistant. Produce a concise scheduler-log-friendly

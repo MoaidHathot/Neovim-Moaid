@@ -48,6 +48,20 @@ mcplense call resolve-library-id https://mcp.context7.com/mcp \
   --args '{"libraryName":"spectre.console"}'
 ```
 
+Add `--example` to print a ready-to-edit `--args` template generated from the tool's
+input schema (plus the equivalent command) WITHOUT invoking - a first-call aid.
+
+```bash
+mcplense call resolve-library-id https://mcp.context7.com/mcp --example
+```
+
+### `mcplense explain <url|@target>`
+
+Plain-language summary of a server: identity, auth posture, how many tools/resources/
+prompts it exposes, which tools are server-declared destructive/open-world, and a
+one-line findings summary. Built for learning/triage. `--format markdown` renders a
+shareable write-up; `--format json` gives the structured form.
+
 ### `mcplense read <uri> <url|@target> [--args '<json>']`
 
 Read a resource by URI. `--args` may carry template-substitution variables when
@@ -85,6 +99,40 @@ Common flags:
   different host, off by default).
 - `--classify-only` — skip profile attempts AND skip enumeration that
   depends on them. Only the `auth` block is emitted.
+- `--findings` — also run the analysis layer; emits `{ "scan": ..., "findings": ... }`.
+- `--fail-on <severity>` — with `--findings`, exit non-zero when a finding ≥ severity.
+
+### `mcplense analyze <url|@target>`
+
+Runs the scan pipeline, then classifies the fact-only output into severity-rated
+**findings** using a built-in rule pack (prompt-injection signals, tool poisoning,
+open-shape input, weak CORS, TLS posture, error info-leak, ...). The scan itself stays
+fact-only — `analyze` is a separate opt-in consumer. Output is a `FindingsReport`
+(`servers[].findings[]`, each with `ruleId`, `severity`, `evidencePath`, `remediation`).
+
+- `--fail-on <severity>` — CI gate: exit non-zero if any finding ≥ severity
+  (info/low/medium/high/critical). Overrides `analysis.failOn` from config.
+- `--approve <file>` / `--since <file>` — rug-pull detection: `--approve` snapshots the
+  current tool/prompt/resource hashes; `--since` flags anything that changed since as a
+  `rug-pull` finding.
+- `--format sarif` — emit SARIF 2.1.0 for GitHub code scanning / CI security tooling.
+- Accepts the scan-shaping flags (`--enable`/`--disable`, `--scan-plugin`,
+  `--check-authorization-servers`, `--targets-from`, `--parallel-servers`).
+
+Rules and their severities are configured in `McpLense.Config.json` under the top-level
+`analysis` block (`analysis.rules.<id>.enabled` / `.severity`, `analysis.failOn`), so a
+fleet policy lives in config rather than CLI flags. See `docs/analysis-rules.md`.
+
+### `mcplense doctor <url|@target>`
+
+Staged connectivity triage for "why won't this MCP connect?": walks DNS → TCP → TLS →
+MCP initialize → auth classification and reports exactly which stage broke, with a fix-it
+hint (auth required, transport mismatch, expired cert, ...). Stdio targets get spawn +
+initialize. Exit code is non-zero if any stage failed. Distinct from `scan` (an audit).
+
+### `mcplense serve`
+
+Runs McpLense itself as a stdio MCP server (see Helper / meta below).
 
 ### `mcplense auth-scan <url|@target>`
 
@@ -104,6 +152,15 @@ standard notifications). Output is the `behavior.serverInitiated` check entry.
 
 - `--timeout <seconds>` — observation window (default 30).
 - `--enable` / `--disable` — same toggles as `scan`.
+
+Note: every live connection (not just `observe`) now RECEIVES this traffic.
+One-shot `inspect` / `call` / `read` / `prompt` log what the server tried and
+answer with safe defaults (refuse sampling, decline elicitation, no roots); the
+`tui` shows it in a `server-initiated` table after each invocation. Pass
+`--server-stream` (on `tui`, or interactive `call` / `read` / `prompt`) to also
+keep the standalone GET event-stream open so idle server traffic surfaces - off
+by default because some Streamable-HTTP servers drop the POST session when a
+parallel GET stream is opened.
 
 ### `mcplense diff <baseline-before> <baseline-after>`
 
@@ -136,6 +193,14 @@ Self-explanatory.
 Interactive Spectre.Console UI. Not useful for agents — never invoke from
 automation.
 
+### `mcplense serve`
+
+Runs McpLense itself as an MCP server over stdio, exposing `mcplense_inspect`,
+`mcplense_scan`, `mcplense_analyze`, and `mcplense_explain` as tools (each takes a
+`url`). Lets an agent introspect/security-scan OTHER MCP servers on demand. Add it to
+an MCP host config like any stdio server. (This is for being hosted by an agent, not
+for an agent to invoke as a subprocess.)
+
 ## Target options (apply to every command above)
 
 | Flag | Effect |
@@ -156,17 +221,24 @@ automation.
 | `-- <command...>` | Alternative stdio form (everything after `--` becomes the command line). |
 | `--cwd <path>` | Working directory for stdio targets. |
 | `--env NAME=VALUE` | Environment variable for stdio targets. |
-| `--format <text\|json\|dumpify>` | Output format (default `text`). |
+| `--format <text\|json\|markdown\|sarif\|dumpify>` | Output format (default `text`). `sarif`/`markdown` are findings/report oriented. |
+| `--trace` | Log every HTTP MCP request/response (method, URL, JSON-RPC body, status, timing) to stderr. |
+| `--watch <seconds>` | Re-run a read-only command (inspect/tools/resources/prompts/scan/analyze/explain/auth-scan/doctor) on an interval; flags when the output changed. Ctrl+C stops. |
 
 ## Picking flags by user intent
 
 | User intent | Flag combo |
 | --- | --- |
 | Just want JSON I can pipe | `--format json` |
+| Security findings with a CI gate | `mcplense analyze ... --fail-on high` |
+| Findings for GitHub code scanning | `mcplense analyze ... --format sarif` |
+| Detect tool changes since I trusted it | `analyze --approve f.json` then `analyze --since f.json` |
+| Why won't it connect / see the wire | `mcplense doctor ...` / add `--trace` |
+| How do I call this tool | `mcplense call <tool> ... --example` |
 | Don't show the auth/matched/AuthProbe lines | `--quiet --format json` |
 | Show me everything (headers, auth picks, probe reasoning) | `--verbose` |
 | I want to test the bare unauthenticated surface | `--no-auth` |
 | I only want the auth classification, no enumeration | `mcplense auth-scan ... --classify-only` |
 | I want to also see RFC 8414 metadata | `mcplense scan ... --check-authorization-servers` |
 | Save and compare scans over time | `--baseline ./baselines/` then `--diff <path>` |
-| Fleet of MCPs in one go | One `mcplense scan` per URL, or wrap in a loop / xargs |
+| Fleet of MCPs in one go | `--targets-from fleet.txt --parallel-servers 8` |

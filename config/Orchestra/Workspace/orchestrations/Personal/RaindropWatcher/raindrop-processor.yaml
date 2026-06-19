@@ -131,6 +131,7 @@ hooks:
 steps:
   - name: mark-processing
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: []
     systemPrompt: |
       You are a state-persistence assistant with Zakira.Exchange MCP tools.
@@ -160,6 +161,7 @@ steps:
 
   - name: classify
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [mark-processing]
     systemPrompt: |
       You are the RaindropWatcher router. You assign every raindrop to one
@@ -190,6 +192,7 @@ steps:
 
   - name: dispatch-processor
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [classify]
     systemPrompt: |
       You are a dispatcher. Read the classification JSON, extract its
@@ -255,6 +258,7 @@ steps:
 
   - name: mark-completed
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [dispatch-processor, move-to-processed]
     systemPrompt: |
       You are a state-persistence assistant with Zakira.Exchange MCP tools.
@@ -293,6 +297,7 @@ steps:
 
   - name: processor-summary
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [dispatch-processor, move-to-processed, mark-completed]
     systemPrompt: |
       You are a reporting assistant. Produce a short markdown summary of

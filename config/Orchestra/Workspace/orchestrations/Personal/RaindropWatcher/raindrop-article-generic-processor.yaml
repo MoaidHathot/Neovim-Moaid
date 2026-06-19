@@ -77,6 +77,7 @@ steps:
 
   - name: fetch-readable
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [fetch-http]
     systemPrompt: |
       You are a fetch-and-extract assistant. Decide whether the cheap HTTP
@@ -121,6 +122,7 @@ steps:
 
   - name: select-images
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [fetch-http, fetch-readable]
     systemPrompt: |
       You are an image curator for an article analysis. You have a list of
@@ -162,6 +164,7 @@ steps:
 
   - name: synthesize
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [fetch-readable, select-images]
     systemPrompt: |
       You are an article analyst. Build a clean markdown analysis based on
@@ -208,6 +211,7 @@ steps:
 
   - name: create-action-view-entry
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [synthesize, select-images, fetch-action-view-schema]
     systemPrompt: |
       You produce ActionView entries that match the entry schema. Type must
@@ -286,6 +290,7 @@ steps:
 
   - name: result-envelope
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [fetch-readable, synthesize, select-images, submit-action-view-entry]
     systemPrompt: |
       Output ONLY a JSON envelope describing the outcome.

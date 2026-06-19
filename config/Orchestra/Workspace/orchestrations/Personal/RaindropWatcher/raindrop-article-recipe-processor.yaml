@@ -89,6 +89,7 @@ steps:
 
   - name: fetch-readable
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [fetch-http]
     systemPrompt: |
       You are a fetch-and-extract assistant. You receive the JSON result of
@@ -135,6 +136,7 @@ steps:
 
   - name: select-images
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [fetch-http, fetch-readable]
     systemPrompt: |
       You are an image curator for a recipe extraction. You have a list of
@@ -218,6 +220,7 @@ steps:
 
   - name: synthesize
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [fetch-readable, download-images]
     systemPrompt: |
       You are a recipe extractor. Build a clean recipe markdown document
@@ -289,6 +292,7 @@ steps:
 
   - name: create-action-view-entry
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [synthesize, download-images, save-recipe-file, fetch-action-view-schema]
     systemPrompt: |
       You produce ActionView entries that match the entry schema. Type must
@@ -369,6 +373,7 @@ steps:
 
   - name: result-envelope
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [fetch-readable, synthesize, download-images, save-recipe-file, submit-action-view-entry]
     systemPrompt: |
       Output ONLY a JSON envelope describing the outcome.

@@ -396,7 +396,7 @@ steps:
       - A reviewer-agent-created thread can be identified by PowerReview metadata such as author_name/agentName or by the hidden marker `<!-- powerreview-agent: <agent name> -->` in a comment/reply body.
       - For reviewer-agent thread replies, include reviewEvents with type, threadId, agentName, filePath, lineStart, latestReplyAuthor, latestReplyCreatedAt, and reason.
 
-      When dispatching, output ONLY the enriched PR JSON object for pr-code-reviewer. Do not wrap it.
+      When dispatching, end your turn with ONLY the enriched PR JSON object for pr-code-reviewer as your final assistant message. Do not wrap it in markdown fences or add commentary. Do NOT call orchestra_set_status or orchestra_complete on the dispatch path: setting a status with a prose reason replaces your JSON output with that prose and breaks the next step (normalize-review-dispatch). Those tools are ONLY for the skip path.
 
       When skipping, call orchestra_complete with status 'success' and a concise reason. Do not invoke pr-code-reviewer for skipped PRs.
     userPrompt: |
@@ -411,7 +411,7 @@ steps:
       3. Detect reviewer-agent thread replies that need follow-up.
       4. Apply the decision rules from the system prompt.
 
-      If review is needed, output ONLY a JSON object shaped like:
+      If review is needed, do not call any status/complete tool - just output ONLY a JSON object shaped like:
       {
         "id": <number>,
         "title": "...",

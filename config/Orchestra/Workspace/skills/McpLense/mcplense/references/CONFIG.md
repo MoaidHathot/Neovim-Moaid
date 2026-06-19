@@ -198,6 +198,34 @@ Per-check knobs:
 
 See [CHECKS.md](CHECKS.md) for the full per-check reference.
 
+## `analysis` block
+
+Top-level block (peer of `scan` and `authProfiles`) that configures the `analyze` / `scan --findings`
+layer. The scan stays fact-only; this only tunes the opinionated findings layer.
+
+```jsonc
+{
+  "analysis": {
+    "failOn": "high",                 // default CI-gate threshold; --fail-on overrides it
+    "rules": {
+      "description-url":          { "enabled": false },    // turn a rule off
+      "missing-destructive-hint": { "severity": "medium" } // re-rate a rule's findings
+    }
+  }
+}
+```
+
+| Key | Effect |
+| --- | --- |
+| `failOn` | `info`/`low`/`medium`/`high`/`critical`. Process exits non-zero when any finding ≥ it. `--fail-on` overrides. |
+| `rules.<id>.enabled` | Turn a rule on/off (overrides its built-in default). |
+| `rules.<id>.severity` | Override the severity a rule assigns to its findings. |
+
+Rule ids: `prompt-injection`, `anonymous-destructive`, `weak-cors`, `mixed-content`,
+`tls-chain-invalid`, `tls-expiry`, `open-shape-input`, `error-info-leak`, `malformed-handling`,
+`description-url`, `missing-destructive-hint`, `unannounced-bearer`, `rug-pull`. See
+[`docs/analysis-rules.md`](../../../docs/analysis-rules.md) for the full reference.
+
 ## Environment-variable expansion
 
 Every string value (in `targets[]`, `targetPatterns[]`, and `authProfiles[]`)

@@ -1,0 +1,61 @@
+name: debug-providers
+description: |
+  Side-by-side agent-provider diagnostic. Runs one identical Zakira.Recall web-research
+  prompt on each of the two built-in providers — GitHub Copilot (`copilot`) and OpenCode
+  (`opencode`) — so their tool use, behavior, and output can be compared directly. The two
+  steps are byte-for-byte identical except for the `provider` field, so any difference in the
+  result is attributable to the provider. Each step exercises the inline MCP path by spinning
+  up the Zakira.Recall MCP server and returns a markdown result summary.
+version: 1.0.0
+tags: ["debug", "diagnostics", "providers", "copilot", "opencode", "mcp"]
+defaultModel: claude-opus-4.8
+
+defaultStepTimeoutSeconds: 600
+timeoutSeconds: 1800
+
+# Zakira.Recall web-research MCP (local stdio). Both steps reference it by name so each
+# provider forwards it to its own agent session.
+mcps:
+  - name: zakira-recall
+    type: local
+    command: dnx
+    arguments: ["Zakira.Recall", "--yes", "--", "mcp"]
+
+steps:
+  # ── GitHub Copilot ──────────────────────────────────────────────────────────────────
+  - name: research-copilot
+    type: Prompt
+    provider: copilot
+    mcps: [zakira-recall]
+    systemPrompt: |
+      You are a research assistant with access to the Zakira.Recall web tools
+      (web_search, web_research, web_fetch). Use them to find current, factual information
+      before answering — do not answer from memory alone. Always cite the sources you used.
+    userPrompt: |
+      Using the Zakira.Recall web tools, research this question:
+
+        "What is the Model Context Protocol (MCP), who introduced it, and what is it used for?"
+
+      Then return a result summary as markdown with exactly these sections:
+      1. **Summary** — 3-5 sentences answering the question.
+      2. **Key facts** — a short bullet list of the concrete facts you found.
+      3. **Sources** — the URLs you actually searched or fetched.
+
+  # ── OpenCode (identical to the step above except `provider`) ─────────────────────────
+  - name: research-opencode
+    type: Prompt
+    provider: opencode
+    mcps: [zakira-recall]
+    systemPrompt: |
+      You are a research assistant with access to the Zakira.Recall web tools
+      (web_search, web_research, web_fetch). Use them to find current, factual information
+      before answering — do not answer from memory alone. Always cite the sources you used.
+    userPrompt: |
+      Using the Zakira.Recall web tools, research this question:
+
+        "What is the Model Context Protocol (MCP), who introduced it, and what is it used for?"
+
+      Then return a result summary as markdown with exactly these sections:
+      1. **Summary** — 3-5 sentences answering the question.
+      2. **Key facts** — a short bullet list of the concrete facts you found.
+      3. **Sources** — the URLs you actually searched or fetched.

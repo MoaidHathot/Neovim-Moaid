@@ -159,6 +159,12 @@ auth: 1 profile(s) loaded from ...: agent365(InteractiveBrowser)
 auth: ... -> profile='agent365' kind=InteractiveBrowser (auto-picked), scopes=[...]
 ```
 
+Beyond the stderr trace, the connection's resolved auth status is also carried
+in the command output itself - an `auth: anonymous (no credentials sent)` or
+`auth: authenticated (profile=..., kind=...)` line on `inspect` / `tools` /
+`resources` / `prompts` / `call` / `read` / `prompt` - so an agent parsing the
+report can see how the session actually authenticated without scraping stderr.
+
 Sensitive header values (`Authorization`, `Cookie`, `x-api-key`, anything
 ending in `-token` / `-secret` / `-password`, anything containing `apikey`)
 print as `<redacted, length=N>` even under `--verbose`.

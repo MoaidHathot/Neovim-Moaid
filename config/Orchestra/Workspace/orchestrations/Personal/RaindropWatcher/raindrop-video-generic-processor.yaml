@@ -150,6 +150,7 @@ steps:
 
   - name: pick-targeted-frames
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [read-artifacts]
     systemPrompt: |
       You are a visual evidence curator. The video has a small baseline
@@ -221,6 +222,7 @@ steps:
 
   - name: synthesize
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [read-artifacts, targeted-frame-capture]
     systemPrompt: |
       You are a video summarizer. Synthesize a tight markdown summary strictly
@@ -267,6 +269,7 @@ steps:
 
   - name: create-action-view-entry
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [read-artifacts, synthesize, targeted-frame-capture, fetch-action-view-schema]
     systemPrompt: |
       You produce ActionView entries that match the entry schema. Type must
@@ -353,6 +356,7 @@ steps:
 
   - name: result-envelope
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [zakira-analyze, read-artifacts, targeted-frame-capture, synthesize, submit-action-view-entry]
     systemPrompt: |
       Output ONLY a JSON envelope describing the outcome. Be FACTUAL.

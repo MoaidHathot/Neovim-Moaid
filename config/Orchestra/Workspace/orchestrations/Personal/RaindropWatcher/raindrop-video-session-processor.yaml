@@ -171,6 +171,7 @@ steps:
 
   - name: pick-targeted-frames
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [read-artifacts]
     systemPrompt: |
       You are a visual evidence curator for a conference/session summary
@@ -242,6 +243,7 @@ steps:
 
   - name: synthesize
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [read-artifacts, targeted-frame-capture]
     systemPrompt: |
       You are a session analyst. The user attached a raindrop to their inbox
@@ -292,6 +294,7 @@ steps:
 
   - name: create-action-view-entry
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [synthesize, targeted-frame-capture, fetch-action-view-schema]
     systemPrompt: |
       You produce ActionView entries that match the entry schema. The entry
@@ -384,6 +387,7 @@ steps:
 
   - name: result-envelope
     type: Prompt
+    workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [zakira-analyze, read-artifacts, targeted-frame-capture, synthesize, create-action-view-entry, submit-action-view-entry]
     systemPrompt: |
       You produce a single small JSON envelope describing the outcome of

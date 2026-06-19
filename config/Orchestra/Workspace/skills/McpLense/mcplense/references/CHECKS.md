@@ -37,6 +37,7 @@ the CLI `--enable <id>` flag or `scan.checks.<id>.enabled: true` in
 | `resources` | on | — | Per-resource: `uri` + scheme, `name`, `mimeType`, `description`, `size`, annotations, `icons`. Plus top-level scheme histogram. |
 | `stdio` | on (stdio only) | — | Resolved command line / args / cwd / env. |
 | `behavior.callNonExistentTool` | on | — | Calls a tool name the server (presumably) doesn't expose; captures verbatim outcome — `tool-result-returned` / `jsonrpc-error` / `transport-error`. Reveals server-side error-handling leaks. |
+| `behavior.callMalformed` | off | — | HTTP only. Sends deliberately malformed JSON-RPC (invalid JSON / not-JSON-RPC / missing `method`) and records the status + response per case. Robustness signal; the `analyze` rule `malformed-handling` flags any `5xx`. Opt-in. |
 | `behavior.serverInitiated` | off | `auth` | Holds a session open; observes inbound `sampling/createMessage`, `elicitation/create`, `roots/list`, and the six notifications. Opt-in via config. |
 | `metrics` | on | `protocol`, `tools`, `prompts` | Per text field (configurable): `charLength`, `lineCount`, `urlCount`, `urls[]`, markdown link / image / code-fence counts, non-ASCII / control / tab counts. |
 | `hashing` | on | every visible check | Per-tool / -prompt / -resource `contentHash` (SHA-256 over canonical JSON) + a top-level `serverFingerprint`. Powers `mcplense diff`. |
