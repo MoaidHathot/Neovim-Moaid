@@ -2,6 +2,7 @@
   "$comment": "Global AI Workload Detector config (discovered via $XDG_CONFIG_HOME/AIWorkloadDetector/aiwd.json). storage.home routes the store, bronze, evidence, portal data, and reports under one root. Any single path is still overridable via a flag or AIWD_* env var. %VAR% expands and dirs are created on demand. WARNING: evidence.mode=full writes verbatim request/response bodies INCLUDING secrets to disk.",
   "storage": {
     "home": "%onedrive%\\AIWD\\Scans",
-    "evidence": { "mode": "full", "capture": "all" }
+    "evidence": { "mode": "full", "capture": "all" },
+    "portal": { "profiles": "P:\\work\\Networking\\AI-Workload-Detector\\config\\profiles" }
   }
 }
