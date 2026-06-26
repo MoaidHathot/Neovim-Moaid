@@ -250,6 +250,78 @@ function Copy-FileContent
 	Write-Host "Please provide a valid file path." -ForegroundColor Red
 }
 
+function Copy-FilePath
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Position = 0, ValueFromPipeline)]
+		[string]$Path,
+
+		# Picker scope: by default only files in the current directory are listed.
+		# Use -Recurse (or the cfpr wrapper) to list every file under it.
+		[switch]$Recurse
+	)
+
+	# No argument -> fuzzy-pick a file, like fzfc / Open-FileSearch.
+	if (-not $Path) {
+		if (-not (Get-Command fzf -ErrorAction SilentlyContinue)) {
+			Write-Host "Please provide a file path (fzf not found for picker)." -ForegroundColor Red
+			return
+		}
+
+		# Build the file source as paths relative to the current directory so files
+		# in THIS folder read as bare names instead of being buried in subdir paths.
+		# Prefer fd (relative output, honours .gitignore, very fast); fall back to
+		# Get-ChildItem -Name (also relative, and far faster than Resolve-Path).
+		if (Get-Command fd -ErrorAction SilentlyContinue) {
+			$fdArgs = [System.Collections.Generic.List[string]]@('--type', 'f', '--hidden', '--exclude', '.git', '--color', 'never')
+			if (-not $Recurse) { $fdArgs.Add('--max-depth'); $fdArgs.Add('1') }
+			$source = { fd @fdArgs }
+		} else {
+			$gciArgs = @{ File = $true; Name = $true }
+			if ($Recurse) { $gciArgs['Recurse'] = $true }
+			$source = { Get-ChildItem @gciArgs }
+		}
+
+		# Stream straight into fzf so the picker opens instantly and fills live
+		# (this is why bare fzf/fzfc feel fast: no collect-then-launch, no sort).
+		# For the small default (current-dir) list we can afford to group current-dir
+		# files first; for -Recurse we skip the sort to keep it streaming and fast.
+		if ($Recurse) {
+			$Path = & $source |
+				fzf --no-sort --preview 'bat --style=numbers --color=always {}' --preview-window '~3'
+		} else {
+			$Path = & $source |
+				Sort-Object { ($_ -split '[\\/]').Count }, { $_ } |
+				fzf --no-sort --preview 'bat --style=numbers --color=always {}' --preview-window '~3'
+		}
+		if (-not $Path) { return }   # user cancelled
+	}
+
+	$resolved = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue
+	if (-not $resolved) {
+		Write-Host "Path not found: $Path" -ForegroundColor Red
+		return
+	}
+
+	$resolved.Path | Set-Clipboard
+	Write-Host "Copied: $($resolved.Path)" -ForegroundColor Green
+}
+set-Alias cfp Copy-FilePath
+
+function Copy-FilePathRecurse
+{
+	# Recursive variant: lists every file under the current directory.
+	[CmdletBinding()]
+	param (
+		[Parameter(Position = 0, ValueFromPipeline)]
+		[string]$Path
+	)
+
+	Copy-FilePath -Path $Path -Recurse
+}
+set-Alias cfpr Copy-FilePathRecurse
+
 function Show-IL
 {
 	[CmdletBinding()]
