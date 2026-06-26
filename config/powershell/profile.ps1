@@ -43,6 +43,7 @@ function pp
 	presenterm @args_
 }
 set-Alias Copy-Path Copy-Location
+set-Alias ccp Copy-Location
 # Set-Alias .. cd..
 
 function ..
@@ -178,6 +179,39 @@ function Set-HistoryCommandLine
 	}
 }
 
+# Path to the cached carapace completion init script. Kept in LOCALAPPDATA
+# (not TEMP) so Windows Storage Sense / Disk Cleanup never wipes it -- a wiped
+# cache forces a ~750ms regeneration on the next new shell (the intermittent
+# "Loading personal and system profiles took ..." slow tab).
+function Get-CarapaceCachePath
+{
+	return Join-Path $env:LOCALAPPDATA 'carapace\init.ps1'
+}
+
+function Update-CarapaceCache
+{
+	# Regenerates the cached carapace init script. Call this after carapace is
+	# upgraded (the winget DSC config does it automatically on `winget configure`),
+	# or any time completions look stale. The profile also self-heals: if the
+	# cache file is missing on startup it is generated once.
+	[CmdletBinding()]
+	param()
+
+	if (-not (Get-Command carapace -ErrorAction SilentlyContinue)) {
+		Write-Host "carapace not found on PATH; cannot build completion cache." -ForegroundColor Red
+		return
+	}
+
+	$cachePath = Get-CarapaceCachePath
+	$cacheDir = Split-Path $cachePath -Parent
+	if (-not (Test-Path $cacheDir)) {
+		New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+	}
+
+	carapace _carapace | Out-String | Set-Content -LiteralPath $cachePath
+	Write-Host "carapace cache written to: $cachePath" -ForegroundColor Green
+}
+
 if ($host.Name -eq 'ConsoleHost')
 {
 	Set-PSReadLineOption -EditMode Windows
@@ -188,11 +222,21 @@ if ($host.Name -eq 'ConsoleHost')
 	Set-PSReadlineKeyHandler -Key Tab -Function MenuComplete
 	Set-PSReadLineKeyHandler -Key Ctrl+r -ScriptBlock { Set-HistoryCommandLine }
 
-	$carapaceCache = "$env:TEMP\carapace_init.ps1"
-	if (-not (Test-Path $carapaceCache) -or (Get-Item $carapaceCache).LastWriteTime -lt (Get-Item (Get-Command carapace).Source).LastWriteTime) {
-		carapace _carapace | Out-String | Set-Content $carapaceCache
+	# Fast path: if the cache exists, just load it -- no per-startup staleness
+	# check (the old Get-Command + two Get-Item calls cost ~100ms every shell).
+	# Freshness is handled out-of-band by Update-CarapaceCache (manual or via the
+	# winget DSC config). If the cache is missing, generate it once here.
+	# NOTE: this dot-source is intentionally synchronous. Deferring it via an
+	# OnIdle engine event was tried and rejected: event actions run in a child
+	# job scope, so carapace's Register-ArgumentCompleter calls never reach the
+	# session, breaking Tab completion.
+	$carapaceCache = Get-CarapaceCachePath
+	if (-not (Test-Path -LiteralPath $carapaceCache)) {
+		Update-CarapaceCache
 	}
-	. $carapaceCache
+	if (Test-Path -LiteralPath $carapaceCache) {
+		. $carapaceCache
+	}
 }
 
 function Show-Jwt($jwt)
