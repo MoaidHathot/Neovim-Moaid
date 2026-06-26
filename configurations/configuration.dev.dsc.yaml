@@ -223,6 +223,36 @@ properties:
         id: rsteube.Carapace
         source: winget
 
+    - resource: PSDscResources/Script
+      id: Refresh_Carapace_Cache
+      dependsOn:
+        - Carapace
+      directives:
+        description: |
+          Regenerate the cached carapace completion init script in a persistent
+          location ($env:LOCALAPPDATA\carapace\init.ps1). The PowerShell profile
+          dot-sources this cache on startup instead of running `carapace _carapace`
+          (~750ms) every shell. TestScript returns true (skip) only when the cache
+          exists and is newer than carapace.exe, so this regenerates only when
+          carapace was actually installed or upgraded.
+      settings:
+        GetScript: |
+          $cache = Join-Path $env:LOCALAPPDATA 'carapace\init.ps1'
+          return @{ Result = $cache }
+        TestScript: |
+          $cache = Join-Path $env:LOCALAPPDATA 'carapace\init.ps1'
+          if (-not (Test-Path -LiteralPath $cache)) { return $false }
+          $exe = (Get-Command carapace -ErrorAction SilentlyContinue).Source
+          if (-not $exe) { return $true }
+          return ((Get-Item -LiteralPath $cache).LastWriteTime -ge (Get-Item -LiteralPath $exe).LastWriteTime)
+        SetScript: |
+          $cache = Join-Path $env:LOCALAPPDATA 'carapace\init.ps1'
+          $dir = Split-Path $cache -Parent
+          if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          }
+          carapace _carapace | Out-String | Set-Content -LiteralPath $cache
+
     # - resource: Microsoft.WinGet.DSC/WinGetPackage
     #   id: ajeetdsouza.zoxide
     #   directives:
