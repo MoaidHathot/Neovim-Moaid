@@ -1,5 +1,5 @@
 {
-	"defaultReadinessTimeoutSeconds": 7,
+	"defaultReadinessTimeoutSeconds": 15,
 	"services": [
 		{
 			"name": "m365-remote-mcps",

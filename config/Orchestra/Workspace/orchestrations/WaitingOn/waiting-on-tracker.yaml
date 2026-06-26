@@ -326,6 +326,39 @@ steps:
         4. Skip messages where I am the only TO (self-sends).
         5. Cap at 200 messages. If exceeded, prefer the most recent.
 
+      How to query (use the `mail` MCP tool
+      `SearchMessagesQueryParameters`, which returns ONE page plus an
+      `@odata.nextLink` cursor for the next page):
+        a. First page: pass `preferTextBody: true` and a `queryParameters`
+           Graph OData string shaped like:
+             ?$filter=parentFolderId eq 'sentitems' and sentDateTime ge <windowStartUtc>
+             &$select=id,subject,sentDateTime,conversationId,webLink,toRecipients,ccRecipients,bodyPreview,importance,hasAttachments
+             &$orderby=sentDateTime desc&$top=25
+        b. Keep `$top` SMALL (25). A large page (e.g. $top=100) overflows
+           the tool-output size limit ("Response too large") and wastes
+           the run; $top=25 keeps each page small enough to read inline.
+        c. Page by passing the response's `@odata.nextLink` value back
+           into `SearchMessagesQueryParameters` as the `nextLink` argument
+           (keep `preferTextBody: true`). Stop on the FIRST of:
+             - no `@odata.nextLink` is returned (last page), OR
+             - you have accumulated 200 messages, OR
+             - a returned message's sentDateTime is older than
+               windowStartUtc (desc order means everything after is older
+               too - stop paging), OR
+             - you have fetched 10 pages (hard safety cap: keep the 200
+               most recent and add a note that the window was truncated).
+        d. Accumulate each page's messages DIRECTLY in your working
+           context and build the final JSON object from them.
+
+      EFFICIENCY - the following patterns caused a ~40-minute timeout on a
+      prior run; do NOT repeat them:
+        - Do NOT write tool output to temp files.
+        - Do NOT shell out to `powershell`, `python`, or any script to
+          parse, filter, page, or accumulate results - a 25-item page is
+          small enough to handle directly in your response.
+        - Do NOT restart paging from page 1 after an error; resume from
+          the last `@odata.nextLink` you received.
+
       For EACH surfaced message capture ALL of:
         - id                  : Graph message id (REQUIRED, used for ledger keying)
         - subject
@@ -363,6 +396,7 @@ steps:
       system prompt. Strip markdown fences, prose, and trailing
       whitespace. Output only the JSON object.
     mcps: [mail]
+    timeoutSeconds: 1200
     retry:
       maxRetries: 3
       backoffSeconds: 15
