@@ -134,7 +134,17 @@ steps:
       }
 
       $prsArr = $prs.ToArray()
-      $prsArr | ConvertTo-Json -Depth 100 -Compress -AsArray
+      # Emit a JSON array STRING for the downstream dispatch forEach.
+      #   * EMPTY    -> literal "[]" (no PRs is a valid no-op).
+      #   * 1+ items -> "[{...},...]".
+      # Piping an empty array emits NOTHING (consumer gets "" not "[]");
+      # -AsArray with -InputObject double-wraps to "[[...]]". Use
+      # -InputObject plus an explicit empty-guard.
+      if ($prsArr.Length -eq 0) {
+        '[]'
+      } else {
+        ConvertTo-Json -InputObject $prsArr -Depth 100 -Compress
+      }
 
   - name: dispatch-candidates
     type: Orchestration

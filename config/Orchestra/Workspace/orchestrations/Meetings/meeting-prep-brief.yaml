@@ -317,7 +317,18 @@ steps:
       }
 
       $arr = $enriched.ToArray()
-      $arr | ConvertTo-Json -Depth 50 -Compress -AsArray
+      # Emit a JSON array STRING for the downstream consumer.
+      #   * EMPTY    -> literal "[]" (zero meetings is a valid no-op).
+      #   * 1+ items -> "[{...},...]".
+      # Piping an empty array ($arr | ConvertTo-Json) emits NOTHING, handing
+      # the consumer "" instead of "[]"; -AsArray with -InputObject would
+      # double-wrap to "[[...]]". Use -InputObject plus an explicit
+      # empty-guard (pwsh 7 keeps a single-element object[] as "[{...}]").
+      if ($arr.Length -eq 0) {
+        '[]'
+      } else {
+        ConvertTo-Json -InputObject $arr -Depth 50 -Compress
+      }
     arguments:
       - "{{discover-meetings.output}}"
     timeoutSeconds: 120

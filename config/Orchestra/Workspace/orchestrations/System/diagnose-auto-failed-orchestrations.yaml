@@ -86,8 +86,20 @@ steps:
         }
       }
 
-      # Emit as JSON array - downstream forEach iterates each element.
-      , $runs | ConvertTo-Json -Depth 50 -Compress -AsArray
+      # Emit a JSON array STRING for the downstream gate + forEach.
+      #   * EMPTY    -> literal "[]" (no failures in the window: the gate
+      #                 calls orchestra_complete and the forEach is a no-op).
+      #   * 1+ items -> "[{...},...]".
+      # NOT `, $runs | ConvertTo-Json -AsArray`: -AsArray wraps the whole
+      # array again, yielding "[[...]]" / "[[{...}]]" (the forEach would
+      # then iterate one bogus inner array). Use -InputObject with an
+      # explicit empty-guard; pwsh 7 serializes a single-element object[]
+      # as "[{...}]" without unwrapping.
+      if ($runs.Length -eq 0) {
+        '[]'
+      } else {
+        ConvertTo-Json -InputObject $runs -Depth 50 -Compress
+      }
 
   - name: gate-any-failures
     type: Prompt
