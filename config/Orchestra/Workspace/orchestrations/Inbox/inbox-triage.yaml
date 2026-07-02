@@ -19,7 +19,7 @@ description: |
   or Teams itself. The orchestration is strictly read-only against
   Microsoft 365.
 
-version: 1.0.0
+version: 1.1.0
 tags: ["ZTS", "triage", "mail", "teams", "auto", "track", "inbox"]
 defaultModel: claude-opus-4.8
 
@@ -106,6 +106,7 @@ variables:
   zakiraCategory: triage-state
   zakiraSummaryCategory: "triage-state:daily-summary"
   zakiraLastRunCategory: "triage-state:last-run"
+  zakiraScanCursorCategory: "triage-state:scan-cursor"
   zakiraIdentityCategory: "user-identity:cache"
   todoListName: "Orchestra: Inbox"
   actionViewGroupId: "inbox-triage-{{orchestration.runId}}"
@@ -121,7 +122,7 @@ defaultRetryPolicy:
   retryOnTimeout: true
 
 defaultStepTimeoutSeconds: 600
-timeoutSeconds: 5400
+timeoutSeconds: 10800
 
 trigger:
   type: scheduler
@@ -221,13 +222,189 @@ steps:
       - "{{param.lookbackHoursDefault}}"
     timeoutSeconds: 60
 
+  - name: read-scan-cursor
+    type: Script
+    dependsOn: [compute-lookback-window]
+    shell: pwsh
+    script: |
+      # Reads the per-channel / per-folder scan high-water marks from the
+      # triage-state:scan-cursor category. Each record's key is the
+      # source-scoped channel id (Teams chatId or "folder:<name>" for mail)
+      # and its data carries { newestProcessedUtc, lastMessageId }. Discovery
+      # uses these marks to pull only messages newer than what a prior run
+      # already ingested, so partial runs still make forward progress and a
+      # stuck 168h window drains incrementally instead of re-scanning the
+      # whole week every run.
+      #
+      # This step NEVER fails the run: a missing category, empty ledger, or
+      # a Zakira hiccup just yields an empty cursor map (full-window scan).
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $dbPath        = $args[0]
+      $cursorCategory= $args[1]
+      $floorUtc      = $args[2]   # windowStartUtc from compute-lookback-window
+
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') {
+            $endIdx = $j; break
+          }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      $cursors = @{}
+
+      try {
+        # 1) Enumerate keys via `list`. The list view truncates the data
+        #    preview, so we only harvest keys here and `get` each for full
+        #    data. Key column format: "  [<category>] <key>  (by <author>, <date>)".
+        $listOut = & dnx Zakira.Exchange --yes -- --db $dbPath list --cat $cursorCategory -n 500 2>&1
+        $keys = New-Object System.Collections.Generic.List[string]
+        if ($LASTEXITCODE -eq 0 -and $listOut) {
+          $escapedCat = [regex]::Escape($cursorCategory)
+          foreach ($line in $listOut) {
+            $s = [string]$line
+            $m = [regex]::Match($s, "^\s*\[$escapedCat\]\s+(?<key>.+?)\s+\(by\s")
+            if ($m.Success) {
+              $k = $m.Groups['key'].Value.Trim()
+              if (-not [string]::IsNullOrWhiteSpace($k)) { [void]$keys.Add($k) }
+            }
+          }
+        }
+
+        # 2) Fetch full data per key.
+        foreach ($key in $keys) {
+          $getOut = & dnx Zakira.Exchange --yes -- --db $dbPath get $cursorCategory $key 2>&1
+          if ($LASTEXITCODE -ne 0) { continue }
+          $dataJson = Get-DataJsonFromCliOutput -Lines $getOut
+          if ([string]::IsNullOrWhiteSpace($dataJson)) { continue }
+          try {
+            $data = ConvertFrom-Json -InputObject $dataJson -Depth 20 -DateKind String -ErrorAction Stop
+          } catch { continue }
+          $newest = if ($data.PSObject.Properties['newestProcessedUtc']) { [string]$data.newestProcessedUtc } else { $null }
+          $lastId = if ($data.PSObject.Properties['lastMessageId']) { [string]$data.lastMessageId } else { $null }
+          if ([string]::IsNullOrWhiteSpace($newest)) { continue }
+          $cursors[$key] = [pscustomobject]@{
+            newestProcessedUtc = $newest
+            lastMessageId      = $lastId
+          }
+        }
+      } catch { }
+
+      # Emit a compact, easy-to-index map keyed by channel/folder id. The
+      # effective floor for any channel is max(windowStart, its cursor).
+      $entries = New-Object System.Collections.Generic.List[object]
+      foreach ($k in $cursors.Keys) {
+        $entries.Add([pscustomobject]@{
+          channelId          = $k
+          newestProcessedUtc = $cursors[$k].newestProcessedUtc
+          lastMessageId      = $cursors[$k].lastMessageId
+        }) | Out-Null
+      }
+
+      [pscustomobject]@{
+        readAt       = (Get-Date).ToUniversalTime().ToString('o')
+        windowFloorUtc = $floorUtc
+        cursorCount  = $entries.Count
+        cursors      = $entries.ToArray()
+      } | ConvertTo-Json -Depth 20 -Compress
+    arguments:
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraScanCursorCategory}}"
+      - "{{compute-lookback-window.output}}"
+    timeoutSeconds: 120
+
   - name: discover-mail
     type: Prompt
-    dependsOn: [compute-lookback-window, resolve-me]
+    dependsOn: [compute-lookback-window, resolve-me, read-scan-cursor]
     systemPrompt: |
-      You are a mail discovery agent using ONLY the `mail` MCP. Your job
-      is to enumerate every message a triage process needs to consider,
-      not to interpret or act on any of them.
+      You are a mail discovery agent using ONLY the `mail` MCP. Your job is
+      to FETCH raw message pages and SAVE them verbatim for a downstream
+      deterministic reducer. You do NOT dedupe, assemble, interpret, or act
+      on messages.
+
+      === ABSOLUTE TOOL RULES (violating these causes the step to time out) ===
+        - Use ONLY the `mail` MCP tools plus `orchestra_save_file` to persist
+          each raw page. NOTHING ELSE.
+        - Do NOT use the `sql` tool, a database, or CREATE/INSERT/SELECT.
+        - Do NOT use `powershell`, `bash`, or any shell.
+        - Do NOT `view`, `grep`, or otherwise open/parse tool-output temp
+          files. Do NOT try to merge, dedupe, window-filter, or hand-copy
+          message fields. A separate Script step does ALL of that
+          deterministically from the files you save.
+        - Your job is: call the MCP -> save the raw JSON page -> repeat ->
+          emit a tiny manifest. That is the entire task.
+
+      === WHAT TO FETCH ===
+      For each mail folder in the allowlist (default 'Inbox'), query messages
+      received in the lookback window, newest first is not required. Use a
+      minimal `$select` and a SMALL `$top` so no single response is rejected
+      for exceeding the ~51,200-byte MCP cap.
+
+      Recommended first call (SearchMessagesQueryParameters, preferTextBody=true):
+        ?$filter=parentFolderId eq 'inbox' and receivedDateTime ge <effectiveFloorUtc>
+        &$select=id,subject,from,receivedDateTime,conversationId,webLink,importance,isRead,hasAttachments,bodyPreview,toRecipients,parentFolderId
+        &$top=10
+      Do NOT combine `$orderby` with `$filter`.
+
+      === INCREMENTAL FLOOR (use the scan cursor) ===
+        - The user prompt includes a scan-cursor payload with per-folder
+          `newestProcessedUtc` marks from prior runs.
+        - For each folder, the effective floor is the LATER of
+          windowStartUtc and that folder's `newestProcessedUtc`. Filter
+          `receivedDateTime ge <effective floor>` so you do not re-fetch
+          messages a prior run already ingested.
+        - If a folder has no cursor, use windowStartUtc.
+
+      === SAVING PAGES ===
+        - After EACH successful page call, immediately persist the raw,
+          unmodified page JSON via `orchestra_save_file` with extension
+          "json". Do not edit it, do not pretty-print it, do not strip
+          fields. One save call per page.
+        - Page via the returned `@odata.nextLink`, but at MOST 5 pages per
+          folder. Stop a folder early as soon as a page's messages are all
+          older than the effective floor.
+
+      === BUDGET / GRACEFUL DEGRADATION (REQUIRED) ===
+        - Hard budget: aim for <= ~12 MCP calls total and <= ~15 turns.
+        - If a tool errors, try at most ONE alternative `mail` tool, then
+          move on. Do NOT retry a failing call repeatedly or invent
+          workarounds.
+        - If you approach the budget, STOP fetching and emit the manifest
+          with whatever you saved so far. A fast partial result is REQUIRED;
+          never keep going until the step is force-timed-out.
+        - MCP UNAVAILABLE = SUCCEED EMPTY, DO NOT FAIL. If the `mail` MCP is
+          not connected / exposes no tools / every call errors, do NOT call
+          orchestra_set_status and do NOT fail the step. Instead emit the
+          manifest with pagesSaved=0 and a note explaining mail was
+          unavailable, then finish successfully. Mail being down must not
+          sink the whole triage run - the pipeline tolerates an empty
+          source. Return within a couple of turns; never wait/hang.
+
+      === OUTPUT (manifest ONLY - not the messages) ===
+      Emit a single JSON object. The saved page files carry the actual
+      messages; this manifest is just bookkeeping:
+        {
+          "source":            "mail",
+          "windowStartUtc":    "...",
+          "windowEndUtc":      "...",
+          "foldersScanned":    ["Inbox", ...],
+          "pagesSaved":        <int>,           // == number of orchestra_save_file calls
+          "usedCursor":        <true|false>,
+          "notes":             [ "any caveats, throttling, early-stop, errors" ]
+        }
+      Do NOT put the messages themselves in this object.
 
       Sources to query, each scoped to the lookback window:
         1. The mail folder allowlist (default 'Inbox'); query unread and
@@ -237,96 +414,40 @@ steps:
            Focused side specifically when the MCP exposes that toggle;
            otherwise rely on the Inbox query and let downstream classify
            decide.
-        3. (Best-effort) Messages where I am @-mentioned. Do NOT filter on
-           `mentionsPreview` / `mentions` server-side — those properties are
-           not queryable on the message type and the call WILL error. Derive
-           `isMention` from fields already returned by the folder queries
-           when present; otherwise set `isMention:false` and skip this
-           sub-query rather than retrying it.
+        3. Do NOT try to filter on `mentionsPreview` / `mentions`
+           server-side — those properties are not queryable and the call
+           WILL error. @-mention detection happens downstream from the
+           saved page fields; do not add a mentions sub-query here.
 
-      For each surfaced message capture ALL of:
-        - id                : Graph message id (REQUIRED, used to dedup
-                              across the three sub-queries)
-        - subject
-        - sender            : { name, address }
-        - receivedDateTime  : ISO-8601 UTC
-        - conversationId    : Graph thread id when exposed
-        - webLink           : canonical Outlook URL (REQUIRED)
-        - importance        : low | normal | high (from Graph)
-        - isRead            : boolean
-        - hasAttachments    : boolean
-        - isMention         : true when I appear in the message's
-                              `mentions` collection
-        - inToRecipients    : true when my UPN/displayName is in TO (vs
-                              only in CC / BCC). Indicates the sender is
-                              addressing me directly.
-        - folderName        : the folder this message lives in
-        - bodyPreview       : the first ~400 characters of the body
-                              (no HTML, no tracking pixels). Truncate
-                              cleanly at a word boundary.
-
-      HOW TO QUERY (the `mail` MCP caps each response at ~51,200 bytes —
-      a broad query WILL fail with "Response size exceeds maximum"):
-        - ALWAYS pass `$select` with a minimal field set AND a small `$top`
-          (<= 10) on the FIRST call. Never issue an unbounded query.
-        - Recommended call (SearchMessagesQueryParameters, preferTextBody=true):
-            ?$filter=parentFolderId eq 'inbox' and receivedDateTime ge <windowStartUtc>
-            &$select=id,subject,from,receivedDateTime,conversationId,webLink,importance,isRead,hasAttachments,bodyPreview,toRecipients,parentFolderId
-            &$top=10
-        - Do NOT combine `$orderby` with `$filter` (Graph may reject it as
-          inefficient); sort client-side if you need ordering.
-        - Page with the returned `@odata.nextLink`, but at MOST 12 pages —
-          then stop even if more remain and note it.
-        - Read each page's JSON directly; do NOT write or run scripts to
-          parse tool output.
-
-      Rules:
-        1. Dedup BY `id` - the @-mention sub-query will overlap with
-           the folder queries.
-        2. NEVER modify mail state (no marking read, no moving folders,
-           no flagging). This is read-only triage.
-        3. Items without a `webLink` must be dropped.
-        4. Cap at 200 messages total. If the cap is hit, prefer
-           @-mentions, then Focused, then Inbox by recency.
-        5. TOOL DISCIPLINE: use ONLY the `mail` MCP tools to gather data.
-           Do NOT read the local filesystem or any repository, and do NOT
-           try to inspect, debug, or work around the MCP server itself. If
-           a tool rejects an argument or errors, try at most ONE
-           alternative `mail` tool, then move on.
-        6. GRACEFUL DEGRADATION (IMPORTANT): you have a hard time budget.
-           Do NOT spend many turns retrying a failing tool or inventing
-           workarounds. If a tool errors or times out ~2-3 times, or you
-           have made many calls without converging, STOP and output the
-           JSON object with whatever messages you have gathered so far -
-           an empty `messages` array is acceptable - and record the
-           failure in `notes` (e.g. "mail MCP failed: <error>"). A fast
-           partial/empty result is REQUIRED; never keep going until the
-           step is forcibly timed out.
-        7. Output a single JSON object:
-           {
-             "windowStartUtc":  "...",
-             "windowEndUtc":    "...",
-             "sourceQueriesRan":["inbox-folder","focused","mentions"],
-             "messages":        [ {...as above...} ],
-             "messageCount":    <int>,
-             "notes":           [ "any caveats, e.g. throttling" ]
-           }
+      The saved pages should preserve whatever fields Graph returns for
+      each message (id, subject, from, receivedDateTime, conversationId,
+      webLink, importance, isRead, hasAttachments, bodyPreview,
+      toRecipients, parentFolderId). Do NOT trim them; the reducer projects
+      the fields it needs.
     userPrompt: |
       Lookback window context (from compute-lookback-window):
       {{compute-lookback-window.output}}
 
-      My identity (use uniqueName for @-mention filter):
+      My identity (used downstream for @-mention / TO detection):
       {{resolve-me.output}}
+
+      Per-folder scan cursor (only fetch messages newer than each folder's
+      newestProcessedUtc; fall back to windowStartUtc when a folder has no
+      cursor):
+      {{read-scan-cursor.output}}
 
       Mail folder allowlist: "{{param.mailFolderAllowlist}}"
 
-      Enumerate recent messages via the `mail` MCP per the rules in your
-      system prompt. Return a single deduplicated JSON object.
+      Fetch recent message pages via the `mail` MCP and save each raw page
+      with orchestra_save_file per your system prompt. Return ONLY the
+      bookkeeping manifest object (not the messages).
     outputHandlerPrompt: |
-      Extract one valid JSON object only with the fields listed in the
-      system prompt. Strip markdown fences, prose, and trailing
-      whitespace. Output only the JSON object.
+      Extract one valid JSON object only - the bookkeeping manifest with
+      fields source, windowStartUtc, windowEndUtc, foldersScanned,
+      pagesSaved, usedCursor, notes. Strip markdown fences, prose, and
+      trailing whitespace. Output only the JSON object.
     mcps: [mail]
+    timeoutSeconds: 2400
     retry:
       # Discovery is a long agentic MCP step. Retrying a TIMEOUT just
       # repeats the full ~600s budget (this run burned 4x600s + backoffs =
@@ -338,89 +459,279 @@ steps:
       backoffMultiplier: 2.0
       retryOnTimeout: false
 
+  - name: reduce-mail
+    type: Script
+    dependsOn: [discover-mail, compute-lookback-window]
+    shell: pwsh
+    script: |
+      # Deterministic mail reducer. Reads the raw Graph message pages that
+      # discover-mail saved (paths arrive as a JSON array), then dedups by
+      # message id, filters to the lookback window, projects the fields the
+      # triage pipeline needs, and emits the same envelope shape the old
+      # LLM-driven discover-mail used to produce. All the work the model was
+      # doing turn-by-turn (SQLite inserts, window deletes, json_group_array,
+      # file juggling) happens here in one pass, in milliseconds.
+      $ErrorActionPreference = 'Stop'
+
+      $filesJson   = $args[0]   # JSON array of saved page file paths ({{discover-mail.files}})
+      $windowJson  = $args[1]   # compute-lookback-window output
+      $myIdJson    = $args[2]   # resolve-me output (for inToRecipients/isMention)
+
+      $window = ConvertFrom-Json -InputObject $windowJson -Depth 20 -DateKind String -ErrorAction Stop
+      $windowStart = [datetimeoffset]::Parse([string]$window.windowStartUtc, [System.Globalization.CultureInfo]::InvariantCulture)
+      $windowEnd   = [datetimeoffset]::Parse([string]$window.nowUtc,          [System.Globalization.CultureInfo]::InvariantCulture)
+
+      $myUpn = ''
+      $myName = ''
+      try {
+        $me = ConvertFrom-Json -InputObject $myIdJson -Depth 20 -DateKind String -ErrorAction Stop
+        $myUpn  = ([string]$me.uniqueName).ToLowerInvariant()
+        $myName = ([string]$me.displayName).ToLowerInvariant()
+      } catch { }
+
+      $paths = @()
+      try {
+        if (-not [string]::IsNullOrWhiteSpace($filesJson)) {
+          $paths = @(ConvertFrom-Json -InputObject $filesJson -Depth 10 -DateKind String -ErrorAction Stop)
+        }
+      } catch { $paths = @() }
+
+      $seen   = New-Object System.Collections.Generic.HashSet[string]
+      $out    = New-Object System.Collections.Generic.List[object]
+      $notes  = New-Object System.Collections.Generic.List[string]
+      $rawSeen = 0
+
+      function Get-Prop { param($Obj, [string]$Name)
+        if ($null -eq $Obj) { return $null }
+        $p = $Obj.PSObject.Properties[$Name]
+        if ($null -eq $p) { return $null }
+        return $p.Value
+      }
+
+      foreach ($path in $paths) {
+        if ([string]::IsNullOrWhiteSpace([string]$path) -or -not (Test-Path -LiteralPath $path)) {
+          [void]$notes.Add("missing page file: $path"); continue
+        }
+        $raw = Get-Content -LiteralPath $path -Raw
+        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+        # The saved page may be the tool's spill wrapper or a raw Graph body.
+        # Extract the first JSON object/array present.
+        $start = -1
+        for ($i = 0; $i -lt $raw.Length; $i++) { $c = $raw[$i]; if ($c -eq '{' -or $c -eq '[') { $start = $i; break } }
+        if ($start -lt 0) { continue }
+        try { $page = ConvertFrom-Json -InputObject $raw.Substring($start) -Depth 40 -DateKind String -ErrorAction Stop }
+        catch { [void]$notes.Add("unparseable page file: $([System.IO.Path]::GetFileName($path))"); continue }
+
+        # The `mail` MCP wraps the Graph body in a { "rawResponse": "<json string>" }
+        # envelope. Unwrap it (possibly more than once) so we reach value[].
+        $depthGuard = 0
+        while ($null -ne (Get-Prop $page 'rawResponse') -and $depthGuard -lt 4) {
+          $inner = [string](Get-Prop $page 'rawResponse')
+          if ([string]::IsNullOrWhiteSpace($inner)) { break }
+          try { $page = ConvertFrom-Json -InputObject $inner -Depth 40 -DateKind String -ErrorAction Stop }
+          catch { break }
+          $depthGuard++
+        }
+
+        $items = $null
+        if ($page -is [System.Array]) { $items = $page }
+        elseif (Get-Prop $page 'value')    { $items = @((Get-Prop $page 'value')) }
+        elseif (Get-Prop $page 'messages') { $items = @((Get-Prop $page 'messages')) }
+        else { $items = @($page) }
+
+        foreach ($m in $items) {
+          if ($null -eq $m) { continue }
+          $rawSeen++
+          $id = [string](Get-Prop $m 'id')
+          if ([string]::IsNullOrWhiteSpace($id)) { continue }
+          if (-not $seen.Add($id)) { continue }
+
+          $recvRaw = [string](Get-Prop $m 'receivedDateTime')
+          $recv = $null
+          if (-not [string]::IsNullOrWhiteSpace($recvRaw)) {
+            try { $recv = [datetimeoffset]::Parse($recvRaw, [System.Globalization.CultureInfo]::InvariantCulture) } catch { }
+          }
+          if ($null -ne $recv -and ($recv -lt $windowStart -or $recv -gt $windowEnd)) { continue }
+
+          $webLink = [string](Get-Prop $m 'webLink')
+          if ([string]::IsNullOrWhiteSpace($webLink)) { continue }  # webLink is REQUIRED
+
+          $from = Get-Prop $m 'from'
+          $emailAddr = if ($from) { Get-Prop $from 'emailAddress' } else { $null }
+          $senderName = if ($emailAddr) { [string](Get-Prop $emailAddr 'name') } else { '' }
+          $senderAddr = if ($emailAddr) { [string](Get-Prop $emailAddr 'address') } else { '' }
+
+          # inToRecipients: am I in the TO line?
+          $inTo = $false
+          $toRecips = Get-Prop $m 'toRecipients'
+          if ($toRecips) {
+            foreach ($r in @($toRecips)) {
+              $ra = Get-Prop $r 'emailAddress'
+              if ($ra) {
+                $addr = ([string](Get-Prop $ra 'address')).ToLowerInvariant()
+                $nm   = ([string](Get-Prop $ra 'name')).ToLowerInvariant()
+                if (($myUpn -and $addr -eq $myUpn) -or ($myName -and $nm -eq $myName)) { $inTo = $true; break }
+              }
+            }
+          }
+
+          $bodyPreview = [string](Get-Prop $m 'bodyPreview')
+          if ($bodyPreview.Length -gt 400) { $bodyPreview = $bodyPreview.Substring(0, 400) }
+
+          $folderName = [string](Get-Prop $m 'parentFolderId')
+
+          $out.Add([pscustomobject]@{
+            id              = $id
+            subject         = [string](Get-Prop $m 'subject')
+            sender          = [pscustomobject]@{ name = $senderName; address = $senderAddr }
+            receivedDateTime= $recvRaw
+            conversationId  = [string](Get-Prop $m 'conversationId')
+            webLink         = $webLink
+            importance      = [string](Get-Prop $m 'importance')
+            isRead          = [bool]((Get-Prop $m 'isRead') -eq $true)
+            hasAttachments  = [bool]((Get-Prop $m 'hasAttachments') -eq $true)
+            isMention       = $false
+            inToRecipients  = $inTo
+            folderName      = $folderName
+            bodyPreview     = $bodyPreview
+          }) | Out-Null
+        }
+      }
+
+      # Cap at 200, preferring in-TO then most recent.
+      $ordered = $out | Sort-Object -Property `
+        @{ Expression = { if ($_.inToRecipients) { 0 } else { 1 } } }, `
+        @{ Expression = { $_.receivedDateTime }; Descending = $true }
+      $capped = @($ordered | Select-Object -First 200)
+      if ($out.Count -gt 200) { [void]$notes.Add("capped at 200 (had $($out.Count))") }
+
+      [pscustomobject]@{
+        windowStartUtc   = [string]$window.windowStartUtc
+        windowEndUtc     = [string]$window.nowUtc
+        sourceQueriesRan = @('inbox-folder')
+        messages         = $capped
+        messageCount     = $capped.Count
+        rawSeen          = $rawSeen
+        pageFiles        = $paths.Count
+        notes            = $notes.ToArray()
+      } | ConvertTo-Json -Depth 40 -Compress
+    arguments:
+      - "{{discover-mail.files}}"
+      - "{{compute-lookback-window.output}}"
+      - "{{resolve-me.output}}"
+    timeoutSeconds: 120
+
   - name: discover-teams
     type: Prompt
-    dependsOn: [compute-lookback-window, resolve-me]
+    dependsOn: [compute-lookback-window, resolve-me, read-scan-cursor]
     systemPrompt: |
-      You are a Teams discovery agent using ONLY the `teams` MCP. Your
-      job is to enumerate every Teams message a triage process needs to
-      consider, scoped to:
-        1. 1:1 chats and group chats (DMs) the signed-in user
-           participates in.
-        2. Channel messages from the channel allowlist (when non-empty)
-           where the signed-in user is @-mentioned.
+      You are a Teams discovery agent using ONLY the `teams` MCP. Your job
+      is to FETCH raw chat-message pages and SAVE them verbatim for a
+      downstream deterministic reducer. You do NOT dedupe, assemble,
+      interpret, or act on messages.
 
-      My identity (uniqueName / displayName / id) is supplied in the
-      user prompt as a JSON object - use uniqueName for the @-mention
-      filter; never guess or hardcode an address.
+      === ABSOLUTE TOOL RULES (violating these causes the step to time out) ===
+        - Use ONLY the `teams` MCP tools plus `orchestra_save_file` to
+          persist each raw page. NOTHING ELSE.
+        - Do NOT use the `sql` tool, a database, or CREATE/INSERT/SELECT.
+        - Do NOT use `powershell`, `bash`, or any shell.
+        - Do NOT `view`, `grep`, or open/parse tool-output temp files. Do
+          NOT merge, dedupe, window-filter, or hand-copy message fields. A
+          separate Script step does ALL of that deterministically from the
+          files you save.
+        - Your job is: list chats -> for each in-scope chat, list its recent
+          messages -> save that raw page -> repeat -> emit a tiny manifest.
 
-      For each surfaced message capture ALL of:
-        - id                  : Graph chatMessage id (REQUIRED, used to
-                                dedup across sub-queries)
-        - source              : "dm" | "channel"
-        - chatOrChannelId     : Graph chat id or channel id
-        - chatOrChannelName   : human-readable name (chat topic,
-                                channel display name, or comma-separated
-                                participant names for unnamed DMs)
-        - author              : { name, address }
-        - createdDateTime     : ISO-8601 UTC
-        - threadRootId        : root message id of the thread when
-                                exposed (parent for replies)
-        - webLink             : canonical Teams deep-link (REQUIRED)
-        - isMention           : true when I appear in the message's
-                                `mentions` collection
-        - bodyPreview         : first ~400 chars of plain-text body
-        - importance          : low | normal | high if exposed
-        - hasAttachments      : boolean
+      === WHAT TO FETCH (bounded) ===
+        1. Call `teams_ListChats` ONCE to get the chat list.
+        2. Consider only 1:1 and group DM chats. SKIP meeting chats: any
+           chat whose id contains `meeting_` (they are meeting-bound noise
+           and rarely triage-worthy). If `teamsChannelAllowlist` is empty,
+           do DMs only — never crawl channels you are a member of.
+        3. Rank the remaining chats by most-recent activity and take AT MOST
+           the 15 most-recently-active. For each, call
+           `teams_ListChatMessages` with a SMALL `top` (<= 8).
+        4. Stop scanning a chat as soon as its returned messages are all
+           older than that chat's effective floor (see cursor below). Do NOT
+           page a chat deeply — one page per chat is the norm.
 
-      Rules:
-        1. Dedup BY `id`.
-        2. NEVER modify Teams state (no replies, no reactions, no marks).
-        3. Drop items without a webLink.
-        4. Cap at 150 messages total.
-        5. If the `teamsChannelAllowlist` is empty, return DMs only -
-           do NOT crawl every channel I am a member of.
-        6. TOOL DISCIPLINE: use ONLY the `teams` MCP tools to gather data.
-           Do NOT read the local filesystem or any repository, and do NOT
-           try to inspect, debug, or work around the MCP server itself
-           (e.g. don't fight the `ListChats` proxy bug). If a tool rejects
-           an argument or errors, try at most ONE alternative `teams`
-           tool, then move on.
-        7. GRACEFUL DEGRADATION (IMPORTANT): you have a hard time budget.
-           Do NOT spend many turns retrying a failing tool or inventing
-           workarounds. If a tool errors or times out ~2-3 times, or you
-           have made many calls without converging, STOP and output the
-           JSON object with whatever messages you have gathered so far -
-           an empty `messages` array is acceptable - and record the
-           failure in `notes` (e.g. "teams MCP ListChats failed: <error>").
-           A fast partial/empty result is REQUIRED; never keep going until
-           the step is forcibly timed out.
-        8. Output a single JSON object:
-           {
-             "windowStartUtc":  "...",
-             "windowEndUtc":    "...",
-             "sourceQueriesRan":["dms","channels-mentions"],
-             "messages":        [ {...as above...} ],
-             "messageCount":    <int>,
-             "notes":           [ "..." ]
-           }
+      === INCREMENTAL FLOOR (use the scan cursor) ===
+        - The user prompt includes a scan-cursor payload with per-chat
+          `newestProcessedUtc` marks from prior runs (keyed by chat id).
+        - For each chat, the effective floor is the LATER of windowStartUtc
+          and that chat's `newestProcessedUtc`. Skip a chat entirely when
+          its last activity is at/older than that floor.
+
+      === SAVING PAGES ===
+        - After EACH successful `teams_ListChatMessages` call that returns
+          messages, immediately persist the page via `orchestra_save_file`
+          (extension "json"). CRITICAL: wrap the raw page in a small
+          envelope that records which chat it came from, because the raw
+          messages do NOT carry the chat id or a webLink. Save exactly this
+          shape (the `page` value is the tool's raw JSON response, unmodified):
+            { "chatId": "19:...@thread.v2", "chatName": "<display name>", "page": <raw tool response> }
+          One save call per page. Do not edit the messages inside `page`.
+        - The reducer builds each message's Teams deep-link from chatId +
+          message id, so getting chatId right in the envelope is essential.
+
+      === BUDGET / GRACEFUL DEGRADATION (REQUIRED) ===
+        - Hard budget: aim for <= ~18 MCP calls total and <= ~22 turns.
+        - If a tool errors, try at most ONE alternative `teams` tool, then
+          move on. Do NOT fight the `ListChats` proxy bug or retry a failing
+          call repeatedly.
+        - If you approach the budget, STOP fetching and emit the manifest
+          with whatever you saved so far. A fast partial result is REQUIRED;
+          never keep going until the step is force-timed-out.
+        - MCP UNAVAILABLE = SUCCEED EMPTY, DO NOT FAIL. If the `teams` MCP is
+          not connected / exposes no tools / every call errors, do NOT call
+          orchestra_set_status and do NOT fail the step. Instead emit the
+          manifest with pagesSaved=0, chatsScanned=[], and a note explaining
+          teams was unavailable, then finish successfully. Teams being down
+          must not sink the whole triage run - the pipeline tolerates an
+          empty source. Return within a couple of turns; never wait/hang.
+
+      === OUTPUT (manifest ONLY - not the messages) ===
+      Emit a single JSON object. The saved page files carry the actual
+      messages; this manifest is bookkeeping plus the chat map the reducer
+      needs:
+        {
+          "source":            "teams",
+          "windowStartUtc":    "...",
+          "windowEndUtc":      "...",
+          "chatsScanned": [
+            { "chatId": "19:...", "chatName": "...", "pageSaved": true }
+          ],
+          "pagesSaved":        <int>,        // == number of orchestra_save_file calls
+          "meetingChatsSkipped": <int>,
+          "usedCursor":        <true|false>,
+          "notes":             [ "caveats, early-stop, errors" ]
+        }
+      Do NOT put the messages themselves in this object.
     userPrompt: |
       Lookback window context (from compute-lookback-window):
       {{compute-lookback-window.output}}
 
-      My identity (use uniqueName for @-mention filter):
+      My identity (used downstream for @-mention detection):
       {{resolve-me.output}}
+
+      Per-chat scan cursor (skip chats whose newestProcessedUtc is at/after
+      their last activity; otherwise only fetch messages newer than it,
+      falling back to windowStartUtc):
+      {{read-scan-cursor.output}}
 
       Teams channel allowlist (comma-separated names/ids; empty = DMs
       only): "{{param.teamsChannelAllowlist}}"
 
-      Enumerate recent Teams messages via the `teams` MCP per the rules
-      in your system prompt. Return a single deduplicated JSON object.
+      Fetch recent chat-message pages via the `teams` MCP and save each raw
+      page with orchestra_save_file per your system prompt. Return ONLY the
+      bookkeeping manifest object (not the messages).
     outputHandlerPrompt: |
-      Extract one valid JSON object only with the fields listed in the
-      system prompt. Strip markdown fences, prose, and trailing
-      whitespace. Output only the JSON object.
+      Extract one valid JSON object only - the bookkeeping manifest with
+      fields source, windowStartUtc, windowEndUtc, chatsScanned, pagesSaved,
+      meetingChatsSkipped, usedCursor, notes. Strip markdown fences, prose,
+      and trailing whitespace. Output only the JSON object.
     mcps: [teams]
+    timeoutSeconds: 2400
     retry:
       # See discover-mail: do not retry on timeout (it just repeats the
       # full ~600s budget when the teams MCP is slow/broken). Retry only
@@ -430,9 +741,169 @@ steps:
       backoffMultiplier: 2.0
       retryOnTimeout: false
 
+  - name: reduce-teams
+    type: Script
+    dependsOn: [discover-teams, compute-lookback-window]
+    shell: pwsh
+    script: |
+      # Deterministic Teams reducer. Reads the per-chat page envelopes that
+      # discover-teams saved (each is { chatId, chatName, page:<raw tool
+      # response> }), extracts messages, dedups by id, filters to the
+      # lookback window, synthesizes the canonical Teams deep-link from
+      # chatId + message id, and emits the envelope shape the triage
+      # pipeline consumes. Replaces the LLM's SQLite + PowerShell + file
+      # juggling with one deterministic pass.
+      $ErrorActionPreference = 'Stop'
+
+      $filesJson  = $args[0]   # JSON array of saved envelope file paths ({{discover-teams.files}})
+      $windowJson = $args[1]   # compute-lookback-window output
+
+      $window = ConvertFrom-Json -InputObject $windowJson -Depth 20 -DateKind String -ErrorAction Stop
+      $windowStart = [datetimeoffset]::Parse([string]$window.windowStartUtc, [System.Globalization.CultureInfo]::InvariantCulture)
+      $windowEnd   = [datetimeoffset]::Parse([string]$window.nowUtc,          [System.Globalization.CultureInfo]::InvariantCulture)
+
+      function Get-Prop { param($Obj, [string]$Name)
+        if ($null -eq $Obj) { return $null }
+        $p = $Obj.PSObject.Properties[$Name]
+        if ($null -eq $p) { return $null }
+        return $p.Value
+      }
+
+      $paths = @()
+      try {
+        if (-not [string]::IsNullOrWhiteSpace($filesJson)) {
+          $paths = @(ConvertFrom-Json -InputObject $filesJson -Depth 10 -DateKind String -ErrorAction Stop)
+        }
+      } catch { $paths = @() }
+
+      $seen  = New-Object System.Collections.Generic.HashSet[string]
+      $out   = New-Object System.Collections.Generic.List[object]
+      $notes = New-Object System.Collections.Generic.List[string]
+      $rawSeen = 0
+
+      foreach ($path in $paths) {
+        if ([string]::IsNullOrWhiteSpace([string]$path) -or -not (Test-Path -LiteralPath $path)) {
+          [void]$notes.Add("missing page file: $path"); continue
+        }
+        $raw = Get-Content -LiteralPath $path -Raw
+        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+        $start = -1
+        for ($i = 0; $i -lt $raw.Length; $i++) { $c = $raw[$i]; if ($c -eq '{' -or $c -eq '[') { $start = $i; break } }
+        if ($start -lt 0) { continue }
+        try { $env = ConvertFrom-Json -InputObject $raw.Substring($start) -Depth 40 -DateKind String -ErrorAction Stop }
+        catch { [void]$notes.Add("unparseable file: $([System.IO.Path]::GetFileName($path))"); continue }
+
+        # Envelope is { chatId, chatName, page }. Tolerate a bare page too.
+        $chatId   = [string](Get-Prop $env 'chatId')
+        $chatName = [string](Get-Prop $env 'chatName')
+        $page     = Get-Prop $env 'page'
+        if ($null -eq $page) { $page = $env }  # bare page fallback (chatId may be empty)
+
+        # The `teams` MCP may wrap the Graph body in { "rawResponse": "<json string>" }.
+        # Unwrap it so we reach messages[].
+        $depthGuard = 0
+        while ($null -ne (Get-Prop $page 'rawResponse') -and $depthGuard -lt 4) {
+          $inner = [string](Get-Prop $page 'rawResponse')
+          if ([string]::IsNullOrWhiteSpace($inner)) { break }
+          try { $page = ConvertFrom-Json -InputObject $inner -Depth 40 -DateKind String -ErrorAction Stop }
+          catch { break }
+          $depthGuard++
+        }
+
+        $items = $null
+        if ($page -is [System.Array]) { $items = $page }
+        elseif (Get-Prop $page 'messages') { $items = @((Get-Prop $page 'messages')) }
+        elseif (Get-Prop $page 'value')    { $items = @((Get-Prop $page 'value')) }
+        else { $items = @($page) }
+
+        foreach ($m in $items) {
+          if ($null -eq $m) { continue }
+          $rawSeen++
+          $id = [string](Get-Prop $m 'id')
+          if ([string]::IsNullOrWhiteSpace($id)) { continue }
+
+          $createdRaw = [string](Get-Prop $m 'createdDateTime')
+          $created = $null
+          if (-not [string]::IsNullOrWhiteSpace($createdRaw)) {
+            try { $created = [datetimeoffset]::Parse($createdRaw, [System.Globalization.CultureInfo]::InvariantCulture) } catch { }
+          }
+          if ($null -ne $created -and ($created -lt $windowStart -or $created -gt $windowEnd)) { continue }
+
+          # Skip control/system messages (joins, renames) that have empty bodies.
+          $mtype = [string](Get-Prop $m 'messageType')
+          if ($mtype -and $mtype -ne 'message') { continue }
+
+          # Dedup across pages by message id.
+          if (-not $seen.Add($id)) { continue }
+
+          $from = Get-Prop $m 'from'
+          $authorName = ''
+          if ($from) {
+            $user = Get-Prop $from 'user'
+            if ($user) { $authorName = [string](Get-Prop $user 'displayName') }
+            if ([string]::IsNullOrWhiteSpace($authorName)) { $authorName = [string](Get-Prop $from 'displayName') }
+          }
+
+          $body = Get-Prop $m 'body'
+          $bodyContent = if ($body) { [string](Get-Prop $body 'content') } else { '' }
+          # Strip HTML tags for a clean preview.
+          $bodyText = [regex]::Replace($bodyContent, '<[^>]+>', ' ')
+          $bodyText = [System.Net.WebUtility]::HtmlDecode($bodyText)
+          $bodyText = ([regex]::Replace($bodyText, '\s+', ' ')).Trim()
+          if ($bodyText.Length -gt 400) { $bodyText = $bodyText.Substring(0, 400) }
+
+          # Synthesize the canonical Teams deep-link (webLink is REQUIRED).
+          $webLink = ''
+          if (-not [string]::IsNullOrWhiteSpace($chatId)) {
+            $ctx = [uri]::EscapeDataString('{"contextType":"chat"}')
+            $webLink = "https://teams.microsoft.com/l/message/${chatId}/${id}?context=${ctx}"
+          } else {
+            $wl = [string](Get-Prop $m 'webUrl'); if ($wl) { $webLink = $wl }
+          }
+          if ([string]::IsNullOrWhiteSpace($webLink)) { continue }  # drop items without a link
+
+          $attachments = Get-Prop $m 'attachments'
+          $hasAtt = ($null -ne $attachments -and @($attachments).Count -gt 0)
+
+          $out.Add([pscustomobject]@{
+            id                = $id
+            source            = 'dm'
+            chatOrChannelId   = $chatId
+            chatOrChannelName = $chatName
+            author            = [pscustomobject]@{ name = $authorName; address = $null }
+            createdDateTime   = $createdRaw
+            threadRootId      = $null
+            webLink           = $webLink
+            isMention         = $false
+            bodyPreview       = $bodyText
+            importance        = [string](Get-Prop $m 'importance')
+            hasAttachments    = $hasAtt
+          }) | Out-Null
+        }
+      }
+
+      $ordered = $out | Sort-Object -Property @{ Expression = { $_.createdDateTime }; Descending = $true }
+      $capped = @($ordered | Select-Object -First 150)
+      if ($out.Count -gt 150) { [void]$notes.Add("capped at 150 (had $($out.Count))") }
+
+      [pscustomobject]@{
+        windowStartUtc   = [string]$window.windowStartUtc
+        windowEndUtc     = [string]$window.nowUtc
+        sourceQueriesRan = @('dms')
+        messages         = $capped
+        messageCount     = $capped.Count
+        rawSeen          = $rawSeen
+        pageFiles        = $paths.Count
+        notes            = $notes.ToArray()
+      } | ConvertTo-Json -Depth 40 -Compress
+    arguments:
+      - "{{discover-teams.files}}"
+      - "{{compute-lookback-window.output}}"
+    timeoutSeconds: 120
+
   - name: merge-and-dedupe
     type: Script
-    dependsOn: [discover-mail, discover-teams]
+    dependsOn: [reduce-mail, reduce-teams]
     shell: pwsh
     script: |
       # Combine mail + teams discovery outputs into one normalized array.
@@ -498,9 +969,141 @@ steps:
         sourceErrors = $errors.ToArray()
       } | ConvertTo-Json -Depth 50 -Compress
     arguments:
-      - "{{discover-mail.output}}"
-      - "{{discover-teams.output}}"
+      - "{{reduce-mail.output}}"
+      - "{{reduce-teams.output}}"
     timeoutSeconds: 60
+
+  - name: advance-scan-cursor
+    type: Script
+    dependsOn: [reduce-mail, reduce-teams]
+    shell: pwsh
+    script: |
+      # Advances the per-channel / per-folder scan high-water marks based on
+      # what the reducers ACTUALLY produced this run. Runs independently of
+      # classify / diff / noteworthy / ActionView, so scan progress is
+      # persisted even when the run surfaces nothing or a later step fails -
+      # this is what breaks the stuck-168h-window cycle: each run that
+      # gathers anything permanently advances the frontier for those
+      # channels, so subsequent runs only pull what is genuinely new.
+      #
+      # Skipped on dryRun (a dry run must not mutate the real cursor and
+      # cause the next real run to skip messages it never actually saw).
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $mailJson       = $args[0]
+      $teamsJson      = $args[1]
+      $dbPath         = $args[2]
+      $cursorCategory = $args[3]
+      $dryRun         = $args[4]
+      $runId          = $args[5]
+
+      $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
+      if ($dryRunBool) {
+        [pscustomobject]@{ status='dry-run-skipped'; advanced=0 } | ConvertTo-Json -Compress
+        return
+      }
+
+      function Get-Prop { param($Obj, [string]$Name)
+        if ($null -eq $Obj) { return $null }
+        $p = $Obj.PSObject.Properties[$Name]
+        if ($null -eq $p) { return $null }
+        return $p.Value
+      }
+
+      # Fold messages into per-channel newest timestamps.
+      # Teams key  = chatOrChannelId; Mail key = "folder:<folderName>".
+      $marks = @{}   # key -> [pscustomobject]{ newestUtc=[datetimeoffset]; newestRaw; lastId }
+
+      function Update-Mark {
+        param([string]$Key, [string]$WhenRaw, [string]$Id)
+        if ([string]::IsNullOrWhiteSpace($Key) -or [string]::IsNullOrWhiteSpace($WhenRaw)) { return }
+        $when = $null
+        try { $when = [datetimeoffset]::Parse($WhenRaw, [System.Globalization.CultureInfo]::InvariantCulture) } catch { return }
+        if ($marks.ContainsKey($Key)) {
+          if ($when -gt $marks[$Key].newestUtc) {
+            $marks[$Key] = [pscustomobject]@{ newestUtc = $when; newestRaw = $WhenRaw; lastId = $Id }
+          }
+        } else {
+          $marks[$Key] = [pscustomobject]@{ newestUtc = $when; newestRaw = $WhenRaw; lastId = $Id }
+        }
+      }
+
+      try {
+        $mail = ConvertFrom-Json -InputObject $mailJson -Depth 40 -DateKind String -ErrorAction Stop
+        foreach ($m in @($mail.messages)) {
+          if ($null -eq $m) { continue }
+          $folder = [string](Get-Prop $m 'folderName')
+          if ([string]::IsNullOrWhiteSpace($folder)) { $folder = 'inbox' }
+          Update-Mark -Key ("folder:$folder") -WhenRaw ([string](Get-Prop $m 'receivedDateTime')) -Id ([string](Get-Prop $m 'id'))
+        }
+      } catch { }
+
+      try {
+        $teams = ConvertFrom-Json -InputObject $teamsJson -Depth 40 -DateKind String -ErrorAction Stop
+        foreach ($m in @($teams.messages)) {
+          if ($null -eq $m) { continue }
+          $chatId = [string](Get-Prop $m 'chatOrChannelId')
+          if ([string]::IsNullOrWhiteSpace($chatId)) { continue }
+          Update-Mark -Key $chatId -WhenRaw ([string](Get-Prop $m 'createdDateTime')) -Id ([string](Get-Prop $m 'id'))
+        }
+      } catch { }
+
+      $advanced = 0
+      $errors = New-Object System.Collections.Generic.List[string]
+      $nowIso = (Get-Date).ToUniversalTime().ToString('o')
+
+      foreach ($key in $marks.Keys) {
+        $mk = $marks[$key]
+        $payload = [pscustomobject]@{
+          channelKey         = $key
+          newestProcessedUtc = $mk.newestRaw
+          lastMessageId      = $mk.lastId
+          updatedAt          = $nowIso
+          runId              = $runId
+        } | ConvertTo-Json -Compress
+
+        # Only advance forward: read existing mark, skip if not newer.
+        $shouldWrite = $true
+        try {
+          $existing = & dnx Zakira.Exchange --yes -- --db $dbPath get $cursorCategory $key 2>&1
+          if ($LASTEXITCODE -eq 0 -and $existing) {
+            $text = ($existing | ForEach-Object { [string]$_ }) -join "`n"
+            if ($text -match '"newestProcessedUtc"\s*:\s*"([^"]+)"') {
+              try {
+                $prev = [datetimeoffset]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture)
+                if ($prev -ge $mk.newestUtc) { $shouldWrite = $false }
+              } catch { }
+            }
+          }
+        } catch { }
+
+        if (-not $shouldWrite) { continue }
+
+        $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $cursorCategory $key `
+          --data $payload --author "inbox-triage:$runId" --reason 'scan cursor advance' 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $cursorCategory $key `
+            --data $payload --author "inbox-triage:$runId" --reason 'scan cursor seed' 2>&1
+        }
+        if ($LASTEXITCODE -eq 0) { $advanced += 1 }
+        else { [void]$errors.Add("cursor ${key}: $($out -join ' ')") }
+      }
+
+      [pscustomobject]@{
+        status    = 'advanced'
+        channels  = $marks.Count
+        advanced  = $advanced
+        errors    = $errors.ToArray()
+      } | ConvertTo-Json -Depth 10 -Compress
+    arguments:
+      - "{{reduce-mail.output}}"
+      - "{{reduce-teams.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraScanCursorCategory}}"
+      - "{{param.dryRun}}"
+      - "{{orchestration.runId}}"
+    timeoutSeconds: 300
 
   - name: classify
     type: Prompt
@@ -1474,6 +2077,9 @@ steps:
       - compute-lookback-window
       - discover-mail
       - discover-teams
+      - reduce-mail
+      - reduce-teams
+      - advance-scan-cursor
       - merge-and-dedupe
       - classify
       - diff-and-plan-upserts
@@ -1497,14 +2103,29 @@ steps:
       {{compute-lookback-window.output}}
       ```
 
-      ## Mail discovery
+      ## Mail discovery (gather manifest)
       ```json
       {{discover-mail.output}}
       ```
 
-      ## Teams discovery
+      ## Mail reduce (messages)
+      ```json
+      {{reduce-mail.output}}
+      ```
+
+      ## Teams discovery (gather manifest)
       ```json
       {{discover-teams.output}}
+      ```
+
+      ## Teams reduce (messages)
+      ```json
+      {{reduce-teams.output}}
+      ```
+
+      ## Scan cursor advance
+      ```json
+      {{advance-scan-cursor.output}}
       ```
 
       ## Merged + dedup

@@ -15,19 +15,27 @@ description: |
   Pattern mirrors PullRequests/pr-auto-reviewer.yaml (parent enumerates work items,
   dispatches one child per item via a forEach Orchestration step).
 
-  # TODO: companion child orchestration `diagnose-failed-orchestration-run` must be
-  # registered separately. It takes inputs { executionId, orchestrationName, runStatus,
-  # runsRoot, sourceRoot } and is responsible for the per-failure analysis + ActionView
-  # entry creation. Likewise a `apply-orchestration-fix` orchestration is referenced as
-  # the ActionView "Apply Fix" action target.
+  # Companion orchestrations (both live in this System/ folder and register via the
+  # workspace watcher):
+  #   * `diagnose-failed-orchestration-run` - the per-failure child dispatched below.
+  #     Receives the failed-run object as `failedRun` plus { runsRoot, sourceRoot,
+  #     orchestrationsRoot }; produces the diagnosis + ActionView entry.
+  #   * `apply-orchestration-fix` - the human-approved target of the ActionView
+  #     "Apply Fix" button (never auto-dispatched).
 
 version: 1.0.0
 tags: ["system", "diagnostics", "self-healing", "scheduled", "orchestra"]
 defaultModel: claude-opus-4.8
 
 variables:
-  runsRoot: "{{env.LOCALAPPDATA}}/Orchestra/runs"
+  # Real on-disk run artifacts live under OrchestraHost/executions (NOT
+  # Orchestra/runs, which does not exist on disk). The child self-corrects too,
+  # but keep this pointing at the correct location.
+  runsRoot: "{{env.LOCALAPPDATA}}/OrchestraHost/executions"
   sourceRoot: "P:/github/Orchestra"
+  # Root of orchestration YAMLs in this repo, so the child can resolve a failed
+  # orchestration's source file by its `name:` field.
+  orchestrationsRoot: "{{orchestration.sourceDirectory}}/.."
   lookbackMinutes: "70"
 
 defaultRetryPolicy:
@@ -130,6 +138,7 @@ steps:
     parameters:
       runsRoot: "{{vars.runsRoot}}"
       sourceRoot: "{{vars.sourceRoot}}"
+      orchestrationsRoot: "{{vars.orchestrationsRoot}}"
     mode: sync
     maxConcurrency: 3
     continueOnItemFailure: true
@@ -208,3 +217,31 @@ steps:
           ActionView.
        5. Any dispatch failures and what to do about them.
     timeoutSeconds: 120
+
+  - name: enforce-run-status
+    type: Script
+    dependsOn: [generate-summary, aggregate-diagnoses]
+    shell: pwsh
+    timeoutSeconds: 30
+    # Hardening: dispatch-diagnoses uses continueOnItemFailure, so a child that
+    # fails to dispatch (e.g. the companion orchestration is missing) or fails its
+    # own diagnosis would otherwise leave this whole run reporting Succeeded -- the
+    # exact "succeeded but nothing was diagnosed" symptom. This terminal gate fails
+    # the run when any diagnosis child failed, AFTER the human summary + ActionView
+    # entries have already been produced, so failures are surfaced not swallowed.
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $raw = [string]$args[0]
+      if ([string]::IsNullOrWhiteSpace($raw)) {
+        Write-Output 'No aggregate rollup to enforce.'
+        return
+      }
+      $rollup = ConvertFrom-Json -InputObject $raw -Depth 100
+      $failed = [int]$rollup.failed
+      $total  = [int]$rollup.totalDispatched
+      if ($failed -gt 0) {
+        throw "failed-orchestration-diagnoser: $failed of $total diagnosis child run(s) failed (dispatch or diagnosis). See the run summary and ActionView. Failing the run so this is not silently swallowed."
+      }
+      Write-Output "All $total diagnosis child run(s) succeeded."
+    arguments:
+      - "{{aggregate-diagnoses.output}}"

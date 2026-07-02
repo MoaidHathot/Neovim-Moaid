@@ -1,0 +1,328 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: apply-orchestration-fix
+description: |
+  Human-approved fixer. Triggered ONLY when a user clicks "Apply Fix" on a
+  failed-orchestration-diagnosis ActionView entry, which runs
+  `orchestra run apply-orchestration-fix --param ...`. It is never dispatched
+  automatically.
+
+  It reads the durable diagnosis artifact, backs up the target orchestration
+  YAML, applies the suggested fix to the YAML in this repo (working-tree only -
+  NO git commit), then posts a confirmation ActionView entry with "Re-run" and
+  "Revert" buttons. When the user ticked the "re-run" checkbox on the Apply Fix
+  button, it also kicks off a background re-run of the fixed orchestration.
+version: 1.0.0
+tags: ["system", "self-healing", "orchestra", "manual"]
+defaultModel: claude-opus-4.8
+
+inputs:
+  diagnosisPath:
+    type: string
+    description: Absolute path to diagnosis.json written by diagnose-failed-orchestration-run.
+    required: true
+  orchestrationPath:
+    type: string
+    description: Absolute path to the target orchestration YAML in this repo.
+    required: true
+  orchestrationName:
+    type: string
+    description: Name of the orchestration being fixed.
+    required: true
+  executionId:
+    type: string
+    description: Execution id of the original failed run (used for backup/artifact grouping).
+    required: true
+  failedRunPath:
+    type: string
+    description: Absolute path to the failed run's on-disk artifact folder.
+    required: false
+    default: ""
+  rerunAfterApply:
+    type: string
+    description: |
+      "true" to kick off a background re-run of the fixed orchestration after the
+      patch is written. Declared as a string (not boolean) so an unresolved
+      ActionView placeholder degrades safely to "do not re-run" instead of a
+      validation error.
+    required: false
+    default: "false"
+
+defaultRetryPolicy:
+  maxRetries: 1
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 300
+timeoutSeconds: 1800
+
+steps:
+  - name: read-diagnosis
+    type: Script
+    shell: pwsh
+    timeoutSeconds: 60
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $dp = ([string]$args[0]).Trim()
+      if ([string]::IsNullOrWhiteSpace($dp) -or -not (Test-Path -LiteralPath $dp)) {
+        throw "diagnosisPath not found: '$dp'"
+      }
+      $diag = Get-Content -LiteralPath $dp -Raw | ConvertFrom-Json -Depth 50
+      $diag | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{param.diagnosisPath}}"
+
+  - name: read-current-yaml
+    type: Script
+    shell: pwsh
+    timeoutSeconds: 60
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $p = ([string]$args[0]).Trim()
+      if ([string]::IsNullOrWhiteSpace($p) -or -not (Test-Path -LiteralPath $p)) {
+        throw "orchestrationPath not found: '$p'"
+      }
+      Get-Content -LiteralPath $p -Raw
+    arguments:
+      - "{{param.orchestrationPath}}"
+
+  - name: backup
+    type: Script
+    shell: pwsh
+    dependsOn: [read-current-yaml]
+    timeoutSeconds: 60
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $p = ([string]$args[0]).Trim()
+      $executionId = ([string]$args[1]).Trim()
+      if (-not (Test-Path -LiteralPath $p)) { throw "orchestrationPath not found: '$p'" }
+      if ([string]::IsNullOrWhiteSpace($executionId)) { $executionId = 'unknown' }
+      $dir = Join-Path $env:LOCALAPPDATA ('OrchestraHost/diagnoses/' + $executionId)
+      New-Item -ItemType Directory -Path $dir -Force | Out-Null
+      $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
+      $leaf = Split-Path -Leaf $p
+      $backup = Join-Path $dir ("backup-$ts-$leaf")
+      Copy-Item -LiteralPath $p -Destination $backup -Force
+      Write-Output $backup
+    arguments:
+      - "{{param.orchestrationPath}}"
+      - "{{param.executionId}}"
+
+  - name: apply-fix
+    type: Prompt
+    dependsOn: [read-diagnosis, read-current-yaml]
+    timeoutSeconds: 600
+    systemPrompt: |
+      You are an Orchestra orchestration fixer. You receive the full current YAML
+      of an orchestration and a diagnosis containing a suggested fix. Produce the
+      COMPLETE corrected YAML file.
+
+      Rules:
+        - Apply ONLY the change described by the diagnosis. Preserve everything
+          else exactly as-is (comments, ordering, formatting, whitespace).
+        - Keep the top-level `name:` and `version:` unchanged.
+        - Do NOT wrap the output in code fences and do NOT add any commentary.
+        - Output ONLY the raw, complete YAML document.
+    userPrompt: |
+      Diagnosis (JSON):
+      {{read-diagnosis.output}}
+
+      Current YAML:
+      {{read-current-yaml.output}}
+
+      Return the complete corrected YAML document.
+
+  - name: write-yaml
+    type: Script
+    shell: pwsh
+    dependsOn: [apply-fix, backup]
+    timeoutSeconds: 120
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      $new    = [string]$args[0]
+      $path   = ([string]$args[1]).Trim()
+      $name   = ([string]$args[2]).Trim()
+      $backup = ([string]$args[3]).Trim()
+
+      # Strip an optional ```lang ... ``` fence the model may have added.
+      $trimmed = $new.Trim()
+      if ($trimmed.StartsWith('```')) {
+        $trimmed = [regex]::Replace($trimmed, '^```[a-zA-Z0-9]*\s*\r?\n', '')
+        $trimmed = [regex]::Replace($trimmed, '\r?\n```\s*$', '')
+      }
+      if ([string]::IsNullOrWhiteSpace($trimmed)) { throw "apply-fix produced empty output; refusing to write." }
+
+      $oldContent = Get-Content -LiteralPath $path -Raw
+      $oldLines = ($oldContent -split "`n").Count
+      $newLines = ($trimmed -split "`n").Count
+
+      # Safety guard: reject a suspiciously short rewrite (likely truncation).
+      if ($newLines -lt [math]::Floor($oldLines * 0.5)) {
+        throw "Refusing to write: corrected YAML ($newLines lines) is under 50% of the original ($oldLines lines). Possible truncation. Backup at $backup."
+      }
+      # Safety guard: the corrected file must still declare the same name.
+      if ($trimmed -notmatch "(?m)^\s*name:\s*$([regex]::Escape($name))\s*$") {
+        throw "Refusing to write: corrected YAML no longer declares 'name: $name'. Backup at $backup."
+      }
+
+      # Normalize to LF, ensure trailing newline, write UTF-8 without BOM.
+      $lf = $trimmed -replace "`r`n", "`n"
+      $lf = $lf -replace "`r", "`n"
+      if (-not $lf.EndsWith("`n")) { $lf = $lf + "`n" }
+      $enc = New-Object System.Text.UTF8Encoding($false)
+      [System.IO.File]::WriteAllText($path, $lf, $enc)
+
+      $diff = ''
+      try {
+        $repoDir = Split-Path -Parent $path
+        $diff = (& git -C $repoDir --no-pager diff -- $path 2>$null | Out-String)
+      } catch { }
+      if ($diff.Length -gt 8000) { $diff = $diff.Substring(0,8000) + "`n[diff truncated]" }
+
+      [ordered]@{
+        path     = $path
+        backup   = $backup
+        oldLines = $oldLines
+        newLines = $newLines
+        diff     = $diff
+      } | ConvertTo-Json -Depth 20 -Compress
+    arguments:
+      - "{{apply-fix.output}}"
+      - "{{param.orchestrationPath}}"
+      - "{{param.orchestrationName}}"
+      - "{{backup.output}}"
+
+  - name: build-confirm-entry
+    type: Script
+    shell: pwsh
+    dependsOn: [write-yaml]
+    timeoutSeconds: 60
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      $w      = $args[0] | ConvertFrom-Json -Depth 50
+      $name   = ([string]$args[1]).Trim()
+      $path   = [string]$w.path
+      $backup = [string]$w.backup
+      $diff   = [string]$w.diff
+
+      $bt    = [string][char]96
+      $fence = $bt * 3
+      $md = New-Object System.Collections.Generic.List[string]
+      $md.Add("## Fix applied to $name")
+      $md.Add("")
+      $md.Add("The suggested fix was written to your working tree (no git commit).")
+      $md.Add("")
+      $md.Add("- File: $path")
+      $md.Add("- Backup: $backup")
+      $md.Add("- Lines: $([string]$w.oldLines) -> $([string]$w.newLines)")
+      $md.Add("")
+      if (-not [string]::IsNullOrWhiteSpace($diff)) {
+        $md.Add("### Diff")
+        $md.Add($fence + "diff")
+        $md.Add($diff)
+        $md.Add($fence)
+      } else {
+        $md.Add("_No git diff available (file may be untracked, or git not present)._")
+      }
+      $body = ($md -join "`n")
+
+      $rerun = [ordered]@{
+        label          = "Re-run $name"
+        style          = 'primary'
+        confirmMessage = "Re-run $name now?"
+        command        = [ordered]@{ type = 'cli'; program = 'orchestra'; args = @('run', $name) }
+        onSuccess      = 'keep'
+      }
+      $revertCmd = "Copy-Item -LiteralPath '$backup' -Destination '$path' -Force"
+      $revert = [ordered]@{
+        label          = 'Revert'
+        style          = 'danger'
+        confirmMessage = "Restore the previous version of $name from backup?"
+        command        = [ordered]@{ type = 'cli'; program = 'pwsh'; args = @('-NoProfile', '-NonInteractive', '-Command', $revertCmd) }
+        onSuccess      = 'archive'
+      }
+      $dismiss = [ordered]@{
+        label     = 'Dismiss'
+        style     = 'default'
+        command   = [ordered]@{ type = 'cli'; program = 'cmd'; args = @('/c', 'exit', '0') }
+        onSuccess = 'archive'
+      }
+
+      $entry = [ordered]@{
+        schemaVersion = '1'
+        type          = 'orchestration-fix-applied'
+        source        = 'apply-orchestration-fix'
+        title         = "Fix applied: $name"
+        subtitle      = 'Working-tree edit (no commit) - review, re-run, or revert'
+        severity      = 'medium'
+        icon          = 'wrench'
+        tags          = @('self-healing', 'orchestra', 'fix-applied', $name)
+        content       = @( [ordered]@{ type = 'markdown'; body = $body } )
+        actions       = @($rerun, $revert, $dismiss)
+      }
+
+      $dir = Split-Path -Parent $backup
+      $entryPath = Join-Path $dir 'fix-applied-entry.json'
+      $enc = New-Object System.Text.UTF8Encoding($false)
+      [System.IO.File]::WriteAllText($entryPath, ($entry | ConvertTo-Json -Depth 60), $enc)
+      Write-Output $entryPath
+    arguments:
+      - "{{write-yaml.output}}"
+      - "{{param.orchestrationName}}"
+
+  - name: submit-confirm-entry
+    type: Script
+    shell: pwsh
+    dependsOn: [build-confirm-entry]
+    timeoutSeconds: 120
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $file = ([string]$args[0]).Trim()
+      if ([string]::IsNullOrWhiteSpace($file) -or -not (Test-Path -LiteralPath $file)) {
+        throw "Confirmation entry file not found: '$file'"
+      }
+      & dnx ActionView.Cli --yes -- add --file $file
+      if ($LASTEXITCODE -ne 0) { throw "ActionView.Cli add failed with exit code $LASTEXITCODE." }
+      Write-Output "Submitted fix-applied ActionView entry: $file"
+    arguments:
+      - "{{build-confirm-entry.output}}"
+
+  - name: maybe-rerun
+    type: Script
+    shell: pwsh
+    dependsOn: [write-yaml]
+    timeoutSeconds: 60
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $rerun = ([string]$args[0]).Trim().ToLowerInvariant()
+      $name  = ([string]$args[1]).Trim()
+      if ($rerun -eq 'true') {
+        try {
+          Start-Process -FilePath 'orchestra' -ArgumentList @('run', $name) -WindowStyle Hidden
+          Write-Output "Triggered background re-run of $name."
+        } catch {
+          Write-Output "Could not auto re-run ${name}: $($_.Exception.Message)"
+        }
+      } else {
+        Write-Output "Auto re-run not requested."
+      }
+    arguments:
+      - "{{param.rerunAfterApply}}"
+      - "{{param.orchestrationName}}"
+
+  - name: final-report
+    type: Transform
+    dependsOn: [submit-confirm-entry, maybe-rerun, write-yaml]
+    template: |
+      # Apply Orchestration Fix
+
+      Write result:
+      {{write-yaml.output}}
+
+      ActionView submission:
+      {{submit-confirm-entry.output}}
+
+      Re-run:
+      {{maybe-rerun.output}}

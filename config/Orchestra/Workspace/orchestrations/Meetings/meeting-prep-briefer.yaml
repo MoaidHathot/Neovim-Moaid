@@ -10,7 +10,7 @@ description: |
   once per meeting by meeting-prep-brief and to be the unit of failure
   isolation: a failed brief for one meeting does not contaminate sibling
   meetings or the parent's Zakira state.
-version: 2.0.0
+version: 2.1.0
 tags: ["productivity", "meetings", "WorkIQ", "MSFT", "ZTS", "child", "auto"]
 defaultModel: claude-opus-4.8
 
@@ -563,13 +563,37 @@ steps:
   - name: generate-brief
     type: Prompt
     dependsOn: [merge-context]
+    inputHandlerPrompt: |
+      You are preparing the input for a brief-generation step. The material
+      below contains a normalized meeting object and a merged context object
+      (both JSON) plus surrounding instructions.
+
+      Pass through the meeting JSON and merged context JSON faithfully. Do
+      NOT summarize, drop, or reformat their fields. If either block is
+      wrapped in markdown fences or prefixed with prose, strip the fences
+      and prose so the downstream model sees clean JSON. Do not add any
+      commentary of your own. Emit the cleaned input verbatim.
     systemPrompt: |
       You are a meeting preparation expert. Synthesize all gathered context
       into ONE concise, actionable preparation brief for the meeting.
 
-      The output of this step is a single JSON manifest. Do NOT call
-      orchestra_save_file. Do NOT emit markdown alongside the JSON. The
-      downstream Script step writes the markdown to disk from the manifest.
+      CRITICAL OUTPUT CONTRACT — read before anything else:
+      - Your ENTIRE response MUST be a single JSON object and nothing else.
+      - The first character you emit MUST be `{` and the last MUST be `}`.
+      - Do NOT narrate, explain, or describe what you did. Never write
+        sentences such as "Generated the JSON manifest...", "Here is the
+        brief", "I created...", or any preamble/postamble.
+      - Do NOT wrap the JSON in markdown code fences (no ``` fences).
+      - Do NOT call orchestra_save_file or any file/tool to emit the brief.
+      - Do NOT emit markdown alongside the JSON. The full markdown brief
+        goes INSIDE the JSON, in the `markdown` string field only.
+      - If you have no useful content for a field, still emit the field with
+        an empty string or empty array — never omit required fields and never
+        replace the object with a prose apology.
+
+      The downstream Script step parses your output with ConvertFrom-Json and
+      writes the `markdown` field to disk. If your output is not a single
+      valid JSON object, the run fails. There is no human reading this text.
 
       Required manifest shape:
 
@@ -635,7 +659,8 @@ steps:
          empty array when none.
       8. `quickReference` must be at most 8 items.
       9. The orchestration output of this step MUST be the JSON manifest
-         only. The output handler will reject anything else.
+         only. Restate: no prose, no fences, no narration — just the object,
+         starting with `{` and ending with `}`.
     userPrompt: |
       Meeting:
       {{normalize-meeting.output}}
@@ -643,23 +668,134 @@ steps:
       Merged context:
       {{merge-context.output}}
 
-      I am {{param.reviewerName}}. Generate the brief manifest.
+      I am {{param.reviewerName}}. Generate the brief manifest. Respond with
+      the JSON object only — no prose before or after it.
     outputHandlerPrompt: |
-      Extract the brief manifest as one valid JSON object only with the
-      fields: title, startTime, endTime, organizer, attendees, timeZone,
-      webLink, slug, talkingPoints, openItems, quickReference,
-      topicsCount, hasOpenItems, markdown. Remove markdown fences, prose,
-      logs, and any trailing whitespace. The `markdown` field's value must
-      contain the rendered brief as a single JSON-escaped string. Output
-      only the JSON object.
+      You receive the raw output of a brief-generation model. Return a single
+      valid JSON manifest object and nothing else.
+
+      Steps:
+      1. If the input is already exactly one JSON object, return it unchanged
+         (minus any surrounding whitespace).
+      2. If the JSON object is wrapped in markdown code fences, prose,
+         logs, or narration (e.g. it starts with "Generated..."), extract the
+         first complete top-level `{ ... }` object and return only that.
+      3. The object must contain these fields: title, startTime, endTime,
+         organizer, attendees, timeZone, webLink, slug, talkingPoints,
+         openItems, quickReference, topicsCount, hasOpenItems, markdown. The
+         `markdown` field must be the rendered brief as a single
+         JSON-escaped string.
+      4. If, and only if, the input contains NO recoverable JSON object at
+         all (it is pure prose with no `{...}` manifest), return exactly this
+         object so the failure is explicit and machine-detectable:
+         {"error":"NO_MANIFEST","raw":"<first 200 characters of the input>"}
+      Output only the JSON object. No markdown fences, no commentary.
     reasoningLevel: Medium
+
+  - name: validate-brief-manifest
+    type: Prompt
+    dependsOn: [generate-brief]
+    systemPrompt: |
+      You are a strict JSON manifest validator for a meeting-brief pipeline.
+      You are given the output of the `generate-brief` step, which MUST be a
+      single JSON object (the brief manifest). Your job is to decide whether
+      it satisfies the contract and, if not, to produce precise feedback that
+      tells `generate-brief` exactly how to fix it on the next attempt.
+
+      The manifest is valid only if ALL of these hold:
+      1. The input is exactly one JSON object: it starts with `{`, ends with
+         `}`, and contains no prose, narration, or markdown fences around it.
+         Output like "Generated the JSON manifest..." is INVALID — that is
+         prose, not a manifest.
+      2. It parses as valid JSON.
+      3. It is NOT the sentinel {"error":"NO_MANIFEST",...}.
+      4. It contains every required field: title, startTime, endTime,
+         organizer, attendees (array), timeZone, webLink, slug (non-empty
+         string), talkingPoints (array), openItems (array), quickReference
+         (array), topicsCount (integer), hasOpenItems (boolean), markdown
+         (non-empty string).
+      5. `slug` matches the pattern YYYY-MM-DD-<title-slug>, lowercase,
+         hyphen-separated, no spaces or path separators.
+      6. `markdown` is a single JSON-escaped string containing the rendered
+         brief (starts with "# Meeting Brief:").
+
+      Decision output:
+      - If every requirement holds, respond with exactly the single token on
+        its own line:
+        MANIFEST_VALID
+        (nothing else — no JSON, no prose.)
+      - If ANY requirement fails, respond with:
+        MANIFEST_INVALID
+        followed by a numbered list of the specific problems and the exact
+        corrective action for each (e.g. "1. Output was prose beginning
+        'Generated the JSON manifest'. Emit ONLY the JSON object, starting
+        with '{'. Do not describe what you did."). Be concrete so the next
+        attempt can succeed. Do NOT output the corrected manifest yourself —
+        only the feedback.
+    userPrompt: |
+      Validate the brief manifest produced by generate-brief:
+
+      {{generate-brief.output}}
+    loop:
+      target: generate-brief
+      maxIterations: 3
+      exitPattern: "MANIFEST_VALID"
 
   - name: save-brief-to-disk
     type: Script
-    dependsOn: [generate-brief]
+    dependsOn: [generate-brief, validate-brief-manifest]
     shell: pwsh
     script: |
       $ErrorActionPreference = 'Stop'
+
+      # Extracts the first complete, balanced top-level JSON object from a
+      # string that may be wrapped in markdown fences or prefixed/suffixed
+      # with prose or narration. Returns $null when no object is present.
+      function Get-JsonObjectCandidate {
+        param([Parameter(Mandatory)][string]$Text)
+
+        $trimmed = $Text.Trim()
+
+        # Strip a leading ```json / ``` fence and its closing fence if present.
+        if ($trimmed.StartsWith('```')) {
+          $lines = @($trimmed -split "`r?`n")
+          if ($lines.Count -gt 1) {
+            $trimmed = ($lines[1..($lines.Count - 1)] -join "`n").Trim()
+            if ($trimmed.EndsWith('```')) {
+              $trimmed = $trimmed.Substring(0, $trimmed.Length - 3).Trim()
+            }
+          }
+        }
+
+        $start = $trimmed.IndexOf('{')
+        if ($start -lt 0) { return $null }
+
+        # Walk the string tracking brace depth while respecting JSON strings
+        # and escapes, so braces inside string values do not fool us.
+        $depth = 0
+        $inString = $false
+        $escaped = $false
+        for ($i = $start; $i -lt $trimmed.Length; $i++) {
+          $ch = $trimmed[$i]
+          if ($inString) {
+            if ($escaped) { $escaped = $false }
+            elseif ($ch -eq '\') { $escaped = $true }
+            elseif ($ch -eq '"') { $inString = $false }
+            continue
+          }
+          switch ($ch) {
+            '"' { $inString = $true }
+            '{' { $depth++ }
+            '}' {
+              $depth--
+              if ($depth -eq 0) {
+                return $trimmed.Substring($start, $i - $start + 1)
+              }
+            }
+          }
+        }
+        return $null
+      }
 
       $dryRun        = $args[0]
       $briefingsDir  = $args[1]
@@ -678,10 +814,38 @@ steps:
         throw 'generate-brief output (manifest) is empty; cannot save brief.'
       }
 
-      $manifest = ConvertFrom-Json -InputObject $manifestJson -NoEnumerate -ErrorAction Stop
+      # Defensive extraction: even though generate-brief + validate-brief-manifest
+      # should guarantee a clean object, tolerate fences/prose so a single
+      # off-spec response does not lose an otherwise-good brief.
+      $candidate = Get-JsonObjectCandidate -Text $manifestJson
+      if ($null -eq $candidate) {
+        $preview = $manifestJson.Trim()
+        if ($preview.Length -gt 200) { $preview = $preview.Substring(0, 200) + '...' }
+        throw ("generate-brief did not return a JSON manifest. Expected a single JSON object " +
+               "starting with '{' but got non-JSON content (likely prose/narration). " +
+               "First 200 chars: <<$preview>>")
+      }
 
-      $slug = [string]$manifest.slug
-      $markdown = [string]$manifest.markdown
+      try {
+        $manifest = ConvertFrom-Json -InputObject $candidate -NoEnumerate -ErrorAction Stop
+      } catch {
+        $preview = $candidate.Trim()
+        if ($preview.Length -gt 200) { $preview = $preview.Substring(0, 200) + '...' }
+        throw ("generate-brief output could not be parsed as JSON: $($_.Exception.Message) " +
+               "First 200 chars of candidate: <<$preview>>")
+      }
+
+      # Detect the explicit no-manifest sentinel emitted by the output handler
+      # when the model produced pure prose with no recoverable object.
+      $errorField = if ($manifest.PSObject.Properties['error']) { [string]$manifest.error } else { $null }
+      if ($errorField -eq 'NO_MANIFEST') {
+        $raw = if ($manifest.PSObject.Properties['raw']) { [string]$manifest.raw } else { '(no raw captured)' }
+        throw ("generate-brief failed to produce a manifest after validation retries " +
+               "(sentinel NO_MANIFEST). Raw model output began: <<$raw>>")
+      }
+
+      $slug = if ($manifest.PSObject.Properties['slug']) { [string]$manifest.slug } else { '' }
+      $markdown = if ($manifest.PSObject.Properties['markdown']) { [string]$manifest.markdown } else { '' }
 
       if ([string]::IsNullOrWhiteSpace($slug)) {
         throw 'Brief manifest is missing required field: slug.'
