@@ -3,6 +3,6 @@
   "storage": {
     "home": "%onedrive%\\AIWD\\Scans",
     "evidence": { "mode": "full", "capture": "all" },
-    "portal": { "profiles": "P:\\work\\Networking\\AI-Workload-Detector\\config\\profiles" }
+    "portal": { "port": 8788, "profiles": "P:\\work\\Networking\\AI-Workload-Detector\\config\\profiles" }
   }
 }
