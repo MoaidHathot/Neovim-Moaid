@@ -73,8 +73,6 @@
 			"command": "dnx",
 			"arguments": [
 				"--yes",
-				"--add-source",
-				"https://api.nuget.org/v3/index.json",
 				"PowerReview",
 				"--",
 				"mcp"
