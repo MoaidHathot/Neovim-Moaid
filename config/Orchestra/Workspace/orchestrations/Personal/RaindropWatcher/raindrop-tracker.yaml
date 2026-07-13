@@ -38,7 +38,7 @@ description: |
   Auth, API calls, and OAuth all live in tools/raindrop.cs -- this
   orchestration shells out to that helper and never speaks raindrop.io's
   REST API directly.
-version: 1.1.0
+version: 1.2.0
 tags: ["personal", "raindrop", "auto", "watcher"]
 defaultModel: claude-opus-4.8
 
@@ -182,25 +182,31 @@ steps:
     timeoutSeconds: 180
 
   - name: gate-empty
-    type: Prompt
-    workingDirectory: "{{orchestration.tempDir}}"
+    type: Script
+    shell: pwsh
     dependsOn: [list-inbox]
-    systemPrompt: |
-      You are a gate-check assistant. Your only job is to decide whether the
-      tracker should continue. You have access to the orchestra_complete tool.
-    userPrompt: |
-      Inspect this JSON response from the raindrop CLI:
-
-      {{list-inbox.output}}
-
-      The shape is { "ok": true, "collectionId": <int>, "count": <n>, "items": [ ... ] }.
-
-      If `count` is 0 or `items` is empty or missing, call orchestra_complete
-      with status 'success' and reason 'Inbox is empty, nothing to dispatch.'
-
-      Otherwise output the items array as a JSON array (and nothing else)
-      so downstream steps can iterate it. Do not add commentary.
-    timeoutSeconds: 120
+    # Deterministic emptiness gate. Previously an LLM Prompt step that needed a healthy,
+    # authenticated Copilot CLI just to decide count==0 -- a fragile dependency for a trivial
+    # check (a de-authenticated CLI failed the whole tick here). This Script extracts the
+    # raindrop `items` array for downstream steps and, when the inbox is empty, halts the tick
+    # early via the Script control channel (Orchestra-Complete) -- the non-LLM equivalent of
+    # orchestra_complete. Empty ticks now cost zero LLM calls.
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $resp = $null
+      try { $resp = $args[0] | ConvertFrom-Json } catch {}
+      $items = @()
+      if ($resp -and $resp.PSObject.Properties['items'] -and $resp.items) { $items = @($resp.items) }
+      $count = if ($resp -and $resp.PSObject.Properties['count']) { [int]$resp.count } else { $items.Count }
+      if (-not $resp -or -not $resp.ok -or $count -eq 0 -or $items.Count -eq 0) {
+        Orchestra-Complete -Status success -Reason 'Inbox is empty, nothing to dispatch.'
+        '[]'
+        return
+      }
+      $items | ConvertTo-Json -Depth 100 -Compress -AsArray
+    arguments:
+      - "{{list-inbox.output}}"
+    timeoutSeconds: 60
 
   - name: load-state
     type: Script
