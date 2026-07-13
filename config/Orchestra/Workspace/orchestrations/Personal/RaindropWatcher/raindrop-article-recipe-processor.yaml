@@ -61,16 +61,9 @@ variables:
 defaultStepTimeoutSeconds: 900
 timeoutSeconds: 3600
 
-mcps:
-  # Playwright MCP -- used by the fetch-readable step as fallback when the
-  # cheap HTTP fetch returns thin / JS-only content.
-  - name: playwright
-    type: local
-    command: npx
-    arguments:
-      - "@playwright/mcp@latest"
-      - "--headless"
-      - "--browser=msedge"
+# The `playwright` MCP is defined once in the global orchestra.mcp.json (with the public
+# npm registry override, since the machine default may be a stale internal proxy) and is
+# referenced by name from the fetch-readable step below.
 
 steps:
   - name: fetch-http

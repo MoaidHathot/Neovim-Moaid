@@ -8,14 +8,9 @@ defaultModel: claude-opus-4.8
 variables:
   watchlistPath: "{{env.USERPROFILE}}\\OneDrive\\Documents\\Obsidian Vault\\Family\\Lily\\Baby\\Tracking out of stock items.md"
 
-mcps:
-  - name: playwright
-    type: local
-    command: npx
-    arguments:
-      - "@playwright/mcp@latest"
-      - "--headless"
-      - "--browser=msedge"
+# The `playwright` MCP is defined once in the global orchestra.mcp.json (with the public
+# npm registry override, since the machine default may be a stale internal proxy) and is
+# referenced by name from the check step below.
 
 steps:
   - name: load-watchlist

@@ -105,6 +105,18 @@
         "AZURE_SCOPES": "${VSCODE_AUDIENCE}/.default"
       },
       "enabled": true
-    }
+    },
+		{
+			"name": "playwright",
+			"type": "local",
+			"command": "npx",
+			"arguments": [
+				"--yes",
+				"--registry=https://registry.npmjs.org/",
+				"@playwright/mcp@latest",
+				"--headless",
+				"--browser=msedge"
+			]
+		}
 	]
 }

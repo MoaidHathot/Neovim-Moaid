@@ -454,6 +454,11 @@ mcps:
     type: local
     command: npx
     arguments:
+      # Force the public npm registry so `@playwright/mcp@latest` resolves to the current
+      # build (with --browser); a machine default pointing at an internal proxy can serve a
+      # stale build that lacks --browser and crashes the MCP at startup. --yes = non-interactive.
+      - "--yes"
+      - "--registry=https://registry.npmjs.org/"
       - "@playwright/mcp@latest"
       - "--headless"
 ```
