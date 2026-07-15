@@ -20,6 +20,11 @@
 # defense for this exact case.
 
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandArgumentPassing = 'Standard'
+# The Zakira CLI emits UTF-8; decode captured output as UTF-8 so a non-ASCII title
+# survives into the failed-state record instead of being mojibake'd through the OEM
+# code page. Guarded: the setter can throw under redirected stdout.
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $raindropId = $args[0]
 $url        = $args[1]
 $title      = $args[2]
@@ -59,29 +64,78 @@ $nowIso = (Get-Date).ToUniversalTime().ToString('o')
 # --- 1) Update Zakira.Exchange state -----------------------------------------
 # We can't invoke the MCP from a script directly, so we shell out to the
 # Zakira.Exchange CLI (the same package, different command shape).
+#
+# The CLI is invoked via `dotnet dnx` rather than the `dnx` shim, with Standard native
+# arg passing (set at the top): PowerShell's default Windows arg passing strips the
+# double-quotes out of the JSON --data payload when the target is the dnx.cmd shim, which
+# stores the record as unparseable `{k:v}` text that raindrop-tracker's load-state can't
+# read back (it would then treat the failed item as brand-new). Standard passing + calling
+# dotnet.exe directly keeps the JSON intact so the record round-trips as valid JSON.
 $zakiraDb = if ($env:XDG_CONFIG_HOME) { Join-Path $env:XDG_CONFIG_HOME 'orchestra/zakira.db' } else { $null }
 if (-not $zakiraDb) {
     throw "hook-mark-failed: XDG_CONFIG_HOME is not set; cannot locate zakira.db. The state record for raindropId=$raindropId could not be updated. The next tracker tick's stuck-in-flight rule should recover this."
 }
 
-$updatedData = @{
-    raindropId = $raindropId
-    url        = $url
-    title      = $title
-    status     = 'failed'
-    failedAt   = $nowIso
-    failedStep = $failedStep
-    lastError  = $errorMessage
-} | ConvertTo-Json -Compress
+$dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 
-& dnx Zakira.Exchange --yes -- --db $zakiraDb edit `
-    --category raindrop-watcher-state `
-    --key $raindropId `
-    --data $updatedData `
-    --reason "marked failed by raindrop-processor failure hook" `
-    --tags failed 2>&1 | ForEach-Object { Write-Information $_ -InformationAction Continue }
+function Get-DataJsonFromCliOutput {
+    param([string[]]$Lines)
+    if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+    $dataIdx = -1
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+    }
+    if ($dataIdx -lt 0) { return $null }
+    $endIdx = $Lines.Count
+    for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+        if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') { $endIdx = $j; break }
+    }
+    $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+    return ($span -replace '^\s*Data:\s*', '').Trim()
+}
+
+# Read the current record and MERGE the failure fields onto it (get -> merge -> upsert),
+# rather than overwriting. A plain overwrite drops `attempts`, and the tracker's dead-letter
+# rule (R3: status=failed AND attempts >= maxAttempts) would then never fire -> the item
+# would retry forever instead of dead-lettering. Merging preserves attempts, queuedAt,
+# startedAt, firstSeenAt and the noteHash change-detection key. edit-first / create-fallback
+# keeps the write idempotent and heals a legacy corrupted (unparseable) record by replacing
+# it with clean JSON.
+$existed = $false
+$data = [ordered]@{}
+$cliOut = & $dotnet dnx Zakira.Exchange --yes -- --db $zakiraDb get raindrop-watcher-state $raindropId 2>&1
+if ($LASTEXITCODE -eq 0) {
+    $json = Get-DataJsonFromCliOutput -Lines @($cliOut)
+    if (-not [string]::IsNullOrWhiteSpace($json)) {
+        try {
+            $obj = $json | ConvertFrom-Json -DateKind String -ErrorAction Stop
+            foreach ($p in $obj.PSObject.Properties) { $data[$p.Name] = $p.Value }
+            $existed = $true
+        } catch { $existed = $false }
+    }
+}
+
+if (-not $data.Contains('raindropId'))            { $data['raindropId'] = $raindropId }
+if (-not $data.Contains('url')   -and $url)       { $data['url']        = $url }
+if (-not $data.Contains('title') -and $title)     { $data['title']      = $title }
+$data['status']     = 'failed'
+$data['failedAt']   = $nowIso
+$data['failedStep'] = $failedStep
+$data['lastError']  = $errorMessage
+
+$updatedData = $data | ConvertTo-Json -Depth 50 -Compress
+$reason = "marked failed by raindrop-processor failure hook"
+$primary   = if ($existed) { 'edit' }   else { 'create' }
+$secondary = if ($existed) { 'create' } else { 'edit' }
+
+$out1 = & $dotnet dnx Zakira.Exchange --yes -- --db $zakiraDb $primary raindrop-watcher-state $raindropId --data $updatedData --reason $reason --tags failed 2>&1
+$out1 | ForEach-Object { Write-Information $_ -InformationAction Continue }
 if ($LASTEXITCODE -ne 0) {
-    throw "hook-mark-failed: zakira edit exited $LASTEXITCODE for raindropId=$raindropId. The watcher state record is now inconsistent; the next tracker tick will need stuck-in-flight detection to recover."
+    $out2 = & $dotnet dnx Zakira.Exchange --yes -- --db $zakiraDb $secondary raindrop-watcher-state $raindropId --data $updatedData --reason $reason --tags failed 2>&1
+    $out2 | ForEach-Object { Write-Information $_ -InformationAction Continue }
+    if ($LASTEXITCODE -ne 0) {
+        throw "hook-mark-failed: zakira upsert failed for raindropId=$raindropId (${primary}=[$($out1 -join ' ')] ${secondary}=[$($out2 -join ' ')]). The watcher state record is now inconsistent; the next tracker tick will need stuck-in-flight detection to recover."
+    }
 }
 
 # --- 2) Publish a raindrop-error ActionView entry ----------------------------

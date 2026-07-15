@@ -28,7 +28,7 @@ description: |
   state record at "processing"; the failure hook flips it to "failed" --
   the analysis succeeded so the user can find the ActionView entry, and
   the next tracker tick will skip the item (it is no longer in AI-Inbox).
-version: 1.1.0
+version: 1.2.0
 tags: ["personal", "raindrop", "auto", "processor"]
 defaultModel: claude-opus-4.8
 
@@ -95,19 +95,10 @@ defaultStepTimeoutSeconds: 1800
 timeoutSeconds: 7200
 
 mcps:
-  - name: zakira
-    type: local
-    command: dnx
-    arguments:
-      - Zakira.Exchange
-      - "--yes"
-      - "--"
-      - "--db"
-      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
-      - mcp
-      - "--category"
-      - "{{vars.zakiraCategory}}"
-
+  # Zakira state writes moved to deterministic Script steps (mark-processing / mark-completed)
+  # that shell out to `dnx Zakira.Exchange` directly, so the `zakira` MCP is no longer
+  # referenced by any step. Only the remote `orchestra` data-plane MCP remains (used by
+  # dispatch-processor to invoke the child processor).
   - name: orchestra
     type: remote
     endpoint: "{{server.url}}/mcp/data"
@@ -130,34 +121,133 @@ hooks:
 
 steps:
   - name: mark-processing
-    type: Prompt
-    workingDirectory: "{{orchestration.tempDir}}"
+    type: Script
+    shell: pwsh
     dependsOn: []
-    systemPrompt: |
-      You are a state-persistence assistant with Zakira.Exchange MCP tools.
-      The category is locked to raindrop-watcher-state. Update the existing
-      memory record for this raindrop, setting status="processing", noting
-      orchestrationRunId, and bumping attempts based on priorAttempts.
-      Use edit_memory (the tracker pre-created the record with create_memory).
-    userPrompt: |
-      Update the state record for this raindrop.
+    # Deterministic state write. Previously an LLM Prompt (claude-opus-4.8) that timed out at
+    # 60s: the model over-reasoned a trivial edit_memory and the two Zakira MCP round-trips blew
+    # the budget -- even though the write eventually succeeded, the step was already marked
+    # failed. This shells out to the Zakira CLI directly (same package as the MCP) and does
+    # get -> merge -> idempotent upsert, so the record's other fields (noteHash -- the tracker's
+    # change-detection key -- queuedAt, firstSeenAt, addedAt, ...) are preserved. Idempotent:
+    # `edit` is tried first (the tracker pre-created the record) and falls back to `create` if
+    # the key is missing, so neither "already exists" nor "not found" can fail the step.
+    # The CLI is invoked via `dotnet dnx` (NOT the `dnx` shim) with Standard native arg
+    # passing: PowerShell's default Windows arg passing strips the double-quotes out of the
+    # JSON --data payload when the target is the dnx.cmd shim, storing the record as
+    # unparseable `{k:v}` text that load-state can't read back. Standard passing + calling
+    # dotnet.exe directly keeps the JSON intact.
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+      # The Zakira CLI emits UTF-8; decode its captured output as UTF-8 so non-ASCII fields
+      # (titles/notes) survive the read -> merge -> write round-trip instead of being mojibake'd
+      # through the console's OEM code page. Guarded: the setter can throw under redirected
+      # stdout, in which case only free-text display fields degrade -- the ASCII state fields the
+      # scheduler actually reads (status, attempts, timestamps, noteHash) are unaffected.
+      try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
-      raindropId    = {{param.raindropId}}
-      url           = {{param.url}}
-      title         = {{param.title}}
-      priorAttempts = {{param.priorAttempts}}
-      orchestration = {{orchestration.runId}}
+      $rid      = $args[0]
+      $url      = $args[1]
+      $title    = $args[2]
+      $noteHash = $args[3]
+      $tagsJson = $args[4]
+      $addedAt  = $args[5]
+      $prior    = 0; try { $prior = [int]$args[6] } catch { $prior = 0 }
+      $runId    = $args[7]
+      $db       = $args[8]
+      $category = $args[9]
 
-      Fields to write:
-        status            = "processing"
-        attempts          = priorAttempts + 1
-        startedAt         = current ISO-8601 timestamp
-        orchestrationRunId = "{{orchestration.runId}}"
-        lastError         = null
+      if ([string]::IsNullOrWhiteSpace($rid)) { throw 'raindropId is required.' }
+      if ([string]::IsNullOrWhiteSpace($db))  { throw 'zakira db path is required.' }
 
-      Output: { "ok": true }
-    mcps: [zakira]
-    timeoutSeconds: 60
+      # Invoke Zakira.Exchange through dotnet.exe directly (see step note): PowerShell's default
+      # Windows native arg passing strips the quotes out of the --data JSON when the target is
+      # the dnx.cmd shim. Standard passing (set above) + calling dotnet.exe directly keeps the
+      # JSON payload intact so the record round-trips as valid JSON.
+      $dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+      function Invoke-Zakira { & $dotnet dnx Zakira.Exchange --yes -- @args }
+
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') { $endIdx = $j; break }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
+
+      # 1) Read the current record (may not exist yet).
+      $existed = $false
+      $data = [ordered]@{}
+      $cliOut = Invoke-Zakira --db $db get $category $rid 2>&1
+      if ($LASTEXITCODE -eq 0) {
+        $json = Get-DataJsonFromCliOutput -Lines @($cliOut)
+        if (-not [string]::IsNullOrWhiteSpace($json)) {
+          try {
+            $obj = $json | ConvertFrom-Json -DateKind String -ErrorAction Stop
+            foreach ($p in $obj.PSObject.Properties) { $data[$p.Name] = $p.Value }
+            $existed = $true
+          } catch { $existed = $false }
+        }
+      }
+
+      # 2) Seed identity fields from params only when missing (never clobber existing state).
+      if (-not $data.Contains('raindropId')) { $data['raindropId'] = $rid }
+      if (-not $data.Contains('url')      -and $url)      { $data['url']      = $url }
+      if (-not $data.Contains('title')    -and $title)    { $data['title']    = $title }
+      if (-not $data.Contains('noteHash') -and $noteHash) { $data['noteHash'] = $noteHash }
+      if (-not $data.Contains('addedAt')  -and $addedAt)  { $data['addedAt']  = $addedAt }
+      if (-not $data.Contains('tags')) {
+        $t = @(); if ($tagsJson) { try { $t = @($tagsJson | ConvertFrom-Json) } catch { $t = @() } }
+        $data['tags'] = $t
+      }
+
+      # 3) Merge the processing-state fields.
+      $attempts = $prior + 1
+      $data['status']             = 'processing'
+      $data['attempts']           = $attempts
+      $data['startedAt']          = (Get-Date).ToUniversalTime().ToString('o')
+      $data['orchestrationRunId'] = $runId
+      $data['lastError']          = $null
+
+      $payload = $data | ConvertTo-Json -Depth 50 -Compress
+      $reason  = "mark-processing: raindrop $rid -> processing (attempt $attempts) under run $runId"
+      $author  = 'raindrop-watcher'
+
+      # 4) Idempotent upsert. `edit` fails if the key is missing; `create` fails if it exists.
+      #    Prefer edit (record pre-created by the tracker), fall back to create.
+      $primary   = if ($existed) { 'edit' }   else { 'create' }
+      $secondary = if ($existed) { 'create' } else { 'edit' }
+
+      $out1 = Invoke-Zakira --db $db $primary $category $rid --data $payload --author $author --reason $reason --tags processing 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        $out2 = Invoke-Zakira --db $db $secondary $category $rid --data $payload --author $author --reason $reason --tags processing 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          throw "zakira upsert failed for ${rid}: ${primary}=[$($out1 -join ' ')] ${secondary}=[$($out2 -join ' ')]"
+        }
+      }
+
+      '{ "ok": true }'
+    arguments:
+      - "{{param.raindropId}}"
+      - "{{param.url}}"
+      - "{{param.title}}"
+      - "{{param.noteHash}}"
+      - "{{param.tags}}"
+      - "{{param.addedAt}}"
+      - "{{param.priorAttempts}}"
+      - "{{orchestration.runId}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraCategory}}"
+    timeoutSeconds: 120
 
   - name: classify
     type: Prompt
@@ -257,42 +347,109 @@ steps:
     timeoutSeconds: 120
 
   - name: mark-completed
-    type: Prompt
-    workingDirectory: "{{orchestration.tempDir}}"
+    type: Script
+    shell: pwsh
     dependsOn: [dispatch-processor, move-to-processed]
-    systemPrompt: |
-      You are a state-persistence assistant with Zakira.Exchange MCP tools.
-      Update the memory record for this raindrop to status="completed".
-      Preserve the noteHash from input parameters; record the processor name,
-      the child executionId, and a short summary line. Use edit_memory.
+    # Deterministic state write (previously an LLM Prompt). Runs AFTER move-to-processed, so a
+    # timeout here would waste a successful, expensive analysis. Same get -> merge -> idempotent
+    # upsert as mark-processing; lastProcessor / lastChildExecutionId are parsed from the
+    # dispatch result. Order note preserved from the original: "completed" is written only after
+    # the raindrop is already in AI-Processed, so a flaky move can never leave state=completed
+    # while the raindrop is still in AI-Inbox.
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+      # See mark-processing: decode the CLI's UTF-8 output as UTF-8 so non-ASCII fields survive
+      # the read -> merge -> write round-trip. Guarded against redirected-stdout hosts.
+      try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
-      This step runs AFTER move-to-processed, so by the time we mark
-      "completed", the raindrop is already in AI-Processed. Order matters:
-      if we marked completed first and then the move failed, the state
-      would say "completed" but the raindrop would still be in AI-Inbox,
-      which would either confuse the next tracker tick or cause the entire
-      pipeline (analysis included) to run again.
-    userPrompt: |
-      Update state for raindropId={{param.raindropId}}.
+      $rid          = $args[0]
+      $noteHash     = $args[1]
+      $dispatchJson = $args[2]
+      $db           = $args[3]
+      $category     = $args[4]
 
-      Child dispatch result:
-      {{dispatch-processor.output}}
+      if ([string]::IsNullOrWhiteSpace($rid)) { throw 'raindropId is required.' }
+      if ([string]::IsNullOrWhiteSpace($db))  { throw 'zakira db path is required.' }
 
-      Move-to-processed result:
-      {{move-to-processed.output}}
+      # Invoke Zakira.Exchange through dotnet.exe directly (see mark-processing note): PowerShell's
+      # default Windows native arg passing strips the quotes out of the --data JSON when the target
+      # is the dnx.cmd shim. Standard passing + calling dotnet.exe directly keeps the JSON intact.
+      $dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+      function Invoke-Zakira { & $dotnet dnx Zakira.Exchange --yes -- @args }
 
-      Fields to write:
-        status              = "completed"
-        completedAt         = current ISO-8601 timestamp
-        noteHash            = "{{param.noteHash}}"
-        lastProcessor       = (read `processor` from the dispatch result)
-        lastChildExecutionId = (read `executionId` from the dispatch result)
-        lastError           = null
+      function Get-DataJsonFromCliOutput {
+        param([string[]]$Lines)
+        if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
+        $dataIdx = -1
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+          if ([string]$Lines[$i] -match '^\s*Data:\s*') { $dataIdx = $i; break }
+        }
+        if ($dataIdx -lt 0) { return $null }
+        $endIdx = $Lines.Count
+        for ($j = $dataIdx + 1; $j -lt $Lines.Count; $j++) {
+          if ([string]$Lines[$j] -match '^\s*(Author|Reason|Tags|Custom|Created|Last Modified):\s*') { $endIdx = $j; break }
+        }
+        $span = ($Lines[$dataIdx..($endIdx - 1)] | ForEach-Object { [string]$_ }) -join "`n"
+        return ($span -replace '^\s*Data:\s*', '').Trim()
+      }
 
-      Tag the memory record with ["completed"].
+      # Best-effort parse of the dispatcher result for processor + child executionId.
+      $lastProcessor = $null; $lastChildExecutionId = $null
+      if (-not [string]::IsNullOrWhiteSpace($dispatchJson)) {
+        try {
+          $d = $dispatchJson | ConvertFrom-Json -ErrorAction Stop
+          if ($d.PSObject.Properties['processor'])   { $lastProcessor        = [string]$d.processor }
+          if ($d.PSObject.Properties['executionId']) { $lastChildExecutionId = [string]$d.executionId }
+        } catch { }
+      }
 
-      Output: { "ok": true }
-    mcps: [zakira]
+      # 1) Read the current record (set to 'processing' by mark-processing).
+      $existed = $false
+      $data = [ordered]@{}
+      $cliOut = Invoke-Zakira --db $db get $category $rid 2>&1
+      if ($LASTEXITCODE -eq 0) {
+        $json = Get-DataJsonFromCliOutput -Lines @($cliOut)
+        if (-not [string]::IsNullOrWhiteSpace($json)) {
+          try {
+            $obj = $json | ConvertFrom-Json -DateKind String -ErrorAction Stop
+            foreach ($p in $obj.PSObject.Properties) { $data[$p.Name] = $p.Value }
+            $existed = $true
+          } catch { $existed = $false }
+        }
+      }
+      if (-not $data.Contains('raindropId')) { $data['raindropId'] = $rid }
+
+      # 2) Merge the completed-state fields.
+      $data['status']               = 'completed'
+      $data['completedAt']          = (Get-Date).ToUniversalTime().ToString('o')
+      if ($noteHash) { $data['noteHash'] = $noteHash }
+      $data['lastProcessor']        = $lastProcessor
+      $data['lastChildExecutionId'] = $lastChildExecutionId
+      $data['lastError']            = $null
+
+      $payload = $data | ConvertTo-Json -Depth 50 -Compress
+      $reason  = "mark-completed: raindrop $rid -> completed (processor=$lastProcessor)"
+      $author  = 'raindrop-watcher'
+
+      # 3) Idempotent upsert (edit-first, create fallback).
+      $primary   = if ($existed) { 'edit' }   else { 'create' }
+      $secondary = if ($existed) { 'create' } else { 'edit' }
+      $out1 = Invoke-Zakira --db $db $primary $category $rid --data $payload --author $author --reason $reason --tags completed 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        $out2 = Invoke-Zakira --db $db $secondary $category $rid --data $payload --author $author --reason $reason --tags completed 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          throw "zakira upsert failed for ${rid}: ${primary}=[$($out1 -join ' ')] ${secondary}=[$($out2 -join ' ')]"
+        }
+      }
+
+      '{ "ok": true }'
+    arguments:
+      - "{{param.raindropId}}"
+      - "{{param.noteHash}}"
+      - "{{dispatch-processor.output}}"
+      - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+      - "{{vars.zakiraCategory}}"
     timeoutSeconds: 120
 
   - name: processor-summary
