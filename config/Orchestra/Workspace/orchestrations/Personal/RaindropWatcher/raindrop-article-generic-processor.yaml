@@ -14,7 +14,7 @@ description: |
   them, because generic articles aren't archived to disk like recipes are.
   This keeps the entry small and avoids syncing image files we'll rarely
   re-open.
-version: 1.1.0
+version: 1.2.0
 tags: ["personal", "raindrop", "auto", "article", "generic"]
 defaultModel: claude-opus-4.8
 
@@ -198,80 +198,47 @@ steps:
       the markdown as the step output.
     timeoutSeconds: 1200
 
-  - name: fetch-action-view-schema
-    type: Command
-    command: dnx
-    arguments: [ActionView.Cli, "--yes", "--", schema]
-    timeoutSeconds: 120
-
   - name: create-action-view-entry
-    type: Prompt
-    workingDirectory: "{{orchestration.tempDir}}"
-    dependsOn: [synthesize, select-images, fetch-action-view-schema]
-    systemPrompt: |
-      You produce ActionView entries that match the entry schema. Type must
-      be 'raindrop-article'; source must be '{{orchestration.name}}'.
-      Save the JSON via orchestra_save_file -- the next step submits the file.
-    userPrompt: |
-      ActionView schema:
-      {{fetch-action-view-schema.output}}
-
-      Raindrop:
-        id    = {{param.raindropId}}
-        title = {{param.title}}
-        url   = {{param.url}}
-        tags  = {{param.tags}}
-        note  = {{param.note}}
-
-      Extracted page content (for metadata only):
-      {{fetch-readable.output}}
-
-      Synthesized analysis:
-      {{synthesize.output}}
-
-      Selected images (for Visual evidence section):
-      {{select-images.output}}
-
-      Build an entry with:
-        id       = 'raindrop-{{param.raindropId}}-article'  # stable per-raindrop key -> idempotent re-runs
-        type     = 'raindrop-article'
-        source   = '{{orchestration.name}}'
-        title    = the raindrop title (cap at 120 chars)
-        subtitle = '<author if known> | <publication if known> | <published date if known>'
-        severity = 'low'
-        icon     = 'file-text'
-        tags     = raindrop tags + ['raindrop','article']
-        content blocks:
-          - keyValue 'Source' with: URL, Added at, Original tags, Note, Fetch mode (from fetch-readable)
-          - section 'Analysis' containing a markdown block with the synth output (already embeds inline images)
-          - section 'Visual evidence' containing a markdown block listing each `selected` image as
-              "### <alt or 'image N'>" followed by `![<alt>](<src>)` (REMOTE URL).
-              Omit this section if `selected` is empty.
-          - link 'Open original' to the raindrop URL
-        actions:
-          - 'Open original' (cli, onSuccess=keep)
-          - 'Reprocess'     -- include this action VERBATIM (substituting the templated values shown):
-              {
-                "label": "Reprocess (move back to AI-Inbox)",
-                "style": "default",
-                "confirmMessage": "Move this raindrop back to AI-Inbox and rerun the full analysis on the next tracker tick?",
-                "command": {
-                  "type": "cli",
-                  "program": "pwsh",
-                  "args": [
-                    "-NoProfile",
-                    "-File",
-                    "{{orchestration.sourceDirectory}}/tools/scripts/reprocess-raindrop.ps1",
-                    "-RaindropId",
-                    "{{param.raindropId}}"
-                  ]
-                },
-                "onSuccess": "archive"
-              }
-          - 'Dismiss'       (default, onSuccess=archive)
-
-      Save the JSON via orchestra_save_file. Output ONLY the raw JSON.
-    timeoutSeconds: 600
+    type: Script
+    shell: pwsh
+    dependsOn: [synthesize, fetch-readable]
+    # Deterministic entry assembly (previously an LLM Prompt). The LLM only wrapped a fixed JSON
+    # structure around the synthesized markdown, yet it intermittently HUNG on its final turn for
+    # large articles (0 output / null usage / 600s timeout), failing the whole run even though the
+    # analysis had already been produced. Everything here is deterministic: the analysis markdown
+    # (with inline images) is synthesize's saved file, article metadata (site/date/byline/fetch
+    # mode) is in the fetch-readable envelope, and the Visual-evidence images are the ![](...)
+    # embeds in the analysis. The builder writes a schema-valid entry (verified with
+    # ActionView.Cli validate --strict) to a deterministic path that submit-action-view-entry
+    # upserts. The previous fetch-action-view-schema Command step is gone -- the builder matches
+    # the schema by construction.
+    scriptFile: "./tools/scripts/build-article-actionview-entry.ps1"
+    arguments:
+      - "-RaindropId"
+      - "{{param.raindropId}}"
+      - "-Title"
+      - "{{param.title}}"
+      - "-Url"
+      - "{{param.url}}"
+      - "-TagsJson"
+      - "{{param.tags}}"
+      - "-Note"
+      - "{{param.note}}"
+      - "-AddedAt"
+      - "{{param.addedAt}}"
+      - "-SynthesisFile"
+      - "{{synthesize.files[0]}}"
+      - "-ReadableJson"
+      - "{{fetch-readable.output}}"
+      - "-FallbackText"
+      - "{{synthesize.output}}"
+      - "-Source"
+      - "{{orchestration.name}}"
+      - "-ReprocessScript"
+      - "{{orchestration.sourceDirectory}}/tools/scripts/reprocess-raindrop.ps1"
+      - "-OutFile"
+      - "{{orchestration.tempDir}}/raindrop-{{param.raindropId}}-article-entry.json"
+    timeoutSeconds: 120
 
   - name: submit-action-view-entry
     type: Script
@@ -280,7 +247,7 @@ steps:
     scriptFile: "./tools/scripts/submit-actionview-upsert.ps1"
     arguments:
       - "-EntryFile"
-      - "{{create-action-view-entry.files[0]}}"
+      - "{{orchestration.tempDir}}/raindrop-{{param.raindropId}}-article-entry.json"
     timeoutSeconds: 120
 
   - name: result-envelope
