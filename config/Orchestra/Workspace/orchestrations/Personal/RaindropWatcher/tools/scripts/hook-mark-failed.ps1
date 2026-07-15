@@ -28,6 +28,7 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $raindropId = $args[0]
 $url        = $args[1]
 $title      = $args[2]
+$raindropCli = $args[3]   # optional: path to raindrop.cs, used to tag the raindrop `failed`
 
 if ([string]::IsNullOrWhiteSpace($raindropId)) {
     throw "hook-mark-failed: raindropId argument missing"
@@ -136,6 +137,22 @@ if ($LASTEXITCODE -ne 0) {
     if ($LASTEXITCODE -ne 0) {
         throw "hook-mark-failed: zakira upsert failed for raindropId=$raindropId (${primary}=[$($out1 -join ' ')] ${secondary}=[$($out2 -join ' ')]). The watcher state record is now inconsistent; the next tracker tick will need stuck-in-flight detection to recover."
     }
+}
+
+# --- 1b) Tag the raindrop `failed` in raindrop.io (visibility beyond the db) --
+# Best-effort: makes failed items visible in AI-Inbox without opening the local
+# state db. A tagging failure must NOT fail the hook -- the state record above is
+# the source of truth; the tag is a convenience mirror. strip-workflow-tags clears
+# it on the next re-dispatch, and move-to-processed/dead-letter re-tag on success.
+if (-not [string]::IsNullOrWhiteSpace($raindropCli) -and (Test-Path -LiteralPath $raindropCli)) {
+    try {
+        & dotnet run $raindropCli -- add-tag $raindropId failed 2>&1 | ForEach-Object { Write-Information $_ -InformationAction Continue }
+        if ($LASTEXITCODE -ne 0) { Write-Warning "hook-mark-failed: add-tag failed exited $LASTEXITCODE for raindropId=$raindropId (non-fatal)." }
+    } catch {
+        Write-Warning "hook-mark-failed: add-tag failed threw for raindropId=$raindropId (non-fatal): $($_.Exception.Message)"
+    }
+} else {
+    Write-Information "hook-mark-failed: no raindrop CLI path provided; skipping the raindrop.io 'failed' tag." -InformationAction Continue
 }
 
 # --- 2) Publish a raindrop-error ActionView entry ----------------------------

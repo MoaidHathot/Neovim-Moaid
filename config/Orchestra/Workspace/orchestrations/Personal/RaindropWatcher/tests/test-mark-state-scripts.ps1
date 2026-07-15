@@ -25,7 +25,8 @@
 param(
     [string]$ProcessorYaml = (Join-Path (Split-Path $PSScriptRoot -Parent) 'raindrop-processor.yaml'),
     [string]$HookScript    = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools/scripts/hook-mark-failed.ps1'),
-    [string]$RepairScript  = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools/scripts/repair-corrupted-state.ps1')
+    [string]$RepairScript  = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools/scripts/repair-corrupted-state.ps1'),
+    [string]$ReconcileScript = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools/scripts/reconcile-false-completions.ps1')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -98,8 +99,10 @@ function Get-Record {
 
 $markProcessing = Get-StepScript -YamlPath $ProcessorYaml -StepName 'mark-processing'
 $markCompleted  = Get-StepScript -YamlPath $ProcessorYaml -StepName 'mark-completed'
+$verifyDispatch = Get-StepScript -YamlPath $ProcessorYaml -StepName 'verify-dispatch'
 $sbProcessing = [scriptblock]::Create($markProcessing)
 $sbCompleted  = [scriptblock]::Create($markCompleted)
+$sbVerify     = [scriptblock]::Create($verifyDispatch)
 
 $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("raindrop-marktest-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmpRoot -Force | Out-Null
@@ -246,6 +249,52 @@ try {
     & pwsh -NoProfile -File $RepairScript -Database $db -NoBackup *> $null
     $stillOk = Get-Record -Db $db -Key '900000001'
     Assert ($stillOk.Parsed -and $stillOk.Obj.status -eq $reprocRunAgain.Obj.status) "repair: idempotent -- already-valid record unchanged on re-run"
+
+    # === Scenario 6: verify-dispatch success gate ============================
+    # The gate must THROW on any non-success child status (so move-to-processed
+    # never runs) and PASS only on a confirmed success. Fail-safe: unparseable
+    # or missing status => treated as failure.
+    Write-Host "`n[6] verify-dispatch gate: fail-safe success detection" -ForegroundColor Cyan
+    function Test-Gate([string]$envelope) {
+        try { $null = & $sbVerify $envelope 2>$null; return $false }  # $false = did not throw
+        catch { return $true }                                        # $true  = threw
+    }
+    $envSucceeded = '{"processor":"raindrop-video-generic-processor","executionId":"abc","status":"Succeeded","finalContent":"ok"}'
+    $envCompleted = '{"processor":"p","executionId":"abc","status":"completed","finalContent":"ok"}'
+    $envFailed    = '{"processor":"p","executionId":"abc","status":"Failed","finalContent":"Zakira.Replay analyze failed (exit 1): yt-dlp missing"}'
+    $envProseFail = "The child ``p`` ran to completion with status **failed**.`n`n``````json`n{`n  `"processor`": `"p`",`n  `"status`": `"failed`",`n  `"finalContent`": `"boom`"`n}`n``````"
+    Assert ((Test-Gate $envSucceeded) -eq $false) "gate: PASSES on status=Succeeded"
+    Assert ((Test-Gate $envCompleted) -eq $false) "gate: PASSES on status=completed (case-insensitive)"
+    Assert ((Test-Gate $envFailed) -eq $true)     "gate: THROWS on status=Failed (strict JSON)"
+    Assert ((Test-Gate $envProseFail) -eq $true)  "gate: THROWS on failed child even with prose-wrapped JSON envelope"
+    Assert ((Test-Gate '') -eq $true)             "gate: THROWS (fail-safe) on empty dispatch output"
+    Assert ((Test-Gate 'the child ran fine, all good') -eq $true) "gate: THROWS (fail-safe) when no parseable status is present"
+    Assert ((Test-Gate '{"status":"Cancelled"}') -eq $true) "gate: THROWS on status=Cancelled"
+
+    # === Scenario 7: reconcile-false-completions detection ===================
+    # A 'completed' record whose latest execution shows the child FAILED must be
+    # flagged; a 'completed' record whose child SUCCEEDED must be left alone.
+    Write-Host "`n[7] reconcile-false-completions: flags completed-but-failed, spares genuine success" -ForegroundColor Cyan
+    $ridOk = '900000701'; $ridBad = '900000702'
+    foreach ($pair in @(@($ridOk,'ok'), @($ridBad,'bad'))) {
+        $seed = [ordered]@{ raindropId = $pair[0]; status = 'completed'; title = "recon-$($pair[1])" } | ConvertTo-Json -Compress
+        & $dotnet dnx Zakira.Exchange --yes -- --db $db create $category $pair[0] --data $seed --tags completed 2>&1 | Out-Null
+    }
+    $execRoot = Join-Path $tmpRoot 'exec'
+    function New-FakeExec([string]$Root,[string]$Rid,[string]$ChildStatus,[string]$Started) {
+        $d = Join-Path $Root ("run_" + $Rid); New-Item -ItemType Directory -Path $d -Force | Out-Null
+        @{ parameters = @{ raindropId = $Rid }; startedAt = $Started; status = 'Succeeded' } | ConvertTo-Json -Compress |
+            Set-Content -LiteralPath (Join-Path $d 'run.json') -Encoding utf8
+        @{ content = "envelope: {`"processor`":`"p`",`"status`":`"$ChildStatus`",`"finalContent`":`"x`"}" } | ConvertTo-Json -Compress |
+            Set-Content -LiteralPath (Join-Path $d 'dispatch-processor-outputs.json') -Encoding utf8
+    }
+    New-FakeExec -Root $execRoot -Rid $ridOk  -ChildStatus 'succeeded' -Started '2026-07-15T00:00:00Z'
+    New-FakeExec -Root $execRoot -Rid $ridBad -ChildStatus 'failed'    -Started '2026-07-15T00:00:00Z'
+    $reconOut = (& pwsh -NoProfile -File $ReconcileScript -Database $db -ExecutionsRoot $execRoot 2>&1 | Out-String)
+    Assert ($reconOut -match "FAILED[^\n]*:\s*1") "reconcile: reports exactly 1 completed-but-failed record"
+    Assert ($reconOut -match [regex]::Escape($ridBad)) "reconcile: flags the failed-child record ($ridBad)"
+    Assert ($reconOut -notmatch ("(?m)^\s*" + [regex]::Escape($ridOk) + "\s")) "reconcile: does NOT flag the genuine-success record ($ridOk)"
+    Assert ($reconOut -match 'dry-run') "reconcile: dry-run by default (no data mutated)"
 }
 finally {
     if ($env:XDG_CONFIG_HOME -eq $tmpRoot) { Remove-Item Env:\XDG_CONFIG_HOME -ErrorAction Ignore }

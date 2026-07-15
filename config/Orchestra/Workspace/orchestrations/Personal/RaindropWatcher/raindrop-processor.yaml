@@ -12,23 +12,26 @@ description: |
   orchestration carries no machine-specific config.
 
   If any step fails the orchestration.failure hook flips Zakira.Exchange
-  state to "failed" and publishes a raindrop-error ActionView entry so the
-  failure is visible.
+  state to "failed", tags the raindrop `failed`, and publishes a
+  raindrop-error ActionView entry so the failure is visible.
 
   Step order is intentionally: classify -> dispatch-processor ->
-  move-to-processed -> mark-completed -> processor-summary. The raindrop is
-  moved into AI-Processed *before* the state record is flipped to
-  "completed", so a flaky move can never produce the misleading sequence
-  "state=completed but raindrop still in AI-Inbox". A failure of
-  move-to-processed leaves the raindrop in AI-Inbox and the state record at
-  "processing"; the failure hook then flips it to "failed", the tracker
-  retries on the next tick, and the dispatcher's own idempotency (cached
-  Zakira.Replay run, regenerated ActionView entry) bounds the cost. A
-  failure of mark-completed leaves the raindrop in AI-Processed with the
-  state record at "processing"; the failure hook flips it to "failed" --
-  the analysis succeeded so the user can find the ActionView entry, and
-  the next tracker tick will skip the item (it is no longer in AI-Inbox).
-version: 1.2.0
+  verify-dispatch -> move-to-processed -> mark-completed -> processor-summary.
+  CRITICAL: `invoke_orchestration` (sync) does NOT throw when the child
+  fails -- it returns status="Failed" -- so `dispatch-processor` (an LLM
+  step) succeeds even for a failed child. Without a gate, move-to-processed
+  would then move a FAILED raindrop into AI-Processed and mark-completed
+  would record state="completed" (silent data loss: no summary/frames, item
+  wrongly out of the inbox and invisible to the tracker's retry/dead-letter
+  rules). `verify-dispatch` is a deterministic gate that parses the child's
+  status from the dispatch envelope and THROWS unless it is a success
+  status. Everything downstream (move-to-processed, mark-completed) depends
+  on verify-dispatch, so a failed child never reaches AI-Processed: the
+  raindrop stays in AI-Inbox, the failure hook flips state to "failed", and
+  the tracker retries on the next tick (then dead-letters after maxAttempts).
+  The raindrop is still moved into AI-Processed *before* mark-completed, so a
+  flaky move can never leave "state=completed but raindrop still in AI-Inbox".
+version: 1.3.0
 tags: ["personal", "raindrop", "auto", "processor"]
 defaultModel: claude-opus-4.8
 
@@ -118,6 +121,7 @@ hooks:
         - "{{param.raindropId}}"
         - "{{param.url}}"
         - "{{param.title}}"
+        - "{{vars.raindropCli}}"
 
 steps:
   - name: mark-processing
@@ -295,18 +299,22 @@ steps:
                             non-recipe processors will silently ignore it)
 
       Return the child's executionId, status, and finalContent verbatim.
+      Report the child's status EXACTLY as invoke_orchestration returns it
+      (e.g. "Succeeded" or "Failed") -- never invent "Succeeded" for a child
+      that failed. A downstream deterministic gate parses this status.
 
       The classification JSON is:
         {{classify.output}}
 
       Do not invent parameters. Do not call any other tool than
-      invoke_orchestration. Output a JSON object:
+      invoke_orchestration. Output ONLY the following JSON object and nothing
+      else -- no prose, no markdown fences:
 
         {
           "processor": "<name>",
           "executionId": "<id>",
-          "status": "<child status>",
-          "finalContent": "<child output>"
+          "status": "<child status verbatim>",
+          "finalContent": "<child output or error>"
         }
     userPrompt: |
       Dispatch the chosen child orchestration synchronously.
@@ -326,9 +334,58 @@ steps:
     mcps: [orchestra]
     timeoutSeconds: 5400
 
+  - name: verify-dispatch
+    type: Script
+    shell: pwsh
+    dependsOn: [dispatch-processor]
+    # Deterministic success gate. `invoke_orchestration` (sync) returns status="Failed" WITHOUT
+    # throwing (Orchestra.Host/ChildOrchestrationLauncher), so dispatch-processor (an LLM step)
+    # succeeds even when the child failed. This step parses the child status out of the dispatch
+    # envelope and THROWS unless it is a success status -- fail-safe: anything we cannot positively
+    # confirm as success is treated as failure. move-to-processed and mark-completed depend on this
+    # step, so a failed child never reaches AI-Processed and never gets state="completed": the
+    # raindrop stays in AI-Inbox, the failure hook flips state to "failed", and the tracker retries
+    # (then dead-letters after maxAttempts). Retrying a genuine success is cheap and idempotent
+    # (cached Zakira.Replay run, upserted ActionView entry), so failing safe is the correct default.
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $raw = [string]$args[0]
+      if ([string]::IsNullOrWhiteSpace($raw)) { throw 'verify-dispatch: dispatch-processor produced no output; treating as failure.' }
+
+      # Extract the child status from the dispatch envelope as robustly as possible.
+      $status = $null; $finalContent = $null; $obj = $null
+      try { $obj = $raw | ConvertFrom-Json -ErrorAction Stop } catch { $obj = $null }
+      if (-not $obj -and ($raw -match '(?s)```(?:json)?\s*(\{.*?\})\s*```')) {
+        try { $obj = $Matches[1] | ConvertFrom-Json -ErrorAction Stop } catch { $obj = $null }
+      }
+      if (-not $obj -and ($raw -match '(?s)(\{(?:[^{}]|\{[^{}]*\})*"status"(?:[^{}]|\{[^{}]*\})*\})')) {
+        try { $obj = $Matches[1] | ConvertFrom-Json -ErrorAction Stop } catch { $obj = $null }
+      }
+      if ($obj) {
+        if ($obj.PSObject.Properties['status'])       { $status = [string]$obj.status }
+        if ($obj.PSObject.Properties['finalContent']) { $finalContent = [string]$obj.finalContent }
+      }
+      if (-not $status -and ($raw -match '"status"\s*:\s*"([^"]+)"'))   { $status = $Matches[1] }
+      if (-not $status -and ($raw -match 'status\s*\*\*([A-Za-z-]+)\*\*')) { $status = $Matches[1] }
+
+      $success = @('succeeded', 'completed', 'success', 'ok')
+      $norm = if ($status) { $status.Trim().ToLowerInvariant() } else { '' }
+      if ($success -notcontains $norm) {
+        $why = if ($status) { "child processing did not succeed (status='$status')" } else { 'could not determine child status from the dispatch envelope' }
+        if (-not [string]::IsNullOrWhiteSpace($finalContent)) {
+          $snippet = if ($finalContent.Length -gt 500) { $finalContent.Substring(0, 500) + ' ...[truncated]' } else { $finalContent }
+          $why += ". Child error: $snippet"
+        }
+        throw "verify-dispatch: $why"
+      }
+      "{ `"ok`": true, `"childStatus`": `"$status`" }"
+    arguments:
+      - "{{dispatch-processor.output}}"
+    timeoutSeconds: 60
+
   - name: move-to-processed
     type: Script
-    dependsOn: [dispatch-processor]
+    dependsOn: [verify-dispatch]
     shell: pwsh
     script: |
       $ErrorActionPreference = 'Stop'
@@ -349,7 +406,7 @@ steps:
   - name: mark-completed
     type: Script
     shell: pwsh
-    dependsOn: [dispatch-processor, move-to-processed]
+    dependsOn: [verify-dispatch, move-to-processed]
     # Deterministic state write (previously an LLM Prompt). Runs AFTER move-to-processed, so a
     # timeout here would waste a successful, expensive analysis. Same get -> merge -> idempotent
     # upsert as mark-processing; lastProcessor / lastChildExecutionId are parsed from the
