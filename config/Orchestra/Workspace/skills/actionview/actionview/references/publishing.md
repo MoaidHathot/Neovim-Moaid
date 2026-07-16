@@ -42,12 +42,24 @@ The argument is a JSON **string** (not an object). Returns `{ success, id, title
 
 **When to use:** AI agents that already have ActionView MCP wired in. See [mcp-tools.md](mcp-tools.md) for the full tool list.
 
-## Validation & normalization
+## Validate before you publish
 
-All three transports run the entry through:
+Rather than reasoning about the whole schema up front, **emit → validate → fix**:
 
-1. **Schema validation** — required fields (`type`, `source`, `title`) checked. Missing → entry rejected.
-2. **Template normalization** (if a template is registered for `entry.type`) — applies defaults for `severity`/`icon`/`tags`, aliases content keys, validates expected content blocks.
+- MCP: `validate_entry(entryJson)` — read-only, no side effects.
+- CLI: `actionview validate -f entry.json` (exits non-zero on failure), or `actionview add --wait` to validate-then-submit and fail fast.
+- HTTP: `POST /api/entries/validate` (add `?strict=true` to also treat warnings as errors).
+
+All return `{ ok, errors[], warnings[] }`, where each diagnostic has a JSON `path`, a stable `code` (`schema.enum`, `schema.required`, `block.missingRequired`, `tag.notAllowed`, …), and a `message`. Fix those paths and retry.
+
+## Validation & normalization at ingest
+
+All three transports run the entry through the same pipeline:
+
+1. **Schema validation** against `entry.v1.schema.json` — required fields (`type`, `source`, `title`, each non-empty), enum values, and structural shape. Failures are reported with precise JSON paths.
+2. **Template normalization** (if a template is registered for `entry.type`) — applies defaults for `severity`/`icon`/`tags`, aliases content keys, normalizes tags (case-fold / alias / allow-list), and flags missing required content blocks.
+
+By default this is **non-destructive**: schema failures block (the entry can't be used), but template warnings (e.g. a missing block) are logged and the entry still ships. Turn on **strict** (`--strict`, `?strict=true`, template `strict`, or `ingest.strict` in config) to reject warnings into `errors/` too.
 
 See [templates.md](templates.md) for how to register a template.
 
@@ -63,7 +75,7 @@ Once an entry is ingested, ActionView broadcasts it to all connected dashboards 
 
 ## Errors
 
-- **400 Bad Request** — required field missing, invalid JSON.
-- **Inbox**: file moved to `data/errors/` with a `.error.txt` sibling explaining the failure.
+- **400 Bad Request** — invalid/unparseable JSON, a failed required/enum/shape check, or (in strict mode) a template warning. The body is `{ error: "validation_failed", validation: { ok, errors[], warnings[] } }`.
+- **Inbox**: an invalid file is moved to `data/errors/` with a `.error.txt` sibling that now contains the same precise, structured reason (e.g. `[schema.enum] /severity: …`).
 
-If you're an AI agent and your `add_entry` call fails, read the error message and retry with corrections — don't loop blindly.
+If you're an AI agent and a publish fails, read the `errors[]` (each has a `path` + `code` + `message`), fix those exact fields, and retry — don't loop blindly. Better yet, call `validate_entry` first.

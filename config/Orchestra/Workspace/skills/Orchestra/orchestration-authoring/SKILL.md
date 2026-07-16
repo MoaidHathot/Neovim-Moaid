@@ -372,6 +372,19 @@ Pass values into scripts with `arguments` or `stdin` instead of interpolating la
 
 For file paths that should be relative to the orchestration file, anchor them explicitly with `{{orchestration.sourceDirectory}}`. Do not pass bare relative paths to runtime file-writing code, because process working directories can differ between hosts.
 
+#### Script control channel (deterministic `orchestra_complete` / `orchestra_set_status`)
+
+A Script step normally only reports success (exit 0) / failure (non-zero). To let it end the step with a specific status or halt the whole orchestration — without an LLM — the engine sets `ORCHESTRA_CONTROL_FILE` (plus `ORCHESTRA_RUN_ID`, `ORCHESTRA_STEP_NAME`) in the script's environment. The script writes one JSON object:
+
+```json
+{ "action": "complete" | "set_status", "status": "success" | "failed" | "no_action", "reason": "..." }
+```
+
+- `action: set_status` → step ends `success` / `failed` / `no_action` (`no_action` skips dependents — same as `orchestra_set_status`).
+- `action: complete` → halts the whole orchestration (`success` / `failed`), cancelling remaining steps — same as `orchestra_complete`.
+
+Read only on exit 0; malformed contents fail the step. `stdout` stays the step output, so a script can emit data **and** signal in the same run. Three ways to write it — pwsh helpers (auto-injected: `Orchestra-Complete -Status success -Reason '...'`, `Orchestra-SetStatus -Status no_action -Reason '...'`), the `orchestra step complete|set-status` CLI (any shell), or writing the JSON to `$ORCHESTRA_CONTROL_FILE` directly. Prefer this over an LLM gate step for deterministic checks (see Pattern 4).
+
 ### Orchestration Step (type: "Orchestration")
 
 Invokes another registered orchestration. Use this when a flow should delegate to a reusable child orchestration instead of duplicating its steps.
@@ -613,6 +626,8 @@ Syntax: `{{expression}}` -- supported in prompts, URLs, headers, bodies, templat
 | `orchestra_set_status` | Override step status: `success`, `failed`, or `no_action` (skips downstream) |
 | `orchestra_complete` | Halt entire orchestration immediately |
 
+**Script steps** get a deterministic (non-LLM) equivalent of `orchestra_set_status` / `orchestra_complete` via the control channel (`ORCHESTRA_CONTROL_FILE`, the `Orchestra-Complete` / `Orchestra-SetStatus` pwsh helpers, or `orchestra step complete|set-status`). See the Script Step section. Prefer it over an LLM gate for deterministic checks.
+
 ### Opt-in Engine Tools (per-step or default)
 
 These tools must be explicitly enabled via `enableTools` on a Prompt step (or `defaultEnableTools` at the orchestration level). Existing pipelines see no behavior change.
@@ -681,7 +696,27 @@ Coordinator delegates to specialized subagents.
 
 ### 4. Gate / Early Exit
 A step checks conditions and halts the orchestration if nothing to do.
+
+**Prefer a deterministic Script gate** for structural checks (empty input, counts, thresholds) — it needs no model, no auth, and cannot hallucinate. Only use a Prompt gate when the decision is genuinely fuzzy.
+
 ```yaml
+# Deterministic gate (recommended for structural checks): no LLM.
+- name: gate
+  type: Script
+  shell: pwsh
+  dependsOn: [list-inbox]
+  script: |
+    $items = @(($args[0] | ConvertFrom-Json).items)
+    if ($items.Count -eq 0) {
+      Orchestra-Complete -Status success -Reason 'Nothing to process.'
+      return
+    }
+    $items | ConvertTo-Json -Depth 100 -Compress -AsArray   # pass items downstream
+  arguments: ["{{list-inbox.output}}"]
+```
+
+```yaml
+# Fuzzy gate: let the LLM decide, then call orchestra_complete.
 - name: gate
   type: Prompt
   systemPrompt: |

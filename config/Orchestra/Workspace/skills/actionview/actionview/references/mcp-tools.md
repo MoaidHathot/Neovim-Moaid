@@ -24,7 +24,21 @@ Use this to inspect content, see what actions exist on the entry (and what param
 Dashboard counters: total pending, total viewed, counts by type and severity. Cheap; safe to call before/after work.
 
 ### `get_schema`
-Returns the full `entry.v1.schema.json`. Read this if you're unsure of the entry shape — it's the source of truth.
+Returns the full `entry.v1.schema.json`. Useful as a reference, but for constructing entries prefer `validate_entry` (emit → validate → fix) over reasoning about the whole schema up front.
+
+### `validate_entry`
+Validate candidate entry JSON against the schema **and** the entry type's template, **without** adding anything. Read-only and side-effect-free (available even in `--read-only` mode).
+
+**Args:**
+- `entryJson` — the candidate entry as a JSON **string**.
+- `strict?` — treat warnings (e.g. a missing required content block) as errors. Default `false`.
+- `includeNormalized?` — echo the normalized entry back. Default `false` (keeps the response small).
+
+**Returns:** `{ ok, errors[], warnings[], truncated?, normalized? }`. Each diagnostic is `{ path, code, message, severity }`:
+- `path` — JSON Pointer to the problem, e.g. `/content/3/type` (empty string = root).
+- `code` — stable machine code: `schema.enum`, `schema.required`, `schema.minLength`, `schema.type`, `block.missingRequired`, `tag.notAllowed`, `json.parse`, `deserialize`.
+
+**This is the retry oracle.** Submit best-effort JSON, read the errors, fix those exact paths, resubmit — cheaper and more reliable than emitting a perfect entry in one shot, especially for large entries.
 
 ### `list_templates` / `get_template`
 Inspect registered entry-type templates. See [templates.md](templates.md).
@@ -32,13 +46,13 @@ Inspect registered entry-type templates. See [templates.md](templates.md).
 ## Write tools (omitted with `--read-only`)
 
 ### `add_entry`
-Create a new entry.
+Create a new entry. Validates first (same pipeline as `validate_entry`), then ingests.
 
-**Args:** `entryJson` (a JSON string, not an object).
+**Args:**
+- `entryJson` — a JSON **string**, not an object.
+- `strict?` — reject entries that produce warnings. Default `false` (or the server's `ingest.strict`).
 
-**Returns:** `{ success, id, title, type, severity }` or `{ error }`.
-
-Build the JSON string from a real entry object, e.g. `JSON.stringify(entry)` — never hand-concatenate.
+**Returns:** `{ success, id, title, type, severity }` on success, or on failure `{ success: false, error: "validation_failed", validation: { ok, errors[], warnings[] } }` — read the `validation` report and retry with corrections. Build the JSON string from a real entry object, e.g. `JSON.stringify(entry)` — never hand-concatenate.
 
 ### `update_entry` (Idempotent)
 Modify fields of an existing **active** entry in place. The dashboard receives the change via SignalR when both processes share the data directory.
@@ -128,8 +142,9 @@ See [templates.md](templates.md).
 | "Approve PR #482" / "Post that comment" | Not an MCP operation. Direct the user to click the button in the dashboard. |
 | "Dismiss the disk-usage alert" | `list_entries` → `dismiss_entry` |
 | "What's the entry format?" | `get_schema` |
+| "Is this entry valid?" / before publishing a complex entry | `validate_entry` |
 | "Add a notification for X" | `add_entry` |
 
 ## Read-only mode
 
-Run with `actionview-mcp --read-only` to expose only the read tools. Useful when you want an AI agent to **observe** the queue but never modify it.
+Run with `actionview-mcp --read-only` to expose only the read tools (including `validate_entry`). Useful when you want an AI agent to **observe** the queue and check entry shapes but never modify it.

@@ -44,6 +44,17 @@ Default: pinned → priority (desc) → severity (desc) → createdAt (desc). Th
 }
 ```
 
+`type`, `source`, and `title` are required and must be **non-empty**.
+
+## Validate before publishing
+
+Don't try to emit a perfect entry by memorizing this whole schema. Emit a best-effort entry, validate it, fix the reported errors, and resubmit:
+
+- MCP `validate_entry(entryJson)`, CLI `actionview validate -f entry.json`, or `POST /api/entries/validate`.
+- Returns `{ ok, errors[], warnings[] }`; each diagnostic has a JSON `path` (e.g. `/severity`), a stable `code` (`schema.enum`, `schema.required`, `block.missingRequired`, …), and a `message`.
+
+See [publishing.md](publishing.md#validate-before-you-publish) for the full loop.
+
 ## Recommended baseline
 
 ```json

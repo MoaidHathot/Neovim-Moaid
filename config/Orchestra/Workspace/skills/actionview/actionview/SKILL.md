@@ -21,6 +21,7 @@ Pressing buttons on entries is **deliberately** a human-only surface — clicks 
 | Goal | Use |
 |------|-----|
 | Push something for the user to review | Publish an entry (see below) |
+| Check an entry is well-formed before publishing | MCP `validate_entry` (or `actionview validate` / `POST /api/entries/validate`) |
 | User asked you to look at their queue | MCP `list_entries` / `get_entry` |
 | User asked you to amend an entry (bump severity, add a tag, append a finding) | MCP `update_entry` |
 | User asked you to dismiss / archive an entry | MCP `dismiss_entry` |
@@ -52,6 +53,18 @@ Full transport details + URLs: see [references/publishing.md](references/publish
 Required: `type`, `source`, `title`. Everything else is optional but you almost always want `severity`, `content`, and `actions`.
 
 Full schema: [references/entry-anatomy.md](references/entry-anatomy.md).
+
+## Validate instead of memorizing the schema
+
+Don't burn effort reasoning about the whole schema up front — especially for large entries. **Emit a best-effort entry, validate it, fix the reported errors, resubmit.**
+
+- MCP: `validate_entry(entryJson)` → `{ ok, errors[], warnings[] }`.
+- CLI: `actionview validate -f entry.json` (exits non-zero on failure) or `actionview add --wait …` (validate + submit, fail fast).
+- HTTP: `POST /api/entries/validate`.
+
+Each diagnostic has a JSON `path` (e.g. `/content/3/type`), a stable `code` (`schema.enum`, `schema.required`, `block.missingRequired`, `tag.notAllowed`, `json.parse`), and a `message`. Fix those exact paths and retry — it's far cheaper and more reliable than trying to emit a perfect entry in one shot. `add_entry` runs the same validation, so a failed create returns the same structured report to retry against.
+
+**Errors** block ingestion; **warnings** (missing required template blocks, disallowed tags) don't, unless the entry type / server is in **strict** mode.
 
 ## Body shape
 
@@ -132,7 +145,8 @@ Full action reference (parameter types, validation rules, JSON-leaf substitution
 If the ActionView MCP server is connected, you can:
 
 - `list_entries`, `get_entry`, `get_stats`, `get_schema` — discovery (read-only).
-- `add_entry` — create a new entry.
+- `validate_entry` — check candidate entry JSON against the schema + type template **without** adding it (read-only). Returns `{ ok, errors[], warnings[] }` with JSON paths.
+- `add_entry` — create a new entry (validates first; on failure returns `{ success:false, error:"validation_failed", validation:{…} }`).
 - `update_entry` — modify fields of an existing active entry (title, subtitle, severity, tags, content, actions, priority). Omitted or null fields are left alone.
 - `dismiss_entry` — archive without executing an action.
 - `delete_entry` (destructive), `pin_entry`.
@@ -144,7 +158,7 @@ Full reference: [references/mcp-tools.md](references/mcp-tools.md).
 
 ## Templates
 
-If you produce many entries of the same type, register a template once. ActionView will normalize incoming entries against it (apply defaults, alias keys, validate required content keys). Templates **do not** define commands — the producer always supplies those.
+If you produce many entries of the same type, register a template once. ActionView will normalize incoming entries against it (apply defaults, alias content keys, normalize tags — case-fold / alias / allow-list, and flag missing required content blocks). A template can opt into `strict` so its entries are rejected on any validation warning. Templates **do not** define commands — the producer always supplies those.
 
 See [references/templates.md](references/templates.md).
 

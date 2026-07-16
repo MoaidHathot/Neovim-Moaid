@@ -549,6 +549,48 @@ Executes an inline or file-based script via a shell interpreter. The script's st
 
 Pass values into scripts with `arguments` or `stdin` instead of interpolating large or heavily quoted values into the script body. In PowerShell, `arguments` are available as `$args[0]`, `$args[1]`, and so on.
 
+#### Script control channel (deterministic `orchestra_complete` / `orchestra_set_status`)
+
+A Script step is otherwise limited to success (exit 0) / failure (non-zero). To let it decide the orchestration's fate the way a Prompt step can with the engine tools, the engine sets `ORCHESTRA_CONTROL_FILE` (plus `ORCHESTRA_RUN_ID` and `ORCHESTRA_STEP_NAME`) in the script's environment. The script writes one JSON object to that file:
+
+```json
+{ "action": "complete" | "set_status", "status": "success" | "failed" | "no_action", "reason": "..." }
+```
+
+- `action: "set_status"` sets this step's terminal status — `success`, `failed`, or `no_action` (`no_action` skips every dependent step, exactly like `orchestra_set_status`).
+- `action: "complete"` halts the entire orchestration immediately (`success` or `failed`), cancelling all remaining steps — exactly like `orchestra_complete`.
+
+The signal is read only when the script exits `0`; malformed contents fail the step. `stdout` remains the step's normal output, so a script can emit data **and** signal control in the same run. The engine deletes the working file after reading it but persists the raw payload to the run's temp store for history.
+
+Three equivalent ways to write it:
+
+```yaml
+# 1. pwsh helpers (auto-injected for pwsh/powershell, regardless of strictMode):
+- name: gate
+  type: Script
+  shell: pwsh
+  script: |
+    if ($count -eq 0) { Orchestra-Complete -Status success -Reason 'Nothing to do'; return }
+    # ... otherwise emit data on stdout ...
+
+# 2. the orchestra CLI (any shell):
+- name: gate
+  type: Script
+  shell: bash
+  script: |
+    if [ "$count" -eq 0 ]; then orchestra step complete --status success --reason 'Nothing to do'; exit 0; fi
+
+# 3. write the JSON directly (any language):
+- name: gate
+  type: Script
+  shell: python
+  script: |
+    import os, json
+    if count == 0:
+        open(os.environ["ORCHESTRA_CONTROL_FILE"], "w").write(
+            json.dumps({"action": "complete", "status": "success", "reason": "Nothing to do"}))
+```
+
 ---
 
 ### Orchestration Step

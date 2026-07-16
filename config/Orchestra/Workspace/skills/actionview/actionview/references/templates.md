@@ -18,11 +18,15 @@ If you only produce one-off notifications, skip templates entirely.
 {
   "type": "pr-review",
   "description": "GitHub pull request reviews",
+  "strict": false,
   "defaults": {
     "severity": "medium",
     "icon": "git-pull-request",
     "tags": ["code-review"]
   },
+  "tagAliases": { "back-end": "backend", "perf": "performance" },
+  "tagCaseMode": "lower",
+  "allowedTags": ["backend", "frontend", "performance", "code-review"],
   "contentTemplate": [
     {
       "type": "keyValue",
@@ -48,8 +52,12 @@ If you only produce one-off notifications, skip templates entirely.
 |-------|-------|
 | `type` | Must match the `type` of incoming entries. |
 | `description` | Free-form. |
+| `strict` | When true, entries of this type are rejected on any validation warning (e.g. a missing required block), even when the global `ingest.strict` is false. |
 | `defaults` | Applied to entries that omit these fields. |
-| `contentTemplate[]` | Expected content blocks — used to validate and to alias keys. Order matters. |
+| `tagAliases` | Maps alternative tag spellings to canonical tags (case-insensitive), analogous to `keyAliases`. |
+| `tagCaseMode` | `none` (default) or `lower` — normalize tag casing so views/filters stay consistent. |
+| `allowedTags` | Optional allow-list. Tags outside it are **flagged** (`tag.notAllowed` warning) but never dropped. |
+| `contentTemplate[]` | Expected content blocks — used to reorder, alias keys, and flag missing required blocks. Order matters. |
 | `expectedActions[]` | Documentation only — listed in the UI as "expected actions" without commands. |
 
 ## Registering a template
@@ -80,7 +88,14 @@ ActionView records auto-discovered template types in `data/templates/.auto-disco
 
 ## Behavior on mismatch
 
-If an incoming entry references a `type` with no template, it's accepted as-is. If a template exists and the entry violates `requiredKeys`, the entry is still ingested but flagged in `errors/`. Templates are advisory, not blocking — the goal is normalization, not gatekeeping.
+If an incoming entry references a `type` with no template, it's accepted as-is.
+
+If a template exists and the entry is missing a required content block (or carries a disallowed tag), the behavior depends on strictness:
+
+- **Non-strict (default):** the entry is still ingested; the problem is surfaced as a **warning** by `validate_entry` / `actionview validate` and logged. Templates are advisory here — the goal is normalization, not gatekeeping, and a review item is never silently dropped.
+- **Strict** (template `strict: true`, global `ingest.strict`, or a per-request `strict` flag): the same problem becomes a blocking **error** — the entry is rejected into `errors/` with a precise reason.
+
+Either way, you can see exactly what's wrong ahead of time by calling `validate_entry` (or `actionview validate --strict`).
 
 ## When you (an AI agent) should NOT register a template
 

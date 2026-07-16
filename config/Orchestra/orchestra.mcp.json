@@ -112,8 +112,7 @@
 			"command": "npx",
 			"arguments": [
 				"--yes",
-				"--registry=https://registry.npmjs.org/",
-				"@playwright/mcp@latest",
+				"@playwright/mcp@0.0.77",
 				"--headless",
 				"--browser=msedge"
 			]

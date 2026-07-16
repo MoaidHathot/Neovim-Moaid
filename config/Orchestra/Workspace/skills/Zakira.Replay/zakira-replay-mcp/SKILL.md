@@ -27,7 +27,7 @@ If `zakira-replay` is not on `PATH`, configure the MCP client to use the full ex
 
 The MCP server reads + writes artifacts under the configured **runs directory**: `ZAKIRA_REPLAY_RUNS_DIRECTORY` env var > `runs.directory` user-config key > legacy `<cwd>/runs`. Job snapshots persist under `<runs>/.mcp/jobs/`, the persistent queue lives under `<runs>/.queue/`. When deploying the MCP server as a long-running service (HTTP transport), set `runs.directory` to a stable location (`%LOCALAPPDATA%\Zakira.Replay\runs` on Windows, `~/Library/Application Support/Zakira.Replay/runs` on macOS, `$XDG_DATA_HOME/Zakira.Replay/runs` on Linux) so runs survive cwd changes.
 
-Use `doctor` as the first tool when dependency or provider readiness is unknown.
+Use `doctor` as the first tool when dependency or provider readiness is unknown, then `deps-install` to download anything it reports missing.
 
 ## Source-specific profiles
 
@@ -47,7 +47,9 @@ Prefer these tools:
 - `clip`: create a timestamped clip when start/end are known.
 - `frames`: ad-hoc frame capture at specific timestamps or inside a time window, without paying for the full analyze pipeline (no slides/OCR/vision/alignment). Use after a full `analyze` run when an agent needs additional stills for a downstream artifact (e.g. illustrating a recipe step, attaching a thumbnail to a chapter, or grabbing a screenshot at a transcript moment). For Microsoft Build / Medius sources, the tool automatically runs a fast browser metadata probe to recover the inline HLS URL — `frames --at "00:22:30"` against a Build session works without explicit `--allow-media-download`.
 - `align`: build cross-modal alignment views (`by-chapter`, `by-slide`) over a completed run. Pure rearrangement; no model calls.
-- `doctor`: diagnose dependencies and provider setup.
+- `doctor`: diagnose dependencies and provider setup (binaries, local models, Ollama daemon, Edge profile).
+- `info`: resolved configuration + capability summary (config path, runs directory, LLM provider/model, portable + per-feature model directories, and which optional features are ready).
+- `deps-install`: download missing portable dependencies on demand — `yt-dlp`, `ffmpeg`, `copilot-cli`, and the local `onnx`/`ocr`/`vision`/`whisper-model`/`diarization` models (or `media` / `all`). Use right after `doctor` reports something missing to self-provision without a CLI shell-out.
 - `queue-enqueue`, `queue-run`, `queue-status`: persistent queue workflow for many videos.
 
 Use `analyze` only for short, low-risk jobs where blocking is acceptable. For long videos, visual analysis, OCR, or STT work, use `analyze-start`.

@@ -350,6 +350,59 @@ steps:
 
 ---
 
+## Deterministic Gate with the Script Control Channel
+
+A scheduled poller that stops the tick early — with no LLM — when there is nothing to process, using the Script control channel (`Orchestra-Complete`). The same script extracts the items array for downstream steps. Prefer this over an LLM gate for structural checks.
+
+```yaml
+name: inbox-poller
+description: Poll an inbox on a schedule and dispatch work only when items exist.
+version: "1.0.0"
+
+steps:
+  - name: list-inbox
+    type: Script
+    shell: pwsh
+    script: |
+      # ... call your API, print { "count": N, "items": [ ... ] } as JSON ...
+      '{ "count": 0, "items": [] }'
+
+  - name: gate-empty
+    type: Script
+    shell: pwsh
+    dependsOn: [list-inbox]
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $resp  = $args[0] | ConvertFrom-Json
+      $items = @($resp.items)
+      if (-not $resp -or [int]$resp.count -eq 0 -or $items.Count -eq 0) {
+        Orchestra-Complete -Status success -Reason 'Inbox is empty, nothing to dispatch.'
+        '[]'; return
+      }
+      $items | ConvertTo-Json -Depth 100 -Compress -AsArray   # hand items to downstream steps
+    arguments:
+      - "{{list-inbox.output}}"
+
+  - name: process
+    type: Prompt
+    dependsOn: [gate-empty]
+    model: claude-opus-4.6
+    systemPrompt: Process each item.
+    userPrompt: "{{gate-empty.output}}"
+
+trigger:
+  type: scheduler
+  intervalSeconds: 300
+```
+
+Variants:
+- `Orchestra-SetStatus -Status no_action -Reason '...'` — end this step as `no_action`, which skips only its dependents (the rest of the DAG continues).
+- Any shell: `orchestra step complete --status success --reason '...'`, or write `{"action":"complete","status":"success","reason":"..."}` to `$ORCHESTRA_CONTROL_FILE`.
+
+The signal is read only on exit 0; malformed contents fail the step.
+
+---
+
 ## Orchestration-Relative Runtime File Path
 
 Use `{{orchestration.sourceDirectory}}` when a runtime step writes files beside the orchestration file. This avoids accidentally resolving relative paths from the host process working directory.
