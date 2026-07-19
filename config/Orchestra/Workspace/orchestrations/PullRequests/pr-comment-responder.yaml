@@ -687,10 +687,10 @@ steps:
          - Comment Responses section with one nested section PER addressed comment containing:
            a) Details keyValue (Thread ID, Commenter, File, Lines, Action, Agent, Reply Draft ID, Draft Operation ID, Draft Operation Type, Proposal ID)
            b) Original Comment markdown (the reviewer's comment as blockquote)
-           c) AI Response markdown (the draft reply text)
+           c) AI Response markdown (the draft reply text) with `id` = the reply draft UUID and `editable: true` so the user can revise it in the dashboard
            d) Code Context code block (optional: targeted diff hunk around the commented lines, language: diff)
            e) Proposed Fix code block (if code fix: the proposal diff, language: diff)
-           f) Per-response actions: Approve Reply + Delete Reply when a reply draft exists; Approve Operation + Delete Operation when a draft status/reaction operation exists; Approve Proposal + Reject Proposal only for code fixes
+           f) Per-response actions: Save Edit + Approve Reply + Delete Reply when a reply draft exists (Save Edit runs `powerreview comment edit --draft-id <uuid> --body {{content.<uuid>}}`, referencing the AI Response block by its id); Approve Operation + Delete Operation when a draft status/reaction operation exists; Approve Proposal + Reject Proposal only for code fixes
          - Optional Proposed Code Fixes section (table listing all proposals)
          - Summary markdown
          - View PR link (REQUIRED)

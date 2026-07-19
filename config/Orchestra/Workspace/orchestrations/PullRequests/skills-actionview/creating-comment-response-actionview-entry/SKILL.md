@@ -287,15 +287,20 @@ Omit `Proposal ID` if there is no proposal for this thread.
 
 Format the original comment as a blockquote with the commenter's name and thread ID.
 
-**c) markdown "AI Response"** -- the draft reply:
+**c) markdown "AI Response"** -- the draft reply. Make it **editable** and give it a stable `id` equal to the reply draft UUID, so the user can revise the reply in the dashboard and push it back to PowerReview before approving:
 
 ```json
 {
   "type": "markdown",
   "label": "AI Response",
+  "id": "<draft UUID>",
+  "editable": true,
   "body": "Fixed: added null check for user input. The method now throws `ArgumentNullException` if the user is not found."
 }
 ```
+
+- `editable: true` renders an inline editor; the edit persists to the entry and can be reverted.
+- `id: "<draft UUID>"` (the reply draft's UUID) lets the "Save Edit" action reference the block's current text via `{{content.<draft UUID>}}`. Only reply drafts (which are draft comments) are editable this way — draft **operations** (status/reaction) and **proposals** are not text-editable.
 
 **d) code "Code Context"** (optional -- targeted code around the commented area):
 
@@ -337,6 +342,16 @@ Include only the actions relevant to this response. If it has a reply, include "
 {
   "actions": [
     {
+      "label": "Save Edit",
+      "style": "primary",
+      "command": {
+        "type": "cli",
+        "program": "powerreview",
+        "args": ["comment", "edit", "--pr-url", "<prUrl>", "--draft-id", "<draft UUID>", "--body", "{{content.<draft UUID>}}"]
+      },
+      "onSuccess": "keep"
+    },
+    {
       "label": "Approve Reply",
       "style": "success",
       "command": {
@@ -360,6 +375,8 @@ Include only the actions relevant to this response. If it has a reply, include "
   ]
 }
 ```
+
+The `{{content.<draft UUID>}}` in "Save Edit" must match the `id` on the "AI Response" markdown block. Include "Save Edit" only for reply responses (not for operation- or proposal-only responses, whose bodies aren't editable draft comments).
 
 **Status/reaction operation response:**
 
@@ -396,6 +413,16 @@ Include only the actions relevant to this response. If it has a reply, include "
 ```json
 {
   "actions": [
+    {
+      "label": "Save Edit",
+      "style": "primary",
+      "command": {
+        "type": "cli",
+        "program": "powerreview",
+        "args": ["comment", "edit", "--pr-url", "<prUrl>", "--draft-id", "<draft UUID>", "--body", "{{content.<draft UUID>}}"]
+      },
+      "onSuccess": "keep"
+    },
     {
       "label": "Approve Reply",
       "style": "success",
@@ -471,6 +498,8 @@ Include only the actions relevant to this response. If it has a reply, include "
     {
       "type": "markdown",
       "label": "AI Response",
+      "id": "draft-uuid-123",
+      "editable": true,
       "body": "Fixed: added null check for user input. The method now throws `ArgumentNullException` if the user is not found."
     },
     {
@@ -489,6 +518,16 @@ Include only the actions relevant to this response. If it has a reply, include "
     }
   ],
   "actions": [
+    {
+      "label": "Save Edit",
+      "style": "primary",
+      "command": {
+        "type": "cli",
+        "program": "powerreview",
+        "args": ["comment", "edit", "--pr-url", "https://dev.azure.com/org/project/_git/repo/pullrequest/42", "--draft-id", "draft-uuid-123", "--body", "{{content.draft-uuid-123}}"]
+      },
+      "onSuccess": "keep"
+    },
     {
       "label": "Approve Reply",
       "style": "success",
@@ -646,9 +685,9 @@ Only include bulk proposal actions such as "Approve All Proposals" or "Apply All
 | `thread.comments[last].body` | Per-response "Original Comment" markdown body |
 | `thread.file_path` | Per-response "Details" keyValue `File`, section title |
 | `thread.line_start` | Per-response "Details" keyValue `Lines`, section title |
-| `draft.id` (UUID) | Per-response "Details" keyValue `Reply Draft ID`, Approve/Delete Reply action `--draft-id` |
+| `draft.id` (UUID) | Per-response "Details" keyValue `Reply Draft ID`, the `id` on the "AI Response" markdown block, the Save Edit/Approve/Delete Reply action `--draft-id`, and the `{{content.<id>}}` body reference in Save Edit |
 | `draft.author_name` | Per-response "Details" keyValue `Agent` |
-| `draft.body` | Per-response "AI Response" markdown body |
+| `draft.body` | Per-response "AI Response" markdown body (`editable: true`, `id` = reply draft UUID) |
 | `draftOperation.id` (UUID) | Per-response "Details" keyValue `Draft Operation ID`, Approve/Delete Operation action `--action-id` |
 | `draftOperation.operation.operation_type` | Per-response "Details" keyValue `Draft Operation Type` |
 | `proposal.id` (UUID) | Per-response "Details" keyValue `Proposal ID`, Approve/Reject Proposal action `--proposal-id` |
@@ -695,8 +734,10 @@ Entry Checklist:
 - [ ] Response Summary table has correct counts
 - [ ] Every addressed comment has its own nested section
 - [ ] Every nested section has Details (keyValue), Original Comment (markdown), and either AI Response, Draft Operation details, or Proposed Fix; Code Context is included only when targeted context is useful
+- [ ] The "AI Response" markdown block (reply responses) has `editable: true` and `id` = the reply draft UUID
 - [ ] Code fix sections additionally include the Proposed Fix (code block with proposal diff)
-- [ ] Every nested section has the correct actions (reply draft: Approve/Delete Reply, draft operation: Approve/Delete Operation, proposal: Approve/Reject Proposal)
+- [ ] Every nested section has the correct actions (reply draft: Save Edit/Approve/Delete Reply, draft operation: Approve/Delete Operation, proposal: Approve/Reject Proposal)
+- [ ] Reply "Save Edit" actions use `{{content.<draft UUID>}}` matching the AI Response block's `id`
 - [ ] All action commands use the correct prUrl, draft UUID, draft operation UUID, and proposal UUID
 - [ ] Entry-level actions include: Open PR, Approve All Replies, Submit Replies, and Delete All; bulk proposal actions are included only when supported by the installed CLI
 - [ ] View PR link is present with the correct URL
@@ -707,7 +748,8 @@ Entry Checklist:
 
 - **Pair original comments with AI responses via `thread_id`.** The thread ID is the key that connects everything: the original comment, the draft reply, draft operation, and proposal.
 - **Not all threads are addressed.** Only include threads where the AI created a draft reply, draft operation, and/or a proposal. Skip threads with no AI response/action.
-- **Per-response actions are conditional.** Reply drafts get Approve/Delete Reply, draft operations get Approve/Delete Operation, and code fix proposals get Approve/Reject Proposal. Don't include actions for artifacts that do not exist on that response.
+- **Per-response actions are conditional.** Reply drafts get Save Edit/Approve/Delete Reply, draft operations get Approve/Delete Operation, and code fix proposals get Approve/Reject Proposal. Don't include actions for artifacts that do not exist on that response.
+- **Reply editing.** For reply responses, the "AI Response" block is `editable: true` so the user can revise the reply in the dashboard; "Save Edit" pushes it back to PowerReview via `powerreview comment edit --body {{content.<draft UUID>}}` (reference the block by its `id`, not `{{content.self}}`, since the action lives on the section). Editing an approved (`Pending`) reply returns it to `Draft`, so re-click Approve after saving. Only reply drafts are editable — operations and proposals are not.
 - **Proposal diffs may be large.** If a proposal diff is very long, consider truncating it and adding a note that the full diff is available via `powerreview proposal diff --pr-url <url> --proposal-id <id>`.
 - **The `reply_draft_id` on proposals links replies to proposals.** When a proposal is approved, the linked reply is auto-approved too. This means the user can approve the proposal and the reply goes to Pending automatically.
 - **Save the entry using `orchestra_save_file`.** The orchestration's next step submits it to ActionView via `actionview add --file <path>`.

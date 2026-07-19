@@ -950,9 +950,9 @@ steps:
          - Review Summary table: Reviewer | Status | Comments | Critical Issues
          - Review Comments section with one nested section PER DRAFT COMMENT OR DRAFT REPLY containing:
             a) Details keyValue (Reviewer = draft.author_name, File, Lines, Severity, Draft ID)
-            b) Comment markdown (the draft body)
+            b) Comment markdown (the draft body) with `id` = the draft UUID and `editable: true` so the user can revise it in the dashboard
             c) Code block with the relevant diff hunk when available (language: diff)
-            d) Actions: Approve and Delete with correct draft UUID and prUrl
+            d) Actions: Save Edit, Approve, and Delete with correct draft UUID and prUrl. Save Edit runs `powerreview comment edit --draft-id <uuid> --body {{content.<uuid>}}` (reference the Comment block by its id) to push the user's edit back to PowerReview.
          - Optional expert sections from the consolidated review
          - Full Review Report markdown with executive summary
          - View PR link

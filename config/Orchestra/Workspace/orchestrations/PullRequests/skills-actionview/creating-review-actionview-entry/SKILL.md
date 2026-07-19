@@ -179,15 +179,20 @@ This is the most important section. Each draft comment or draft reply becomes a 
 
 To extract severity: check if the draft body starts with `nit:`, `suggestion:`, `bug:`, or `critical:`. If no prefix, use `"info"`.
 
-**b) markdown "Comment"** -- the draft text:
+**b) markdown "Comment"** -- the draft text. Make it **editable** and give it a stable `id` equal to the draft UUID so the user can revise the comment in the dashboard before approving, and the edit can be pushed back to PowerReview:
 
 ```json
 {
   "type": "markdown",
   "label": "Comment",
+  "id": "<draft UUID>",
+  "editable": true,
   "body": "<draft.body>"
 }
 ```
+
+- `editable: true` renders an inline editor (pencil) on the block; edits persist to the entry and can be reverted.
+- `id: "<draft UUID>"` lets the per-comment "Save Edit" action reference the block's current text via `{{content.<draft UUID>}}` (see the actions below).
 
 **c) code "Code"** (optional) -- the relevant code diff:
 
@@ -205,9 +210,21 @@ Extract the relevant hunk from the full file diff that covers the commented/repl
 
 **d) Per-comment actions:**
 
+Give each comment a **Save Edit**, **Approve**, and **Delete** action. "Save Edit" pushes the user's inline edit of the "Comment" block back to PowerReview using a `{{content.<draft UUID>}}` reference — ActionView expands it to the block's current (edited) text at execution time and passes it as a single argument, so multi-line markdown with quotes is safe.
+
 ```json
 {
   "actions": [
+    {
+      "label": "Save Edit",
+      "style": "primary",
+      "command": {
+        "type": "cli",
+        "program": "powerreview",
+        "args": ["comment", "edit", "--pr-url", "<prUrl>", "--draft-id", "<draft UUID>", "--body", "{{content.<draft UUID>}}"]
+      },
+      "onSuccess": "keep"
+    },
     {
       "label": "Approve",
       "style": "success",
@@ -233,6 +250,10 @@ Extract the relevant hunk from the full file diff that covers the commented/repl
 }
 ```
 
+> **The `{{content.<draft UUID>}}` in "Save Edit" must match the `id` you set on the "Comment" markdown block.** Because the action lives on the *section* (not the markdown block), you cannot use `{{content.self}}` here — that would resolve to the section, not the comment. Reference the block by its id.
+>
+> **Editing resets approval.** Per PowerReview, editing a draft that was already `Pending` returns it to `Draft` status, so the natural order is **edit → Save Edit → Approve**. "Save Edit" is optional — only needed when the user actually changed the text.
+
 **Put it all together** -- a complete nested section for one draft:
 
 ```json
@@ -254,6 +275,8 @@ Extract the relevant hunk from the full file diff that covers the commented/repl
     {
       "type": "markdown",
       "label": "Comment",
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "editable": true,
       "body": "bug: Null reference possible here when `user` is not found."
     },
     {
@@ -265,6 +288,16 @@ Extract the relevant hunk from the full file diff that covers the commented/repl
     }
   ],
   "actions": [
+    {
+      "label": "Save Edit",
+      "style": "primary",
+      "command": {
+        "type": "cli",
+        "program": "powerreview",
+        "args": ["comment", "edit", "--pr-url", "https://dev.azure.com/org/project/_git/repo/pullrequest/42", "--draft-id", "550e8400-e29b-41d4-a716-446655440000", "--body", "{{content.550e8400-e29b-41d4-a716-446655440000}}"]
+      },
+      "onSuccess": "keep"
+    },
     {
       "label": "Approve",
       "style": "success",
@@ -417,13 +450,13 @@ These are the buttons at the top/bottom of the entry:
 | `consolidated.executiveSummary` | "Full Review Report" markdown body |
 | `consolidated.crossCuttingConcerns` | Expert sections content |
 | `consolidated.requirementsAlignment` | "Requirements Alignment" section |
-| `draft.id` (UUID) | Per-comment `--draft-id` in Approve/Delete actions |
+| `draft.id` (UUID) | Per-comment `--draft-id` in Save Edit/Approve/Delete actions; the `id` on the "Comment" markdown block; the `{{content.<id>}}` body reference in "Save Edit" |
 | `draft.author_name` | Per-comment "Details" keyValue `Reviewer` |
 | `draft.file_path` or parent thread `file_path` | Per-comment "Details" keyValue `File`, nested section `title` |
 | `draft.line_start` / `line_end` or parent thread line range | Per-comment "Details" keyValue `Lines` |
 | `draft.thread_id` | Per-comment "Details" keyValue `Thread ID` for replies |
 | `draft.body` prefix | Per-comment "Details" keyValue `Severity` |
-| `draft.body` | Per-comment "Comment" markdown body |
+| `draft.body` | Per-comment "Comment" markdown body (`editable: true`, `id` = draft UUID) |
 | `fileDiff.diff` (hunk) | Per-comment "Code" block body |
 
 ## Checklist
@@ -440,7 +473,9 @@ Entry Checklist:
 - [ ] Review Summary table has one row per reviewer
 - [ ] Every draft comment or draft reply has its own nested section
 - [ ] Every nested section has Details (keyValue), Comment (markdown), and optionally Code
-- [ ] Every nested section has Approve and Delete actions with the correct draft UUID
+- [ ] The "Comment" markdown block has `editable: true` and `id` = the draft UUID
+- [ ] Every nested section has Save Edit, Approve, and Delete actions with the correct draft UUID
+- [ ] The Save Edit action's `--body` uses `{{content.<draft UUID>}}` matching the Comment block's `id`
 - [ ] All action commands use the correct prUrl
 - [ ] Entry-level actions include: Open PR, Approve All, Submit Review, Approve PR, Wait for Author, Delete All
 - [ ] View PR link is present with the correct URL
@@ -448,7 +483,8 @@ Entry Checklist:
 
 ## Important notes
 
-- **Draft IDs are critical.** Without them, the per-comment Approve/Delete buttons won't work. Make sure every draft comment or reply UUID is included in both the "Details" keyValue and the action command args.
+- **Draft IDs are critical.** Without them, the per-comment Save Edit/Approve/Delete buttons won't work. Make sure every draft comment or reply UUID is included in the "Details" keyValue, the `id` of the "Comment" markdown block, the `--draft-id` of each action, and the `{{content.<draft UUID>}}` reference in the Save Edit action.
+- **Comment editing.** The "Comment" block is `editable: true` so the user can revise an AI-drafted comment in the dashboard. "Save Edit" pushes that edit back to PowerReview via `powerreview comment edit --body {{content.<draft UUID>}}` (ActionView expands the reference to the block's current text and passes it as one safe argument). Because the action is on the section, reference the block by id — not `{{content.self}}`. Editing an already-approved (`Pending`) draft returns it to `Draft`, so the user re-clicks Approve after saving.
 - **The `author_name` field** on drafts identifies which reviewer agent created the comment or reply. If reviewer agents don't pass `agentName` when creating drafts, this field will be null. Make sure the orchestration's reviewer prompts include `agentName`.
 - **Code diffs are optional but valuable.** If fetching per-file diffs is too expensive, the entry still works without them -- the user can read the comment text and navigate to the file manually.
 - **Save the entry using `orchestra_save_file`.** The orchestration's next step will submit it to ActionView via `actionview add --file <path>`.
