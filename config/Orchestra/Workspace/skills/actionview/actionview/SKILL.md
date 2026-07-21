@@ -133,12 +133,15 @@ Each action declares a `command` (HTTP or CLI) and a post-execution behavior (`a
 }
 ```
 
-The two placeholder namespaces are **separate**:
+The placeholder namespaces are **separate** and resolved in order:
 
-- `{{param.NAME}}` — runtime user input. Resolved first.
-- `{{SECRET}}` — value from `actionview.json` `secrets` map or environment variables. Resolved after.
+- `{{param.NAME}}` — runtime user input from the action's form. Resolved first.
+- `{{content.self}}` / `{{content.ID}}` / `{{entry.FIELD}}` — data from the entry itself (a block's text, or a field like `title`/`tags`). Resolved next, from the **current** entry — so if the user edited an `editable` block, the command uses the edited text.
+- `{{SECRET}}` — value from `actionview.json` `secrets` map or environment variables. Resolved last.
 
-Full action reference (parameter types, validation rules, JSON-leaf substitution, undo): [references/actions.md](references/actions.md).
+Actions run as **background jobs**: clicking shows live progress (spinner, elapsed timer, streamed output, Cancel), and every run is recorded in the entry's activity log. Mark a comment block `"editable": true` (and give it an `id`, or use `{{content.self}}`) so the user can edit it before an action consumes it — the edit persists and flows into the command.
+
+Full action reference (parameter types, validation rules, content/entry references, long-running jobs, undo): [references/actions.md](references/actions.md).
 
 ## Reading and modifying the queue (MCP)
 
@@ -172,10 +175,10 @@ See [references/templates.md](references/templates.md).
 
 - **Required fields are case-sensitive**: `type`, `source`, `title`. Missing any → entry is rejected.
 - **Newlines in markdown** must be JSON-escaped as `\n`. Don't paste raw newlines into a JSON string.
-- **`{{param.X}}` vs `{{X}}`** — different namespaces. Don't put a secret in `parameters` and don't expect a parameter to fall back to env.
+- **`{{param.X}}` vs `{{X}}`** — different namespaces. Don't put a secret in `parameters` and don't expect a parameter to fall back to env. To reference the entry's own data (a comment body, its title/tags), use `{{content.self}}`/`{{content.ID}}`/`{{entry.FIELD}}`.
 - **HTTP body**: prefer a JSON object (not a stringified one). Substitution walks string leaves and JSON-escapes user input automatically — quotes/newlines in a comment body cannot break the payload.
-- **OnSuccess defaults to `archive`.** If the user should keep seeing the entry after acting (e.g., the section's "Post Comment" doesn't end the review), set `"onSuccess": "keep"`.
-- **Don't bake user-editable content into command args.** If the user needs to edit a value, declare a `parameter` with `default` set to your draft — never hard-code the draft into `args`/`body` strings.
+- **OnSuccess defaults to `archive`** and is applied when the background job **succeeds**. If the user should keep seeing the entry after acting (e.g., the section's "Post Comment" doesn't end the review), set `"onSuccess": "keep"`.
+- **Don't bake user-editable content into command args.** If the user needs to edit a value, either declare a `parameter` with `default` set to your draft, or mark the content block `"editable": true` and reference it with `{{content.self}}`/`{{content.ID}}` — never hard-code the draft into `args`/`body` strings.
 - **Pick a meaningful `source`.** It appears in the UI and is filterable. Use the producing tool's name (e.g., `"github-pr-bot"`, `"datadog-alerts"`).
 - **Tags and `type` power saved views.** The dashboard can split the queue into lanes (e.g. Work vs Personal) by tag and/or type, with Any/All tag matching. Consistent `tags`/`type` make those views useful and let the user — or you, via `list_entries` (`view=`, `tags=`, `tagMode=`) — filter to one lane in a click.
 - **Local images need a consumer-side allowlist.** `file://` URLs in `image` blocks or markdown bodies only render if the directory holding the file is listed in the user's `actionview.json` under `fileAccess.allowedRoots`. If you're publishing entries that point at host-local files, either (a) write the images into a directory you know is already allowlisted, (b) document the path the user needs to add, or (c) prefer `http(s)://` / `data:` URLs to avoid the coordination entirely. See [references/content-blocks.md](references/content-blocks.md#image).

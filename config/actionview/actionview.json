@@ -1,30 +1,68 @@
 {
-  "dataDirectory": "data",
-  "listenUrl": "http://localhost:5180",
-  "templates": {
-    "externalDirectory": "./templates",
-    "recursive": false
-  },
-  "notifications": {
-    "enabled": true,
-    "palantir": {
-      "enabled": true,
-      "duration": null,
-      "attribution": "ActionView",
-      "launchUrl": "http://localhost:5180",
-      "image": null,
-      "audio": null,
-      "silent": false,
-      "scenario": null,
-      "heroImage": null
-    }
-  },
-  "secrets": {},
-  "fileAccess": {
-    "allowedRoots": [
-      "C:/temp/Zakira.Replay",
-      "C:/temp/ActionView"
-    ]
-  },
-  "views": []
+	"dataDirectory": "data",
+	"listenUrl": "http://localhost:5180",
+	"watchConfig": true,
+	"templates": {
+		"externalDirectory": "./templates",
+		"recursive": false
+	},
+	"notifications": {
+		"enabled": true,
+		"palantir": {
+			"enabled": true,
+			"duration": null,
+			"attribution": "ActionView",
+			"launchUrl": "http://localhost:5180",
+			"image": null,
+			"audio": null,
+			"silent": false,
+			"scenario": null,
+			"heroImage": null
+		}
+	},
+	"secrets": {},
+	"fileAccess": {
+		"allowedRoots": [
+			"C:/temp/Zakira.Replay",
+			"C:/temp/ActionView"
+		]
+	},
+	"views": [
+		{
+			"id": "raindrop",
+			"name": "Raindrop",
+			"icon": "bookmark",
+			"tags": [
+				"raindrop"
+			],
+			"tagMatch": "any"
+		},
+		{
+			"id": "self-healing",
+			"name": "self-healing",
+			"icon": "heart",
+			"tags": [
+				"self-healing"
+			],
+			"tagMatch": "any"
+		},
+		{
+			"id": "code-review",
+			"name": "code-review",
+			"icon": "git-pull-request",
+			"tags": [
+				"code-review"
+			],
+			"tagMatch": "any"
+		},
+		{
+			"id": "ZTS",
+			"name": "ZTS",
+			"icon": "briefcase",
+			"tags": [
+				"ZTS"
+			],
+			"tagMatch": "any"
+		}
+	]
 }

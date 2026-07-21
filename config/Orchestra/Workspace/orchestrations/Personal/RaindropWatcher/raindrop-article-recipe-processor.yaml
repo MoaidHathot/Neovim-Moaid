@@ -352,7 +352,7 @@ steps:
           - 'Dismiss'            (default, onSuccess=archive)
 
       Save the JSON via orchestra_save_file. Output ONLY the raw JSON.
-    timeoutSeconds: 600
+    timeoutSeconds: 900
 
   - name: submit-action-view-entry
     type: Script

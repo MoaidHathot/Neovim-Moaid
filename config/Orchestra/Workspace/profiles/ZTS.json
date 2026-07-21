@@ -20,14 +20,14 @@
     "windows": [
       {
         "days": [
+          "Sunday",
           "Monday",
           "Tuesday",
           "Wednesday",
-          "Thursday",
-          "Friday"
+          "Thursday"
         ],
-        "startTime": "11:00",
-        "endTime": "15:00",
+        "startTime": "09:30",
+        "endTime": "16:00",
         "isOvernight": false
       },
       {
@@ -39,7 +39,7 @@
           "Friday"
         ],
         "startTime": "23:00",
-        "endTime": "02:00",
+        "endTime": "03:00",
         "isOvernight": true
       }
     ]

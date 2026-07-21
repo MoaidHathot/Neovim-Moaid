@@ -1,51 +1,59 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
 name: apply-orchestration-fix
 description: |
-  Human-approved fixer. Triggered ONLY when a user clicks "Apply Fix" on a
-  failed-orchestration-diagnosis ActionView entry, which runs
-  `orchestra run apply-orchestration-fix --param ...`. It is never dispatched
-  automatically.
+  Human-approved fixer for ONE failure tracked in an orchestration's diagnosis
+  ledger. Triggered only when a user clicks "Apply Fix" on a per-orchestration
+  diagnosis ActionView card, via Shared/scripts/diagnosis-apply-fix.ps1 (which
+  first records the user's notes onto the failure, then launches this). It is
+  never dispatched automatically.
 
-  It reads the durable diagnosis artifact, backs up the target orchestration
-  YAML, applies the suggested fix to the YAML in this repo (working-tree only -
-  NO git commit), then posts a confirmation ActionView entry with "Re-run" and
-  "Revert" buttons. When the user ticked the "re-run" checkbox on the Apply Fix
-  button, it also kicks off a background re-run of the fixed orchestration.
-version: 1.0.0
+  It resolves the target failure from the ledger by (orchestrationName,
+  signature), reads the user's notes, backs up the target orchestration YAML,
+  applies the suggested fix - shaped by those notes - to the YAML in the WATCHED
+  DOTFILES workspace (working-tree only, NO git commit; Orchestra recompiles its
+  internal copy from this source automatically), records a fix attempt on the
+  failure, flips its state to 'fix-applied', and re-publishes the single card
+  (which now offers Re-run / Revert for that failure). Optionally kicks off a
+  background re-run of the fixed orchestration.
+version: 2.0.0
 tags: ["system", "self-healing", "orchestra", "manual"]
 defaultModel: claude-opus-4.8
 
 inputs:
-  diagnosisPath:
-    type: string
-    description: Absolute path to diagnosis.json written by diagnose-failed-orchestration-run.
-    required: true
-  orchestrationPath:
-    type: string
-    description: Absolute path to the target orchestration YAML in this repo.
-    required: true
   orchestrationName:
     type: string
-    description: Name of the orchestration being fixed.
+    description: Name of the orchestration being fixed (ledger key).
     required: true
-  executionId:
+  signature:
     type: string
-    description: Execution id of the original failed run (used for backup/artifact grouping).
+    description: Signature of the specific failure within that orchestration's ledger to fix.
     required: true
-  failedRunPath:
+  notes:
     type: string
-    description: Absolute path to the failed run's on-disk artifact folder.
+    description: |
+      Optional user notes/comments that must shape the fix. When empty, the notes
+      already recorded on the ledger failure (by the Apply Fix button) are used.
     required: false
     default: ""
+    multiline: true
   rerunAfterApply:
     type: string
     description: |
       "true" to kick off a background re-run of the fixed orchestration after the
       patch is written. Declared as a string (not boolean) so an unresolved
-      ActionView placeholder degrades safely to "do not re-run" instead of a
-      validation error.
+      ActionView placeholder degrades safely to "do not re-run".
     required: false
     default: "false"
+  dbPath:
+    type: string
+    description: Absolute path to the Zakira SQLite database holding the diagnosis ledger.
+    required: false
+    default: "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+  orchestrationsRoot:
+    type: string
+    description: Root of orchestration YAMLs in the watched dotfiles workspace (used when re-publishing the card's action commands).
+    required: false
+    default: "{{env.XDG_CONFIG_HOME}}/Orchestra/workspace/orchestrations"
 
 defaultRetryPolicy:
   maxRetries: 1
@@ -56,48 +64,98 @@ defaultRetryPolicy:
 defaultStepTimeoutSeconds: 300
 timeoutSeconds: 1800
 
+variables:
+  sharedScriptsDir: "{{orchestration.sourceDirectory}}/../Shared/scripts"
+
 steps:
-  - name: read-diagnosis
+  - name: load-failure
     type: Script
     shell: pwsh
     timeoutSeconds: 60
     script: |
+      # Resolve the target failure from the ledger and compute the effective
+      # notes (the `notes` param wins; otherwise fall back to whatever the Apply
+      # Fix button already recorded on the failure).
       $ErrorActionPreference = 'Stop'
-      $dp = ([string]$args[0]).Trim()
-      if ([string]::IsNullOrWhiteSpace($dp) -or -not (Test-Path -LiteralPath $dp)) {
-        throw "diagnosisPath not found: '$dp'"
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $orchestrationName = [string]$args[0]
+      $signature         = [string]$args[1]
+      $notesParam        = [string]$args[2]
+      $dbPathRaw         = [string]$args[3]
+      $sharedDir         = [string]$args[4]
+
+      $libPath = Join-Path $sharedDir 'diagnosis-lib.ps1'
+      if (-not (Test-Path -LiteralPath $libPath)) {
+        $cfg = $env:XDG_CONFIG_HOME
+        if ([string]::IsNullOrWhiteSpace($cfg)) { $cfg = Join-Path $env:USERPROFILE '.config' }
+        $sharedDir = Join-Path $cfg 'Orchestra/workspace/orchestrations/Shared/scripts'
+        $libPath = Join-Path $sharedDir 'diagnosis-lib.ps1'
       }
-      $diag = Get-Content -LiteralPath $dp -Raw | ConvertFrom-Json -Depth 50
-      $diag | ConvertTo-Json -Depth 50 -Compress
+      . $libPath
+
+      $dbPath = Resolve-ZakiraDbPath -DbPath $dbPathRaw
+      if ($notesParam -like '*{{*') { $notesParam = '' }
+
+      $ledger = Get-DiagnosisLedger -DbPath $dbPath -OrchestrationName $orchestrationName
+      if ($null -eq $ledger) { throw "No diagnosis ledger for orchestration '$orchestrationName'." }
+      $f = Find-DiagnosisFailure -Ledger $ledger -Signature $signature
+      if ($null -eq $f) { throw "No failure with signature '$signature' in ledger for '$orchestrationName'." }
+
+      $effectiveNotes = if (-not [string]::IsNullOrWhiteSpace($notesParam)) { $notesParam } else { [string]$f.userNotes }
+
+      [ordered]@{
+        orchestrationName  = $orchestrationName
+        signature          = $signature
+        orchestrationPath  = [string]$ledger.orchestrationPath
+        orchestrationFound = [bool]$ledger.orchestrationFound
+        rootCause          = [string]$f.rootCause
+        explanation        = [string]$f.explanation
+        fixPlan            = [string]$f.fixPlan
+        suggestedFix       = [string]$f.suggestedFix
+        fixTarget          = [string]$f.fixTarget
+        confidence         = [string]$f.confidence
+        regression         = [bool]$f.regression
+        effectiveNotes     = $effectiveNotes
+        dbPath             = $dbPath
+        sharedScriptsDir   = [System.IO.Path]::GetFullPath($sharedDir)
+      } | ConvertTo-Json -Depth 50 -Compress
     arguments:
-      - "{{param.diagnosisPath}}"
+      - "{{param.orchestrationName}}"
+      - "{{param.signature}}"
+      - "{{param.notes}}"
+      - "{{param.dbPath}}"
+      - "{{vars.sharedScriptsDir}}"
 
   - name: read-current-yaml
     type: Script
     shell: pwsh
+    dependsOn: [load-failure]
     timeoutSeconds: 60
     script: |
       $ErrorActionPreference = 'Stop'
-      $p = ([string]$args[0]).Trim()
+      $ctx = $args[0] | ConvertFrom-Json -Depth 50
+      $p = [string]$ctx.orchestrationPath
       if ([string]::IsNullOrWhiteSpace($p) -or -not (Test-Path -LiteralPath $p)) {
-        throw "orchestrationPath not found: '$p'"
+        throw "orchestrationPath not found: '$p'. The failed orchestration's source YAML could not be resolved in the dotfiles workspace, so there is nothing to edit."
       }
       Get-Content -LiteralPath $p -Raw
     arguments:
-      - "{{param.orchestrationPath}}"
+      - "{{load-failure.output}}"
 
   - name: backup
     type: Script
     shell: pwsh
-    dependsOn: [read-current-yaml]
+    dependsOn: [load-failure, read-current-yaml]
     timeoutSeconds: 60
     script: |
       $ErrorActionPreference = 'Stop'
-      $p = ([string]$args[0]).Trim()
-      $executionId = ([string]$args[1]).Trim()
+      $ctx = $args[0] | ConvertFrom-Json -Depth 50
+      $p = [string]$ctx.orchestrationPath
       if (-not (Test-Path -LiteralPath $p)) { throw "orchestrationPath not found: '$p'" }
-      if ([string]::IsNullOrWhiteSpace($executionId)) { $executionId = 'unknown' }
-      $dir = Join-Path $env:LOCALAPPDATA ('OrchestraHost/diagnoses/' + $executionId)
+      $sig = [string]$ctx.signature
+      if ([string]::IsNullOrWhiteSpace($sig)) { $sig = 'unknown' }
+      $dir = Join-Path $env:LOCALAPPDATA ('OrchestraHost/diagnoses/fixes/' + [string]$ctx.orchestrationName + '/' + $sig)
       New-Item -ItemType Directory -Path $dir -Force | Out-Null
       $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
       $leaf = Split-Path -Leaf $p
@@ -105,27 +163,35 @@ steps:
       Copy-Item -LiteralPath $p -Destination $backup -Force
       Write-Output $backup
     arguments:
-      - "{{param.orchestrationPath}}"
-      - "{{param.executionId}}"
+      - "{{load-failure.output}}"
 
   - name: apply-fix
     type: Prompt
-    dependsOn: [read-diagnosis, read-current-yaml]
+    dependsOn: [load-failure, read-current-yaml]
     timeoutSeconds: 600
     systemPrompt: |
       You are an Orchestra orchestration fixer. You receive the full current YAML
-      of an orchestration and a diagnosis containing a suggested fix. Produce the
-      COMPLETE corrected YAML file.
+      of an orchestration, a diagnosis (root cause + suggested fix), and OPTIONAL
+      USER NOTES. Produce the COMPLETE corrected YAML file.
 
       Rules:
-        - Apply ONLY the change described by the diagnosis. Preserve everything
-          else exactly as-is (comments, ordering, formatting, whitespace).
+        - Apply the change described by the diagnosis, ADJUSTED to honor the user
+          notes when present. If the user notes conflict with the suggested fix,
+          the USER NOTES take precedence - follow their intent.
+        - The diagnosis includes a `fixPlan` (the intended approach in plain
+          language) and a `suggestedFix` (the concrete change). Implement the
+          `fixPlan`, using `suggestedFix` as the concrete guide.
+        - Change only what is needed for this fix. Preserve everything else
+          exactly as-is (comments, ordering, formatting, whitespace).
         - Keep the top-level `name:` and `version:` unchanged.
         - Do NOT wrap the output in code fences and do NOT add any commentary.
         - Output ONLY the raw, complete YAML document.
     userPrompt: |
       Diagnosis (JSON):
-      {{read-diagnosis.output}}
+      {{load-failure.output}}
+
+      User notes (may be empty - if non-empty, they take precedence over the suggested fix):
+      {{param.notes}}
 
       Current YAML:
       {{read-current-yaml.output}}
@@ -135,15 +201,16 @@ steps:
   - name: write-yaml
     type: Script
     shell: pwsh
-    dependsOn: [apply-fix, backup]
+    dependsOn: [apply-fix, backup, load-failure]
     timeoutSeconds: 120
     script: |
       $ErrorActionPreference = 'Stop'
 
       $new    = [string]$args[0]
-      $path   = ([string]$args[1]).Trim()
-      $name   = ([string]$args[2]).Trim()
-      $backup = ([string]$args[3]).Trim()
+      $ctx    = $args[1] | ConvertFrom-Json -Depth 50
+      $backup = ([string]$args[2]).Trim()
+      $path   = [string]$ctx.orchestrationPath
+      $name   = [string]$ctx.orchestrationName
 
       # Strip an optional ```lang ... ``` fence the model may have added.
       $trimmed = $new.Trim()
@@ -189,140 +256,130 @@ steps:
       } | ConvertTo-Json -Depth 20 -Compress
     arguments:
       - "{{apply-fix.output}}"
-      - "{{param.orchestrationPath}}"
-      - "{{param.orchestrationName}}"
+      - "{{load-failure.output}}"
       - "{{backup.output}}"
 
-  - name: build-confirm-entry
+  - name: record-and-publish
     type: Script
     shell: pwsh
-    dependsOn: [write-yaml]
-    timeoutSeconds: 60
-    script: |
-      $ErrorActionPreference = 'Stop'
-
-      $w      = $args[0] | ConvertFrom-Json -Depth 50
-      $name   = ([string]$args[1]).Trim()
-      $path   = [string]$w.path
-      $backup = [string]$w.backup
-      $diff   = [string]$w.diff
-
-      $bt    = [string][char]96
-      $fence = $bt * 3
-      $md = New-Object System.Collections.Generic.List[string]
-      $md.Add("## Fix applied to $name")
-      $md.Add("")
-      $md.Add("The suggested fix was written to your working tree (no git commit).")
-      $md.Add("")
-      $md.Add("- File: $path")
-      $md.Add("- Backup: $backup")
-      $md.Add("- Lines: $([string]$w.oldLines) -> $([string]$w.newLines)")
-      $md.Add("")
-      if (-not [string]::IsNullOrWhiteSpace($diff)) {
-        $md.Add("### Diff")
-        $md.Add($fence + "diff")
-        $md.Add($diff)
-        $md.Add($fence)
-      } else {
-        $md.Add("_No git diff available (file may be untracked, or git not present)._")
-      }
-      $body = ($md -join "`n")
-
-      $rerun = [ordered]@{
-        label          = "Re-run $name"
-        style          = 'primary'
-        confirmMessage = "Re-run $name now?"
-        command        = [ordered]@{ type = 'cli'; program = 'orchestra'; args = @('run', $name) }
-        onSuccess      = 'keep'
-      }
-      $revertCmd = "Copy-Item -LiteralPath '$backup' -Destination '$path' -Force"
-      $revert = [ordered]@{
-        label          = 'Revert'
-        style          = 'danger'
-        confirmMessage = "Restore the previous version of $name from backup?"
-        command        = [ordered]@{ type = 'cli'; program = 'pwsh'; args = @('-NoProfile', '-NonInteractive', '-Command', $revertCmd) }
-        onSuccess      = 'archive'
-      }
-      $dismiss = [ordered]@{
-        label     = 'Dismiss'
-        style     = 'default'
-        command   = [ordered]@{ type = 'cli'; program = 'cmd'; args = @('/c', 'exit', '0') }
-        onSuccess = 'archive'
-      }
-
-      $entry = [ordered]@{
-        schemaVersion = '1'
-        type          = 'orchestration-fix-applied'
-        source        = 'apply-orchestration-fix'
-        title         = "Fix applied: $name"
-        subtitle      = 'Working-tree edit (no commit) - review, re-run, or revert'
-        severity      = 'medium'
-        icon          = 'wrench'
-        tags          = @('self-healing', 'orchestra', 'fix-applied', $name)
-        content       = @( [ordered]@{ type = 'markdown'; body = $body } )
-        actions       = @($rerun, $revert, $dismiss)
-      }
-
-      $dir = Split-Path -Parent $backup
-      $entryPath = Join-Path $dir 'fix-applied-entry.json'
-      $enc = New-Object System.Text.UTF8Encoding($false)
-      [System.IO.File]::WriteAllText($entryPath, ($entry | ConvertTo-Json -Depth 60), $enc)
-      Write-Output $entryPath
-    arguments:
-      - "{{write-yaml.output}}"
-      - "{{param.orchestrationName}}"
-
-  - name: submit-confirm-entry
-    type: Script
-    shell: pwsh
-    dependsOn: [build-confirm-entry]
+    dependsOn: [write-yaml, load-failure]
     timeoutSeconds: 120
     script: |
+      # Record the fix attempt on the ledger failure, flip it to 'fix-applied',
+      # and re-publish the single per-orchestration card (which now offers
+      # Re-run / Revert for this failure).
       $ErrorActionPreference = 'Stop'
-      $file = ([string]$args[0]).Trim()
-      if ([string]::IsNullOrWhiteSpace($file) -or -not (Test-Path -LiteralPath $file)) {
-        throw "Confirmation entry file not found: '$file'"
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $w                  = $args[0] | ConvertFrom-Json -Depth 50
+      $ctx                = $args[1] | ConvertFrom-Json -Depth 50
+      $serverUrl          = [string]$args[2]
+      $orchestrationsRoot = [string]$args[3]
+      $runId              = [string]$args[4]
+
+      $sharedDir = [string]$ctx.sharedScriptsDir
+      $libPath = Join-Path $sharedDir 'diagnosis-lib.ps1'
+      if (-not (Test-Path -LiteralPath $libPath)) {
+        $cfg = $env:XDG_CONFIG_HOME
+        if ([string]::IsNullOrWhiteSpace($cfg)) { $cfg = Join-Path $env:USERPROFILE '.config' }
+        $sharedDir = Join-Path $cfg 'Orchestra/workspace/orchestrations/Shared/scripts'
+        $libPath = Join-Path $sharedDir 'diagnosis-lib.ps1'
       }
-      & dnx ActionView.Cli --yes -- add --file $file
-      if ($LASTEXITCODE -ne 0) { throw "ActionView.Cli add failed with exit code $LASTEXITCODE." }
-      Write-Output "Submitted fix-applied ActionView entry: $file"
+      . $libPath
+
+      $dbPath = Resolve-ZakiraDbPath -DbPath ([string]$ctx.dbPath)
+      $rootResolved = Resolve-OrchestrationsRoot -Provided $orchestrationsRoot
+      $name = [string]$ctx.orchestrationName
+      $sig  = [string]$ctx.signature
+      $author = "apply-orchestration-fix:$runId"
+
+      $ledger = Get-DiagnosisLedger -DbPath $dbPath -OrchestrationName $name
+      if ($null -eq $ledger) { throw "Ledger vanished for '$name' during fix apply." }
+      $f = Find-DiagnosisFailure -Ledger $ledger -Signature $sig
+      if ($null -eq $f) { throw "Failure '$sig' vanished from ledger for '$name' during fix apply." }
+
+      $diffText = [string]$w.diff
+      $diffSummary = if ($diffText.Length -gt 1000) { $diffText.Substring(0,1000) + ' [more]' } else { $diffText }
+      $attempt = [pscustomobject]@{
+        at            = (Get-Date).ToUniversalTime().ToString('o')
+        userNotes     = [string]$ctx.effectiveNotes
+        backup        = [string]$w.backup
+        path          = [string]$w.path
+        outcome       = 'applied'
+        recurredAfter = $false
+        oldLines      = [int]$w.oldLines
+        newLines      = [int]$w.newLines
+        diffSummary   = $diffSummary
+      }
+      Set-NoteProp $f 'fixAttempts' @(@($f.fixAttempts) + $attempt)
+      [void](Set-DiagnosisFailureState -Ledger $ledger -Signature $sig -State 'fix-applied' -UserNotes ([string]$ctx.effectiveNotes))
+
+      $publishOut = ''
+      try {
+        $publishOut = Publish-DiagnosisCard -Ledger $ledger -DbPath $dbPath -SharedScriptsDir ([System.IO.Path]::GetFullPath($sharedDir)) `
+          -ServerUrl $serverUrl -OrchestrationsRoot $rootResolved -Author $author
+      } catch {
+        # Persist the ledger even if the card re-publish fails.
+        Save-DiagnosisLedger -DbPath $dbPath -OrchestrationName $name -Ledger $ledger -Author $author -Reason 'record fix attempt (publish failed)'
+        $publishOut = "publish-failed: $($_.Exception.Message)"
+      }
+
+      [ordered]@{
+        orchestrationName = $name
+        signature         = $sig
+        path              = [string]$w.path
+        backup            = [string]$w.backup
+        state             = 'fix-applied'
+        publishOutput     = $publishOut
+      } | ConvertTo-Json -Depth 50 -Compress
     arguments:
-      - "{{build-confirm-entry.output}}"
+      - "{{write-yaml.output}}"
+      - "{{load-failure.output}}"
+      - "{{server.url}}"
+      - "{{param.orchestrationsRoot}}"
+      - "{{orchestration.runId}}"
 
   - name: maybe-rerun
     type: Script
     shell: pwsh
-    dependsOn: [write-yaml]
+    dependsOn: [record-and-publish, load-failure]
     timeoutSeconds: 60
     script: |
       $ErrorActionPreference = 'Stop'
-      $rerun = ([string]$args[0]).Trim().ToLowerInvariant()
-      $name  = ([string]$args[1]).Trim()
-      if ($rerun -eq 'true') {
-        try {
-          Start-Process -FilePath 'orchestra' -ArgumentList @('run', $name) -WindowStyle Hidden
-          Write-Output "Triggered background re-run of $name."
-        } catch {
-          Write-Output "Could not auto re-run ${name}: $($_.Exception.Message)"
-        }
-      } else {
+      $ctx       = $args[0] | ConvertFrom-Json -Depth 50
+      $rerun     = ([string]$args[1]).Trim().ToLowerInvariant()
+      $serverUrl = [string]$args[2]
+      $name  = [string]$ctx.orchestrationName
+      if ($rerun -like '*{{*') { $rerun = 'false' }
+      if ($rerun -ne 'true') {
         Write-Output "Auto re-run not requested."
+        return
       }
+      # Re-run the fixed orchestration in the background via dnx (the Orchestra
+      # CLI is a dnx-launched .NET tool; there is no `orchestra` on PATH).
+      $sharedDir = [string]$ctx.sharedScriptsDir
+      $libPath = Join-Path $sharedDir 'diagnosis-lib.ps1'
+      if (-not (Test-Path -LiteralPath $libPath)) {
+        $cfg = $env:XDG_CONFIG_HOME
+        if ([string]::IsNullOrWhiteSpace($cfg)) { $cfg = Join-Path $env:USERPROFILE '.config' }
+        $libPath = Join-Path $cfg 'Orchestra/workspace/orchestrations/Shared/scripts/diagnosis-lib.ps1'
+      }
+      . $libPath
+      $res = Invoke-OrchestraOrchestration -Name $name -ServerUrl $serverUrl -By 'apply-fix-rerun'
+      Write-Output "Re-run of ${name}: $($res.output)"
     arguments:
+      - "{{load-failure.output}}"
       - "{{param.rerunAfterApply}}"
-      - "{{param.orchestrationName}}"
+      - "{{server.url}}"
 
   - name: final-report
     type: Transform
-    dependsOn: [submit-confirm-entry, maybe-rerun, write-yaml]
+    dependsOn: [record-and-publish, maybe-rerun]
     template: |
       # Apply Orchestration Fix
 
-      Write result:
-      {{write-yaml.output}}
-
-      ActionView submission:
-      {{submit-confirm-entry.output}}
+      Result:
+      {{record-and-publish.output}}
 
       Re-run:
       {{maybe-rerun.output}}

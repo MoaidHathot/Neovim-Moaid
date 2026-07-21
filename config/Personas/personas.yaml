@@ -1,0 +1,28 @@
+version: 1
+
+# Where all persona data lives (installed personas, evidence, runs). Overrides the ~/.personas default.
+# Use forward slashes or leave unquoted; a double-quoted YAML scalar would treat backslashes as escapes.
+dataDirectory: C:\temp\personas
+ 
+# Personas runtime config (auto-discovered at $XDG_CONFIG_HOME/personas/personas.yaml).
+# Installed personas live in the data dir (PERSONAS_HOME, else ~/.personas) and are merged in automatically.
+ 
+llm:
+  provider: github-copilot-sdk
+  # Exact Copilot model id (from `personas models`). "opus-4.8 fast" isn't a separate model in the catalog;
+  # the Opus 4.8 model is claude-opus-4.8.
+  defaultModel: claude-opus-4.8
+  reasoning:
+    # claude-opus-4.8 supports low|medium|high|xhigh|max. "max" is its highest effort.
+    review: max
+  # Opt into the model's large context window; also auto-scales how much evidence goes into the prompt.
+  maxContextWindowTokens: 1000000
+ 
+sources:
+  azureDevOps:
+    - name: msazure-one
+      organizationUrl: https://msazure.visualstudio.com/
+      project: One
+      authentication: auto            # uses your Az CLI / DefaultAzureCredential token
+      repositories:
+        - ZTS

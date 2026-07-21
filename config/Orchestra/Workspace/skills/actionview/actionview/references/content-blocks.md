@@ -2,7 +2,18 @@
 
 The `entry.content` array is rendered top-to-bottom by the dashboard. Each item is an object with a `type` discriminator. Pick the block type that matches the data; don't shoehorn structured data into a `markdown` block.
 
-See the table at the bottom of this document for the full type list.
+The built-in types are documented below (one section each). Custom `type` values are handed to the plugin system (see [Plugin / custom block types](#plugin--custom-block-types)).
+
+## Block-level fields (any type)
+
+Two optional fields apply to any block:
+
+- **`id`** — a stable identifier. Used as the target key for action outcome markers (so a marker survives reordering) and for `{{content.ID}}` command references. Set it when you want durable per-block state (e.g. a PR comment's draft id).
+- **`editable`** — when `true`, the dashboard shows an inline editor for the block's text. Edits **persist** to the entry (the block's `body`), capturing the original for a diff + one-click revert, and appear in the activity log. Combined with a `{{content.self}}`/`{{content.ID}}` reference in an action command, an edited comment flows into the action that uses it. See [actions.md → Content & entry references](./actions.md#content--entry-references).
+
+```json
+{ "type": "markdown", "id": "draft-abc", "editable": true, "body": "Consider reconciling drift here." }
+```
 
 ## `markdown`
 

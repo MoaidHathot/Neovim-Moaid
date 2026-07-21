@@ -10,5 +10,7 @@
     "input_select_line_end": "shift+end",
     "input_select_buffer_home": "ctrl+shift+a",
     "input_select_buffer_end": "ctrl+shift+e"
-  }
+  },
+	"plugin": [
+	]
 }

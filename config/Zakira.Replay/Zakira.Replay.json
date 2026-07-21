@@ -5,7 +5,7 @@
   "dependencies": {
     "autoDownload": true,
     "portableDirectory": "%LOCALAPPDATA%\\Zakira.Replay\\portable",
-    "ytDlpPath": "C:\\Users\\moaidhathot\\AppData\\Roaming\\Python\\Python314\\Scripts\\yt-dlp.exe"
+    "ytDlpPath": "C:\\Users\\moaid\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\yt-dlp.exe"
   },
   "search": {
     "onnx": {

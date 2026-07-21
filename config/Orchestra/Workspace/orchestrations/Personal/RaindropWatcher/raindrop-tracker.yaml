@@ -588,7 +588,7 @@ steps:
       After all dispatches, output JSON:
         { "ok": true, "dispatched": [{ "raindropId": "...", "executionId": "..." }] }
     mcps: [orchestra]
-    timeoutSeconds: 600
+    timeoutSeconds: 900
 
   - name: tracker-summary
     type: Prompt

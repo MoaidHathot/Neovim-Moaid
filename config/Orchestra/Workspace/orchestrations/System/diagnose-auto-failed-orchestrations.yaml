@@ -2,40 +2,47 @@
 name: failed-orchestration-diagnoser
 description: |
   Runs hourly. Queries the Orchestra host's /api/history endpoint for orchestration runs
-  that failed in the last hour, then fans out to the companion child orchestration
-  `diagnose-failed-orchestration-run` (one child per failed run) so each failure gets its
-  own isolated diagnosis context. Each child reads the failed run's on-disk artifacts
-  (run.json + step outputs) plus read-only access to the Orchestra source tree at
-  P:/github/Orchestra, produces a root-cause diagnosis + fix plan, and submits an
-  ActionView entry. When the fix is to the orchestration YAML itself, the ActionView
-  entry includes an "Apply Fix" action wired to a follow-up orchestration that applies
-  the patch; when the fix is in the Orchestra source code, the entry just renders the
-  diagnosis (no auto-apply button, since source changes must go through a human PR).
+  that failed in the last hour, GROUPS them by orchestration, then fans out to the
+  companion child orchestration `diagnose-orchestration-failures` (one child per
+  DISTINCT orchestration, not per run) so each orchestration's failures are diagnosed
+  and rolled up into a single per-orchestration ActionView card instead of a fresh card
+  per failed run.
+
+  Each child fans out again to `diagnose-single-run` (one grandchild per failed run, so
+  every failure is diagnosed in isolation), then dedupes the per-run diagnoses by a
+  deterministic failure signature and merges them into the per-orchestration diagnosis
+  LEDGER in Zakira.Exchange (category 'orchestration-diagnoses', key = orchestration
+  name). The ActionView card is a pure projection of that ledger with per-failure
+  Apply Fix / Mark fixed / Dismiss / Re-run / Revert buttons.
 
   Pattern mirrors PullRequests/pr-auto-reviewer.yaml (parent enumerates work items,
   dispatches one child per item via a forEach Orchestration step).
 
-  # Companion orchestrations (both live in this System/ folder and register via the
+  # Companion orchestrations (all live in this System/ folder and register via the
   # workspace watcher):
-  #   * `diagnose-failed-orchestration-run` - the per-failure child dispatched below.
-  #     Receives the failed-run object as `failedRun` plus { runsRoot, sourceRoot,
-  #     orchestrationsRoot }; produces the diagnosis + ActionView entry.
+  #   * `diagnose-orchestration-failures` - the per-orchestration child dispatched below.
+  #     Receives { orchestrationName, failedRuns[] } plus { runsRoot, sourceRoot,
+  #     orchestrationsRoot, dbPath }; produces the ledger merge + ActionView card.
+  #   * `diagnose-single-run` - the per-run grandchild fanned out by that child.
   #   * `apply-orchestration-fix` - the human-approved target of the ActionView
   #     "Apply Fix" button (never auto-dispatched).
 
-version: 1.0.0
+version: 1.1.0
 tags: ["system", "diagnostics", "self-healing", "scheduled", "orchestra"]
 defaultModel: claude-opus-4.8
 
 variables:
   # Real on-disk run artifacts live under OrchestraHost/executions (NOT
-  # Orchestra/runs, which does not exist on disk). The child self-corrects too,
-  # but keep this pointing at the correct location.
+  # Orchestra/runs, which does not exist on disk). The grandchild self-corrects
+  # too, but keep this pointing at the correct location.
   runsRoot: "{{env.LOCALAPPDATA}}/OrchestraHost/executions"
   sourceRoot: "P:/github/Orchestra"
-  # Root of orchestration YAMLs in this repo, so the child can resolve a failed
-  # orchestration's source file by its `name:` field.
-  orchestrationsRoot: "{{orchestration.sourceDirectory}}/.."
+  # Root of orchestration YAMLs in the WATCHED DOTFILES workspace. Pinned to
+  # XDG_CONFIG_HOME (never {{orchestration.sourceDirectory}}, which could point
+  # at Orchestra's compiled internal copy) so any fix edits the dotfile source
+  # and lets the watcher recompile the internal copy.
+  orchestrationsRoot: "{{env.XDG_CONFIG_HOME}}/Orchestra/workspace/orchestrations"
+  dbPath: "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
   lookbackMinutes: "70"
 
 defaultRetryPolicy:
@@ -44,8 +51,8 @@ defaultRetryPolicy:
   backoffMultiplier: 2.0
   retryOnTimeout: true
 
-defaultStepTimeoutSeconds: 600
-timeoutSeconds: 7200
+defaultStepTimeoutSeconds: 900
+timeoutSeconds: 17200
 
 trigger:
   type: scheduler
@@ -94,27 +101,47 @@ steps:
         }
       }
 
-      # Emit a JSON array STRING for the downstream gate + forEach.
+      # GROUP the failed runs by orchestration so each orchestration gets ONE
+      # child (and therefore one aggregated ActionView card), not one child per
+      # failed run. Each group carries its runs pre-serialized as a JSON array
+      # string (failedRunsJson) so the child can feed them straight into its own
+      # forEach without re-serialization ambiguity.
+      #
+      # ConvertTo-JsonArrayString ALWAYS yields a single-level JSON array string
+      # for 0/1/N elements. We must NOT use `ConvertTo-Json -AsArray` here: with
+      # -InputObject on an existing array it double-wraps to "[[...]]", which
+      # would make the downstream forEach see a 1-element outer array and pass the
+      # entire inner array as a single item (the classic bug this guards against).
+      function ConvertTo-JsonArrayString {
+        param($Items)
+        $arr = @($Items)
+        if ($arr.Count -eq 0) { return '[]' }
+        return '[' + (($arr | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 50 -Compress }) -join ',') + ']'
+      }
+
+      $groups = @()
+      foreach ($grp in ($runs | Group-Object -Property orchestrationName)) {
+        $items = @($grp.Group)
+        $groups += [pscustomobject]@{
+          orchestrationName = [string]$grp.Name
+          count             = $items.Count
+          failedRunsJson    = (ConvertTo-JsonArrayString -Items $items)
+        }
+      }
+
+      # Emit a JSON array STRING of GROUPS for the downstream gate + forEach.
       #   * EMPTY    -> literal "[]" (no failures in the window: the gate
       #                 calls orchestra_complete and the forEach is a no-op).
-      #   * 1+ items -> "[{...},...]".
-      # NOT `, $runs | ConvertTo-Json -AsArray`: -AsArray wraps the whole
-      # array again, yielding "[[...]]" / "[[{...}]]" (the forEach would
-      # then iterate one bogus inner array). Use -InputObject with an
-      # explicit empty-guard; pwsh 7 serializes a single-element object[]
-      # as "[{...}]" without unwrapping.
-      if ($runs.Length -eq 0) {
-        '[]'
-      } else {
-        ConvertTo-Json -InputObject $runs -Depth 50 -Compress
-      }
+      #   * 1+ groups -> "[{orchestrationName,count,failedRunsJson},...]".
+      ConvertTo-JsonArrayString -Items $groups
 
   - name: gate-any-failures
     type: Prompt
     dependsOn: [fetch-failed-runs]
     systemPrompt: |
       You are a gate for the failed-orchestration-diagnoser. Inspect the JSON array of
-      failed runs from the previous step.
+      failed-orchestration GROUPS from the previous step (each element is
+      { orchestrationName, count, failedRunsJson }).
 
       If the array is empty (no failures in the lookback window), call orchestra_complete
       with status 'success' and a reason like 'No failed orchestration runs in the last
@@ -126,19 +153,20 @@ steps:
 
       Do not call any other tools. Do not write commentary in either branch.
     userPrompt: |
-      Failed runs:
+      Failed-orchestration groups:
       {{fetch-failed-runs.output}}
 
   - name: dispatch-diagnoses
     type: Orchestration
     dependsOn: [gate-any-failures]
-    orchestration: diagnose-failed-orchestration-run
+    orchestration: diagnose-orchestration-failures
     forEach: "{{gate-any-failures.output}}"
-    itemParameter: failedRun
+    itemParameter: group
     parameters:
       runsRoot: "{{vars.runsRoot}}"
       sourceRoot: "{{vars.sourceRoot}}"
       orchestrationsRoot: "{{vars.orchestrationsRoot}}"
+      dbPath: "{{vars.dbPath}}"
     mode: sync
     maxConcurrency: 3
     continueOnItemFailure: true
@@ -148,13 +176,13 @@ steps:
     type: Script
     dependsOn: [dispatch-diagnoses]
     shell: pwsh
-    timeoutSeconds: 60
     script: |
       # Roll up the forEach rollup into a compact summary. The engine emits
       # { totalDispatched, succeeded, failed, results:[{ index, executionId, status,
-      # errorMessage, finalContent, input, ... }] }. We classify by status only - the
-      # per-failure ActionView entry is already created by the child orchestration, so
-      # there is nothing further to parse from finalContent here.
+      # errorMessage, finalContent, input, ... }] }. Each result is now ONE
+      # orchestration group (not one run). We surface the per-orchestration
+      # child's finalContent summary (which reports how many failures it merged
+      # and whether it published/updated/cleared the card) plus its status.
       $ErrorActionPreference = 'Stop'
 
       $raw = $args[0]
@@ -166,20 +194,28 @@ steps:
 
       $results = @()
       foreach ($r in @($rollup.results)) {
-        $failedRun = $null
+        $group = $null
         if ($r.input) {
           try {
-            $failedRun = if ($r.input -is [string]) {
-              ConvertFrom-Json -InputObject $r.input -Depth 50
-            } else { $r.input }
+            $group = if ($r.input -is [string]) { ConvertFrom-Json -InputObject $r.input -Depth 50 } else { $r.input }
+          } catch { }
+        }
+        $childSummary = $null
+        if ($r.finalContent) {
+          try {
+            $fc = if ($r.finalContent -is [string]) { ConvertFrom-Json -InputObject $r.finalContent -Depth 50 } else { $r.finalContent }
+            $childSummary = $fc
           } catch { }
         }
         $results += [pscustomobject]@{
-          failedExecutionId  = if ($failedRun) { [string]$failedRun.executionId } else { $null }
-          failedOrchestration= if ($failedRun) { [string]$failedRun.orchestrationName } else { $null }
+          orchestration      = if ($group) { [string]$group.orchestrationName } elseif ($childSummary) { [string]$childSummary.orchestrationName } else { $null }
+          failedRunCount     = if ($group) { [int]$group.count } else { $null }
           diagnosisExecution = [string]$r.executionId
           diagnosisStatus    = [string]$r.status
           diagnosisError     = [string]$r.errorMessage
+          cardAction         = if ($childSummary) { [string]$childSummary.action } else { $null }
+          visibleFailures    = if ($childSummary) { [int]$childSummary.visibleFailures } else { $null }
+          entryId            = if ($childSummary) { [string]$childSummary.entryId } else { $null }
         }
       }
 
@@ -201,28 +237,28 @@ steps:
     userPrompt: |
       Compose a final markdown report from the rollup below.
 
-      Failed runs detected:
+      Failed-orchestration groups detected:
       {{fetch-failed-runs.output}}
 
-      Diagnosis dispatch rollup:
+      Diagnosis dispatch rollup (one entry per orchestration):
       {{aggregate-diagnoses.output}}
 
       The report should include:
       1. Header `## Failed Orchestration Diagnoser Run` with current time.
-      2. How many failed runs were found in the last {{vars.lookbackMinutes}} minutes.
-      3. Per failed run: the failed orchestration name + runId, the diagnosis child's
-         executionId and status, and any diagnosis-child error.
-       4. A note that one ActionView entry per failed run has been (or attempted to be)
-          submitted by the child orchestration, and the user can review/apply fixes from
-          ActionView.
+      2. How many distinct orchestrations failed (and total failed runs) in the last
+         {{vars.lookbackMinutes}} minutes.
+      3. Per orchestration: its name, how many failed runs it had, the diagnosis child's
+         executionId and status, the card action taken (published / updated / unchanged /
+         cleared), and any diagnosis-child error.
+       4. A note that there is now ONE ActionView card per orchestration (a stable,
+          in-place-updated card listing that orchestration's distinct failures), and the
+          user can review, Apply Fix, Mark fixed or Dismiss individual failures from it.
        5. Any dispatch failures and what to do about them.
-    timeoutSeconds: 120
 
   - name: enforce-run-status
     type: Script
     dependsOn: [generate-summary, aggregate-diagnoses]
     shell: pwsh
-    timeoutSeconds: 30
     # Hardening: dispatch-diagnoses uses continueOnItemFailure, so a child that
     # fails to dispatch (e.g. the companion orchestration is missing) or fails its
     # own diagnosis would otherwise leave this whole run reporting Succeeded -- the

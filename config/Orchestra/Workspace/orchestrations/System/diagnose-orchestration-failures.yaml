@@ -1,0 +1,318 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: diagnose-orchestration-failures
+description: |
+  Per-orchestration diagnosis aggregator for the self-healing pipeline. The
+  parent `failed-orchestration-diagnoser` groups the window's failed runs by
+  orchestration and dispatches ONE instance of this orchestration per
+  orchestration, handing it every failed run of that orchestration.
+
+  Flow:
+    1. Fan out to the grandchild `diagnose-single-run` once per failed run (so
+       each failure is diagnosed in its own isolated context - never several
+       runs in one Prompt).
+    2. Collect the per-run diagnoses and merge them into the per-orchestration
+       diagnosis LEDGER (Zakira.Exchange category 'orchestration-diagnoses',
+       key = orchestration name) via Shared/scripts/diagnosis-lib.ps1. The merge
+       dedupes by deterministic failure signature: the SAME failure seen across
+       N runs is one ledger failure with occurrences=N; DISTINCT failures become
+       separate entries in the ledger's `failures[]` list; a failure that recurs
+       after being marked fixed is re-opened as a regression.
+    3. Publish exactly ONE ActionView card for this orchestration (stable id, so
+       it updates in place - no more one-card-per-run spam). The card is a pure
+       projection of the ledger; its per-failure buttons (Apply Fix / Mark fixed
+       / Dismiss / Re-run / Revert) mutate the ledger, never the card directly.
+
+  The card is only (re)published when the visible failure set meaningfully
+  changed (new signature, regression, or lifecycle change) - a known failure
+  that merely recurred updates the ledger silently. When every failure is
+  fixed/dismissed the card is cleared.
+version: 1.0.0
+tags: ["system", "diagnostics", "self-healing", "orchestra", "auto"]
+defaultModel: claude-opus-4.8
+
+inputs:
+  group:
+    type: string
+    description: |
+      Auto-injected per-item object when dispatched from the parent forEach via
+      `itemParameter: group`. JSON object of shape
+      { orchestrationName, count, failedRunsJson } where failedRunsJson is the
+      JSON array string of that orchestration's failed runs. When present it
+      backfills orchestrationName + failedRuns below. Ignored when empty (direct
+      manual callers pass orchestrationName + failedRuns instead).
+    required: false
+    default: ""
+    multiline: true
+  orchestrationName:
+    type: string
+    description: Name of the orchestration whose failed runs are being diagnosed. Optional when `group` is supplied.
+    required: false
+    default: ""
+  failedRuns:
+    type: string
+    description: |
+      JSON array of failed-run objects for THIS orchestration. Each element:
+      { executionId, orchestrationName, runStatus, startedAt, completedAt, errorMessage }.
+      Optional when `group` is supplied.
+    required: false
+    default: "[]"
+    multiline: true
+  runsRoot:
+    type: string
+    description: Root of on-disk run artifacts (defaults to %LOCALAPPDATA%/OrchestraHost/executions when missing).
+    required: false
+    default: ""
+  sourceRoot:
+    type: string
+    description: Optional read-only path to the Orchestra product source tree.
+    required: false
+    default: ""
+  orchestrationsRoot:
+    type: string
+    description: Root directory of orchestration YAMLs in the watched dotfiles workspace.
+    required: true
+  dbPath:
+    type: string
+    description: Absolute path to the Zakira SQLite database for the diagnosis ledger.
+    required: false
+    default: "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+
+defaultRetryPolicy:
+  maxRetries: 1
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 900
+timeoutSeconds: 9800
+
+variables:
+  sharedScriptsDir: "{{orchestration.sourceDirectory}}/../Shared/scripts"
+
+steps:
+  - name: resolve-name
+    type: Script
+    shell: pwsh
+    timeoutSeconds: 60
+    script: |
+      # Effective orchestration name: prefer the injected forEach group object,
+      # fall back to the direct scalar input for manual callers.
+      $ErrorActionPreference = 'Stop'
+      $groupRaw = [string]$args[0]
+      $direct   = [string]$args[1]
+      $name = $direct
+      if (-not [string]::IsNullOrWhiteSpace($groupRaw)) {
+        try {
+          $g = ConvertFrom-Json -InputObject $groupRaw -Depth 50
+          if (-not [string]::IsNullOrWhiteSpace([string]$g.orchestrationName)) { $name = [string]$g.orchestrationName }
+        } catch { }
+      }
+      if ([string]::IsNullOrWhiteSpace($name)) { throw 'orchestrationName could not be resolved from group or direct input.' }
+      $name.Trim()
+    arguments:
+      - "{{param.group}}"
+      - "{{param.orchestrationName}}"
+
+  - name: resolve-runs
+    type: Script
+    shell: pwsh
+    timeoutSeconds: 60
+    script: |
+      # Effective failed-runs JSON array string. Prefer the injected group's
+      # failedRunsJson; fall back to the direct failedRuns input. Always emit a
+      # valid single-level JSON array so the downstream forEach never chokes.
+      $ErrorActionPreference = 'Stop'
+      $groupRaw = [string]$args[0]
+      $direct   = [string]$args[1]
+
+      # NEVER use `ConvertTo-Json -AsArray` on an existing array: it double-wraps
+      # to "[[...]]" and the forEach would then pass the whole inner array as one
+      # item. This helper always yields a single-level array string for 0/1/N.
+      function ConvertTo-JsonArrayString {
+        param($Items)
+        $arr = @($Items)
+        if ($arr.Count -eq 0) { return '[]' }
+        return '[' + (($arr | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 50 -Compress }) -join ',') + ']'
+      }
+
+      $runs = $null
+      if (-not [string]::IsNullOrWhiteSpace($groupRaw)) {
+        try {
+          $g = ConvertFrom-Json -InputObject $groupRaw -Depth 50
+          if ($g.PSObject.Properties['failedRunsJson'] -and -not [string]::IsNullOrWhiteSpace([string]$g.failedRunsJson)) {
+            $runs = [string]$g.failedRunsJson
+          } elseif ($g.PSObject.Properties['failedRuns'] -and $null -ne $g.failedRuns) {
+            $runs = (ConvertTo-JsonArrayString -Items $g.failedRuns)
+          }
+        } catch { }
+      }
+      if ([string]::IsNullOrWhiteSpace($runs)) {
+        $runs = if ([string]::IsNullOrWhiteSpace($direct)) { '[]' } else { $direct }
+      }
+      # Validate it parses to an array; normalize a lone object to a 1-element array.
+      try {
+        $parsed = ConvertFrom-Json -InputObject $runs -Depth 50
+        if ($parsed -isnot [System.Array]) { $runs = (ConvertTo-JsonArrayString -Items $parsed) }
+      } catch { $runs = '[]' }
+      $runs
+    arguments:
+      - "{{param.group}}"
+      - "{{param.failedRuns}}"
+
+  - name: dispatch-run-diagnoses
+    type: Orchestration
+    dependsOn: [resolve-runs]
+    orchestration: diagnose-single-run
+    forEach: "{{resolve-runs.output}}"
+    itemParameter: failedRun
+    parameters:
+      runsRoot: "{{param.runsRoot}}"
+      sourceRoot: "{{param.sourceRoot}}"
+      orchestrationsRoot: "{{param.orchestrationsRoot}}"
+      dbPath: "{{param.dbPath}}"
+    mode: sync
+    maxConcurrency: 2
+    continueOnItemFailure: true
+    timeoutSeconds: 6000
+
+  - name: merge-and-publish
+    type: Script
+    shell: pwsh
+    dependsOn: [dispatch-run-diagnoses, resolve-name]
+    script: |
+      # Collect the per-run diagnoses from the forEach rollup, merge them into
+      # the per-orchestration ledger, then publish/clear the single ActionView
+      # card. All dedupe/regression/rendering logic lives in diagnosis-lib.ps1.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $rollupRaw          = [string]$args[0]
+      $orchestrationName  = ([string]$args[1]).Trim()
+      $dbPathRaw          = [string]$args[2]
+      $sharedDir          = [string]$args[3]
+      $serverUrl          = [string]$args[4]
+      $orchestrationsRoot = [string]$args[5]
+      $runId              = [string]$args[6]
+
+      $libPath = Join-Path $sharedDir 'diagnosis-lib.ps1'
+      if (-not (Test-Path -LiteralPath $libPath)) {
+        $cfg = $env:XDG_CONFIG_HOME
+        if ([string]::IsNullOrWhiteSpace($cfg)) { $cfg = Join-Path $env:USERPROFILE '.config' }
+        $sharedDir = Join-Path $cfg 'Orchestra/workspace/orchestrations/Shared/scripts'
+        $libPath = Join-Path $sharedDir 'diagnosis-lib.ps1'
+      }
+      . $libPath
+
+      $dbPath = Resolve-ZakiraDbPath -DbPath $dbPathRaw
+      $rootResolved = Resolve-OrchestrationsRoot -Provided $orchestrationsRoot
+      $sharedAbs = [System.IO.Path]::GetFullPath($sharedDir)
+      $author = "diagnose-orchestration-failures:$runId"
+
+      # Parse the forEach rollup and pull each grandchild's finalContent (the
+      # per-run "incoming" diagnosis object).
+      $incomings = New-Object System.Collections.Generic.List[object]
+      $parseErrors = 0
+      if (-not [string]::IsNullOrWhiteSpace($rollupRaw)) {
+        try {
+          $rollup = ConvertFrom-Json -InputObject $rollupRaw -Depth 100
+          foreach ($r in @($rollup.results)) {
+            $fc = $r.finalContent
+            if ($null -eq $fc) { continue }
+            $fcStr = if ($fc -is [string]) { $fc } else { ($fc | ConvertTo-Json -Depth 100 -Compress) }
+            $clean = $fcStr.Trim()
+            if ($clean.StartsWith('```')) {
+              $clean = [regex]::Replace($clean, '^```[a-zA-Z0-9]*\s*\r?\n', '')
+              $clean = [regex]::Replace($clean, '\r?\n```\s*$', '')
+            }
+            # The engine prefixes a run's finalContent with a [stepName] label
+            # (e.g. "[final]\n{...}"), and a Transform leaf may add surrounding
+            # text. The grandchild emits a single JSON object, so extract it from
+            # the first '{' to the last '}'.
+            $fb = $clean.IndexOf('{')
+            $lb = $clean.LastIndexOf('}')
+            if ($fb -ge 0 -and $lb -gt $fb) { $clean = $clean.Substring($fb, $lb - $fb + 1) }
+            try {
+              $obj = ConvertFrom-Json -InputObject $clean -Depth 100
+              if (-not [string]::IsNullOrWhiteSpace([string]$obj.signature)) { $incomings.Add($obj) | Out-Null }
+              else { $parseErrors++ }
+            } catch { $parseErrors++ }
+          }
+        } catch { $parseErrors++ }
+      }
+
+      # Load the ledger and remember the previously-published visible-hash so we
+      # can decide whether the card actually needs to change.
+      $ledger = Get-DiagnosisLedger -DbPath $dbPath -OrchestrationName $orchestrationName
+      $prevHash = if ($null -ne $ledger) { [string]$ledger.lastPublishedHash } else { '' }
+
+      foreach ($inc in $incomings) {
+        if ([string]::IsNullOrWhiteSpace([string]$inc.orchestrationName)) {
+          Set-NoteProp $inc 'orchestrationName' $orchestrationName
+        }
+        $ledger = Merge-DiagnosisFailure -Ledger $ledger -Incoming $inc
+      }
+
+      # Canonicalize the ledger key: the name used to GET the ledger (from
+      # resolve-name) must be the exact name used to SAVE it and to derive the
+      # ActionView entry id, otherwise a stray difference would split the ledger
+      # across two Zakira keys / two cards.
+      if ($null -ne $ledger) { Set-NoteProp $ledger 'orchestrationName' $orchestrationName }
+
+      $action = 'noop'
+      $published = ''
+      if ($null -eq $ledger) {
+        # No diagnoses landed and no prior ledger: nothing to do.
+        $action = 'no-diagnoses'
+      }
+      else {
+        $visible = Get-DiagnosisVisibleFailures -Ledger $ledger
+        $newHash = Get-DiagnosisVisibleHash -Ledger $ledger
+        if (@($visible).Count -eq 0) {
+          if (-not [string]::IsNullOrWhiteSpace($prevHash)) {
+            $published = Clear-DiagnosisCard -Ledger $ledger -DbPath $dbPath -Author $author
+            $action = 'cleared'
+          } else {
+            Save-DiagnosisLedger -DbPath $dbPath -OrchestrationName $orchestrationName -Ledger $ledger -Author $author -Reason 'diagnosis ledger update (no visible failures)'
+            $action = 'saved-no-visible'
+          }
+        }
+        elseif ($newHash -ne $prevHash) {
+          $published = Publish-DiagnosisCard -Ledger $ledger -DbPath $dbPath -SharedScriptsDir $sharedAbs -ServerUrl $serverUrl -OrchestrationsRoot $rootResolved -Author $author
+          $action = 'published'
+        }
+        else {
+          # Visible set unchanged (e.g. a known failure just recurred, or the
+          # card is intentionally left dismissed): persist counters, do not
+          # re-surface the card.
+          Save-DiagnosisLedger -DbPath $dbPath -OrchestrationName $orchestrationName -Ledger $ledger -Author $author -Reason 'diagnosis ledger update (no card change)'
+          $action = 'unchanged'
+        }
+      }
+
+      [ordered]@{
+        orchestrationName = $orchestrationName
+        incomingCount     = $incomings.Count
+        parseErrors       = $parseErrors
+        action            = $action
+        visibleFailures   = if ($null -ne $ledger) { @(Get-DiagnosisVisibleFailures -Ledger $ledger).Count } else { 0 }
+        trackedFailures   = if ($null -ne $ledger) { @($ledger.failures).Count } else { 0 }
+        status            = if ($null -ne $ledger) { [string]$ledger.status } else { 'none' }
+        entryId           = Get-DiagnosisEntryId $orchestrationName
+        publishOutput     = $published
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{dispatch-run-diagnoses.output}}"
+      - "{{resolve-name.output}}"
+      - "{{param.dbPath}}"
+      - "{{vars.sharedScriptsDir}}"
+      - "{{server.url}}"
+      - "{{param.orchestrationsRoot}}"
+      - "{{orchestration.runId}}"
+
+  - name: final-report
+    type: Transform
+    dependsOn: [merge-and-publish]
+    template: |
+      # Per-Orchestration Diagnosis: {{resolve-name.output}}
+
+      {{merge-and-publish.output}}

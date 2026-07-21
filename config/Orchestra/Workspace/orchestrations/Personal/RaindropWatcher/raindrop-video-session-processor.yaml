@@ -111,7 +111,7 @@ steps:
       }
     arguments:
       - "{{zakira-analyze.output}}"
-    timeoutSeconds: 600
+    timeoutSeconds: 900
 
   - name: read-artifacts
     type: Script
@@ -223,7 +223,7 @@ steps:
       {{read-artifacts.output}}
 
       Output ONLY the JSON.
-    timeoutSeconds: 600
+    timeoutSeconds: 900
 
   - name: targeted-frame-capture
     type: Script
@@ -373,7 +373,7 @@ steps:
           - 'Dismiss'         (default action, onSuccess=archive)
 
       Save the JSON via orchestra_save_file. Output ONLY the raw JSON.
-    timeoutSeconds: 600
+    timeoutSeconds: 900
 
   - name: submit-action-view-entry
     type: Script

@@ -1,6 +1,6 @@
 # Actions
 
-An action is a button on an entry (or inside a section) that triggers a `command` when clicked. Commands are HTTP requests or CLI processes.
+An action is a button on an entry (or inside a section) that triggers a `command` when clicked. Commands are HTTP requests or CLI processes. Clicking runs the command as a **background job** — the button shows live progress (spinner, elapsed timer, streamed output, Cancel) and the outcome is recorded in the entry's activity log.
 
 ## Action shape
 
@@ -46,7 +46,7 @@ An action is a button on an entry (or inside a section) that triggers a `command
 ```
 
 - `method`: GET / POST / PUT / PATCH / DELETE. Defaults to POST.
-- `url`, header values, and string leaves of `body` all support `{{SECRET}}` and `{{param.NAME}}` substitution.
+- `url`, header values, and string leaves of `body` all support `{{param.NAME}}`, `{{content.*}}`/`{{entry.*}}`, and `{{SECRET}}` substitution.
 - `body` is a JSON value — prefer an object over a stringified one.
 
 ## `command.type: "cli"`
@@ -60,7 +60,7 @@ An action is a button on an entry (or inside a section) that triggers a `command
 }
 ```
 
-Each arg is a separate process argument — no shell quoting needed. Arg strings support both placeholder namespaces.
+Each arg is a separate process argument — no shell quoting needed. Arg strings support all three placeholder namespaces (`{{param.NAME}}`, `{{content.*}}`/`{{entry.*}}`, `{{SECRET}}`).
 
 ## Parameterized actions
 
@@ -93,10 +93,46 @@ When the user must supply or edit something before the command runs (a draft com
 
 ### Substitution rules
 
-1. **`{{param.NAME}}` is resolved before `{{SECRET}}`.** Namespaces are separate; a parameter named `GITHUB_TOKEN` would NOT collide with a secret named `GITHUB_TOKEN` — they live behind different placeholders.
+1. **Order: `{{param.NAME}}` → `{{content.*}}`/`{{entry.*}}` → `{{SECRET}}`.** Namespaces are separate; a parameter named `GITHUB_TOKEN` would NOT collide with a secret named `GITHUB_TOKEN`.
 2. **JSON body substitution** walks string leaves only. Special characters in user input (quotes, backslashes, newlines) are JSON-escaped automatically; the resulting body is always valid JSON.
 3. **CLI args** are substituted per-element, so quoting/escaping is handled by the OS process API — no shell injection surface.
-4. **Unknown `{{param.X}}` placeholders are left in place** if the parameter isn't supplied. This is intentional — pair with `required: true` if the placeholder must always resolve.
+4. **Unknown placeholders are left in place** if not supplied/resolvable. Pair a `{{param.X}}` with `required: true` if it must always resolve.
+
+## Content & entry references
+
+Beyond `{{param.NAME}}` (user input) and `{{SECRET}}` (config/env), a command can pull data from the entry itself, resolved server-side at execution time:
+
+| Reference | Expands to |
+|-----------|-----------|
+| `{{content.self}}` | The text of the block that owns a **section** action (e.g. the comment being approved). |
+| `{{content.ID}}` | The text of the block whose `id` matches `ID` (searched at any depth). |
+| `{{entry.FIELD}}` | An entry field: `title`, `subtitle`, `type`, `id`, `source`, `severity`, or `tags` (comma-joined). |
+
+These are the mechanism for "edit the comment, then the action uses the edited text." Mark the comment block `editable: true` and give it an `id` (or use `{{content.self}}` on a section action); when the user edits it inline, the edit persists to the entry, and any command referencing it expands to the **current** text — for both an Approve action and a later Submit.
+
+```json
+{
+  "type": "section",
+  "title": "Comment on Provisioner.cs:68",
+  "content": [
+    { "type": "markdown", "id": "draft-abc", "editable": true, "body": "Consider reconciling drift here." }
+  ],
+  "actions": [
+    {
+      "label": "Approve",
+      "style": "success",
+      "onSuccess": "keep",
+      "command": {
+        "type": "cli",
+        "program": "powerreview",
+        "args": ["comment", "approve", "--draft-id", "abc", "--body", "{{content.self}}"]
+      }
+    }
+  ]
+}
+```
+
+A parameter `default` may also contain a content reference (e.g. `"default": "{{content.self}}"`) to seed the form from a block without duplicating its text.
 
 ### Validation (server-side)
 
@@ -131,7 +167,17 @@ Parameter form values are saved to `localStorage` per `entry+action` so a Signal
 | `keep` | Entry stays in the active list. Use for actions the user may repeat — e.g., per-section "Post Comment" buttons in a PR review. |
 | `delete` | Entry is permanently removed. Use sparingly. |
 
-## Undo
+`onSuccess` is applied when the background job **finishes successfully** (not when the button is clicked).
+
+## Long-running actions
+
+Every action runs as a background job, so a slow command (a deploy, a long CLI) doesn't block the request or the UI:
+
+- The button shows a spinner, an elapsed timer, a live tail of streamed CLI output, and a **Cancel** button (cancelling kills the process tree).
+- A per-job timeout can be set globally via `actions.defaultTimeoutSeconds` in `actionview.json`; concurrency is bounded by `actions.maxConcurrentJobs`.
+- The run — start, streamed output, exit code, duration, and outcome — is recorded in the entry's activity log (`GET /api/entries/{id}/history`), which survives archive/dismiss/delete.
+
+You don't author anything special for this; it applies to all actions. Just prefer commands that stream progress to stdout so the user sees something while they wait.
 
 If `undoCommand` is set, a toast appears after success with an "Undo" button for `undoWindowSeconds` (default 10). Clicking it executes `undoCommand` and unarchives the entry. Useful for soft-irreversible operations (e.g., posted a comment by mistake → delete it via the GitHub API).
 

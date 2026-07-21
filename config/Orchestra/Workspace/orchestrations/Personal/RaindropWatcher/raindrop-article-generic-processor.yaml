@@ -113,7 +113,7 @@ steps:
 
       Follow the system prompt and output ONLY the JSON object.
     mcps: [playwright]
-    timeoutSeconds: 600
+    timeoutSeconds: 900
 
   - name: select-images
     type: Prompt

@@ -1,0 +1,451 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: diagnose-single-run
+description: |
+  Grandchild of the self-healing pipeline. Diagnoses ONE failed orchestration
+  run in isolation and returns a signature-tagged diagnosis object. It does NOT
+  write the diagnosis ledger and does NOT submit any ActionView entry - that is
+  the job of its parent `diagnose-orchestration-failures`, which fans this out
+  once per failed run of a single orchestration, then collects + dedupes the
+  results into one per-orchestration card.
+
+  Why isolation: diagnosing several failed runs in a single Prompt step would
+  blur distinct failures together. Each run gets its own context here; the
+  deterministic failure SIGNATURE (computed in `compute-context` via
+  Shared/scripts/diagnosis-lib.ps1) is what lets the parent dedupe "the same
+  failure seen across N runs" without an LLM.
+
+  Evidence is read from the failed run's on-disk artifacts under
+  %LOCALAPPDATA%/OrchestraHost/executions/<name>/<name>_..._<executionId>/
+  (run.json + result.md + per-step *-result.json). Prior fix attempts + user
+  notes for the same signature are loaded READ-ONLY from the ledger so the
+  diagnosis can avoid re-proposing a fix that already failed (regression-aware).
+version: 1.0.0
+tags: ["system", "diagnostics", "self-healing", "orchestra", "auto"]
+defaultModel: claude-opus-4.8
+
+inputs:
+  failedRun:
+    type: string
+    description: |
+      JSON object for one failed run, provided by the parent forEach via
+      `itemParameter: failedRun`. Shape:
+      { executionId, orchestrationName, runStatus, startedAt, completedAt, errorMessage }.
+    required: true
+    multiline: true
+  runsRoot:
+    type: string
+    description: |
+      Root of on-disk run artifacts. Expected %LOCALAPPDATA%/OrchestraHost/executions.
+      Falls back to that path automatically when the provided value does not exist.
+    required: false
+    default: ""
+  sourceRoot:
+    type: string
+    description: Optional read-only path to the Orchestra product source tree (engine-level diagnosis context).
+    required: false
+    default: ""
+  orchestrationsRoot:
+    type: string
+    description: Root directory of orchestration YAMLs (the watched dotfiles workspace), used to resolve the failed orchestration's source file by its `name:` field.
+    required: true
+  dbPath:
+    type: string
+    description: Absolute path to the Zakira SQLite database used for the diagnosis ledger. Empty/template values are rebuilt from XDG_CONFIG_HOME at runtime.
+    required: false
+    default: "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
+
+defaultRetryPolicy:
+  maxRetries: 1
+  backoffSeconds: 5
+  backoffMultiplier: 2.0
+  retryOnTimeout: true
+
+defaultStepTimeoutSeconds: 900
+timeoutSeconds: 3600
+
+variables:
+  sharedScriptsDir: "{{orchestration.sourceDirectory}}/../Shared/scripts"
+
+steps:
+  - name: locate-run
+    type: Script
+    shell: pwsh
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      $failedRunRaw       = [string]$args[0]
+      $runsRoot           = [string]$args[1]
+      $sourceRoot         = [string]$args[2]
+      $orchestrationsRoot = [string]$args[3]
+
+      $fr = $failedRunRaw | ConvertFrom-Json -Depth 20
+      $executionId       = [string]$fr.executionId
+      $orchestrationName = [string]$fr.orchestrationName
+      if ([string]::IsNullOrWhiteSpace($executionId)) { throw "failedRun.executionId is empty." }
+
+      # Resolve the executions root, falling back to the real LOCALAPPDATA path.
+      $execRoot = $runsRoot
+      if ([string]::IsNullOrWhiteSpace($execRoot) -or -not (Test-Path -LiteralPath $execRoot)) {
+        $fallback = Join-Path $env:LOCALAPPDATA 'OrchestraHost/executions'
+        if (Test-Path -LiteralPath $fallback) { $execRoot = $fallback }
+      }
+      if ([string]::IsNullOrWhiteSpace($execRoot) -or -not (Test-Path -LiteralPath $execRoot)) {
+        throw "Executions root not found (tried '$runsRoot' and the LOCALAPPDATA fallback)."
+      }
+
+      # Find the run folder whose name ends with _<executionId>.
+      $folder = $null
+      if (-not [string]::IsNullOrWhiteSpace($orchestrationName)) {
+        $byName = Join-Path $execRoot $orchestrationName
+        if (Test-Path -LiteralPath $byName) {
+          $folder = Get-ChildItem -LiteralPath $byName -Directory -Filter "*_$executionId" -ErrorAction SilentlyContinue | Select-Object -First 1
+        }
+      }
+      if (-not $folder) {
+        $folder = Get-ChildItem -LiteralPath $execRoot -Recurse -Directory -Filter "*_$executionId" -ErrorAction SilentlyContinue | Select-Object -First 1
+      }
+      if (-not $folder) { throw "Could not locate a run folder for executionId '$executionId' under '$execRoot'." }
+      $failedRunPath = $folder.FullName
+
+      # Extract failure evidence from run.json (authoritative) with result.md context.
+      $overallStatus = [string]$fr.runStatus
+      $failingSteps  = @()
+      $resultMd      = ''
+      $paramsJson    = '{}'
+
+      $runJsonPath = Join-Path $failedRunPath 'run.json'
+      if (Test-Path -LiteralPath $runJsonPath) {
+        $run = Get-Content -LiteralPath $runJsonPath -Raw | ConvertFrom-Json -Depth 100
+        if ($run.status) { $overallStatus = [string]$run.status }
+        if ($run.parameters) { $paramsJson = ($run.parameters | ConvertTo-Json -Depth 20 -Compress) }
+        if ($run.stepRecords) {
+          foreach ($prop in $run.stepRecords.PSObject.Properties) {
+            $s = $prop.Value
+            $st = [string]$s.status
+            if ($st -and $st.ToLowerInvariant().Contains('fail')) {
+              $err = [string]$s.errorMessage
+              if ($err.Length -gt 4000) { $err = $err.Substring(0,4000) + ' [truncated]' }
+              $failingSteps += [pscustomobject]@{
+                name          = [string]$prop.Name
+                status        = $st
+                errorCategory = [string]$s.errorCategory
+                error         = $err
+              }
+            }
+          }
+        }
+      }
+
+      $resultMdPath = Join-Path $failedRunPath 'result.md'
+      if (Test-Path -LiteralPath $resultMdPath) {
+        $resultMd = Get-Content -LiteralPath $resultMdPath -Raw
+        if ($resultMd.Length -gt 6000) { $resultMd = $resultMd.Substring(0,6000) + "`n[truncated]" }
+      }
+
+      # Fallback: scan per-step *-result.json when run.json yielded nothing.
+      if ($failingSteps.Count -eq 0) {
+        foreach ($rf in (Get-ChildItem -LiteralPath $failedRunPath -Filter '*-result.json' -ErrorAction SilentlyContinue)) {
+          try {
+            $r = Get-Content -LiteralPath $rf.FullName -Raw | ConvertFrom-Json
+            if (([string]$r.status).ToLowerInvariant().Contains('fail')) {
+              $err = [string]$r.errorMessage
+              if ($err.Length -gt 4000) { $err = $err.Substring(0,4000) + ' [truncated]' }
+              $failingSteps += [pscustomobject]@{
+                name          = ($rf.Name -replace '-result\.json$','')
+                status        = [string]$r.status
+                errorCategory = ''
+                error         = $err
+              }
+            }
+          } catch { }
+        }
+      }
+
+      # Resolve the failed orchestration's source YAML by `name:` in the watched
+      # dotfiles workspace (never the compiled internal copy). Filename != name.
+      $orchestrationPath  = ''
+      $orchestrationFound = $false
+      if (-not [string]::IsNullOrWhiteSpace($orchestrationName) -and (Test-Path -LiteralPath $orchestrationsRoot)) {
+        $rootResolved = (Resolve-Path -LiteralPath $orchestrationsRoot).Path
+        $pattern = "^\s*name:\s*$([regex]::Escape($orchestrationName))\s*$"
+        $cand = Get-ChildItem -LiteralPath $rootResolved -Recurse -File -Include *.yaml,*.yml -ErrorAction SilentlyContinue |
+          Where-Object { $_.FullName -notmatch '[\\/]Ephemeral[\\/]' }
+        foreach ($c in $cand) {
+          $head = Get-Content -LiteralPath $c.FullName -TotalCount 60 -ErrorAction SilentlyContinue
+          if ($head -and ($head | Where-Object { $_ -match $pattern })) {
+            $orchestrationPath  = $c.FullName
+            $orchestrationFound = $true
+            break
+          }
+        }
+      }
+
+      [ordered]@{
+        executionId        = $executionId
+        orchestrationName  = $orchestrationName
+        orchestrationPath  = $orchestrationPath
+        orchestrationFound = $orchestrationFound
+        failedRunPath      = $failedRunPath
+        overallStatus      = $overallStatus
+        paramsJson         = $paramsJson
+        failingSteps       = $failingSteps
+        resultMd           = $resultMd
+        sourceRoot         = $sourceRoot
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{param.failedRun}}"
+      - "{{param.runsRoot}}"
+      - "{{param.sourceRoot}}"
+      - "{{param.orchestrationsRoot}}"
+
+  - name: read-failed-yaml
+    type: Script
+    shell: pwsh
+    dependsOn: [locate-run]
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $meta = $args[0] | ConvertFrom-Json -Depth 50
+      $p = [string]$meta.orchestrationPath
+      if (-not [string]::IsNullOrWhiteSpace($p) -and (Test-Path -LiteralPath $p)) {
+        Get-Content -LiteralPath $p -Raw
+      } else {
+        'ORCHESTRATION_SOURCE_NOT_FOUND'
+      }
+    arguments:
+      - "{{locate-run.output}}"
+
+  - name: compute-context
+    type: Script
+    shell: pwsh
+    dependsOn: [locate-run]
+    script: |
+      # Deterministic signature + READ-ONLY prior-attempt context. No LLM here:
+      # the signature must be identical to the one the parent aggregator and the
+      # ActionView button wrappers compute, so it lives in diagnosis-lib.ps1.
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $meta       = $args[0] | ConvertFrom-Json -Depth 50
+      $dbPathRaw  = [string]$args[1]
+      $sharedDir  = [string]$args[2]
+
+      $libPath = Join-Path $sharedDir 'diagnosis-lib.ps1'
+      if (-not (Test-Path -LiteralPath $libPath)) {
+        $cfg = $env:XDG_CONFIG_HOME
+        if ([string]::IsNullOrWhiteSpace($cfg)) { $cfg = Join-Path $env:USERPROFILE '.config' }
+        $libPath = Join-Path $cfg 'Orchestra/workspace/orchestrations/Shared/scripts/diagnosis-lib.ps1'
+      }
+      . $libPath
+
+      $dbPath = Resolve-ZakiraDbPath -DbPath $dbPathRaw
+      $signature = Get-DiagnosisSignature $meta.failingSteps
+
+      # Load any prior record of THIS signature so the diagnosis is regression-aware.
+      $priorContext = 'NONE'
+      try {
+        $ledger = Get-DiagnosisLedger -DbPath $dbPath -OrchestrationName ([string]$meta.orchestrationName)
+        if ($null -ne $ledger) {
+          $prior = Find-DiagnosisFailure -Ledger $ledger -Signature $signature
+          if ($null -ne $prior) {
+            $priorObj = [ordered]@{
+              state           = [string]$prior.state
+              occurrences     = [int]$prior.occurrences
+              regression      = [bool]$prior.regression
+              regressionCount = [int]$prior.regressionCount
+              priorRootCause  = [string]$prior.rootCause
+              priorFixPlan    = [string]$prior.fixPlan
+              priorSuggestedFix = [string]$prior.suggestedFix
+              userNotes       = [string]$prior.userNotes
+              fixAttempts     = @($prior.fixAttempts)
+            }
+            $priorContext = $priorObj | ConvertTo-Json -Depth 50
+          }
+        }
+      } catch {
+        $priorContext = "PRIOR_LOOKUP_FAILED: $($_.Exception.Message)"
+      }
+
+      [ordered]@{
+        signature    = $signature
+        dbPath       = $dbPath
+        priorContext = $priorContext
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{locate-run.output}}"
+      - "{{param.dbPath}}"
+      - "{{vars.sharedScriptsDir}}"
+
+  - name: diagnose
+    type: Prompt
+    dependsOn: [locate-run, read-failed-yaml, compute-context]
+    systemPrompt: |
+      You are an expert Orchestra orchestration diagnostician. You are given
+      evidence about a SINGLE failed orchestration run: the failing step names,
+      their error messages and categories, the run's result.md, the full current
+      source YAML of the failed orchestration, and (when available) PRIOR-ATTEMPT
+      CONTEXT describing earlier diagnoses/fixes for this exact failure signature.
+
+      Determine the ROOT CAUSE and a concrete FIX, and classify `fixTarget`:
+        - "orchestration-yaml": the fix is an edit to the orchestration YAML shown.
+        - "orchestra-source": the fix requires a change to the Orchestra engine or
+          product source (not the YAML) - e.g. an engine bug, or an environmental
+          issue such as a required MCP server not being connected.
+        - "unknown": insufficient evidence to be confident.
+
+      REGRESSION AWARENESS: if PRIOR-ATTEMPT CONTEXT is present and shows a prior
+      fix was applied yet the failure recurred, DO NOT simply repeat that fix.
+      Acknowledge what was already tried (and the user's notes, if any), explain
+      why it likely did not hold, and propose a DIFFERENT or more robust fix.
+
+      When `fixTarget` is "orchestration-yaml", `suggestedFix` MUST be specific and
+      actionable: name the exact step(s) and field(s) to change and include a
+      minimal before/after YAML snippet. Do NOT rewrite the whole file inside
+      `suggestedFix`.
+
+      Provide TWO distinct fix fields:
+        - `fixPlan`: a short PLAIN-LANGUAGE description of WHAT you are going to
+          change and WHY - the approach, as a human-readable plan, WITHOUT code.
+          Write it as 2-5 sentences or a short bulleted list (use "\n- " for
+          bullets inside the JSON string). This is what the user reads to
+          understand the intent BEFORE looking at the code.
+        - `suggestedFix`: the concrete change itself (the exact step/field plus a
+          minimal before/after snippet). This is the code, not the narrative.
+
+      OUTPUT CONTRACT: Output ONLY a raw JSON object - no markdown, no code
+      fences, no commentary - with EXACTLY these fields:
+        {
+          "rootCause": "one or two sentences",
+          "explanation": "detailed reasoning that cites the specific error(s) and, if relevant, prior attempts",
+          "fixPlan": "plain-language plan of what the fix will do and why (no code)",
+          "fixTarget": "orchestration-yaml | orchestra-source | unknown",
+          "suggestedFix": "the concrete change, with a minimal before/after snippet when fixTarget is orchestration-yaml",
+          "confidence": "high | medium | low"
+        }
+    userPrompt: |
+      Failed orchestration evidence (JSON):
+      {{locate-run.output}}
+
+      Prior-attempt context for this failure signature (JSON or NONE):
+      {{compute-context.output}}
+
+      Full current source YAML of the failed orchestration:
+      {{read-failed-yaml.output}}
+
+      Diagnose the failure and return the JSON object per the output contract.
+      IMPORTANT: reply with ONLY the raw JSON object - it MUST start with "{" and
+      end with "}". Do not write any analysis, prose, or markdown outside the JSON;
+      put ALL of your reasoning inside the "explanation" field (as a JSON string).
+
+  - name: assemble-incoming
+    type: Script
+    shell: pwsh
+    dependsOn: [diagnose, locate-run, compute-context]
+    script: |
+      # Combine the run evidence + signature + model diagnosis into the single
+      # "incoming" object the parent aggregator will merge into the ledger. Also
+      # persist a per-run diagnosis.json artifact for audit.
+      $ErrorActionPreference = 'Stop'
+
+      $diagRaw = [string]$args[0]
+      $meta    = $args[1] | ConvertFrom-Json -Depth 50
+      $ctx     = $args[2] | ConvertFrom-Json -Depth 50
+
+      # Strip an optional ```lang ... ``` fence the model may have added.
+      $clean = $diagRaw.Trim()
+      if ($clean.StartsWith('```')) {
+        $clean = [regex]::Replace($clean, '^```[a-zA-Z0-9]*\s*\r?\n', '')
+        $clean = [regex]::Replace($clean, '\r?\n```\s*$', '')
+      }
+
+      # Prefer a JSON object even if the model wrapped it in prose: take the span
+      # from the first '{' to the last '}' and try to parse that.
+      $fb = $clean.IndexOf('{')
+      $lb = $clean.LastIndexOf('}')
+      $jsonCandidate = if ($fb -ge 0 -and $lb -gt $fb) { $clean.Substring($fb, $lb - $fb + 1) } else { $clean }
+
+      $diagObj = $null
+      try { $diagObj = $jsonCandidate | ConvertFrom-Json -Depth 50 } catch { $diagObj = $null }
+
+      if ($null -eq $diagObj) {
+        # Model returned prose (no usable JSON). Degrade gracefully: keep the
+        # full prose as the explanation and use a clear, honest rootCause label
+        # rather than a misleading first line.
+        $diagObj = [pscustomobject]@{
+          rootCause    = 'Unstructured model analysis - see explanation below.'
+          explanation  = $diagRaw
+          fixTarget    = 'unknown'
+          suggestedFix = ''
+          confidence   = 'low'
+        }
+      }
+
+      # Cap free-text fields BEFORE they enter the ledger. Zakira stores its
+      # payload via a command-line --data argument (Windows ~32KB limit), so a
+      # verbose model explanation must not bloat the ledger. The full, uncapped
+      # diagnosis is still written to the per-run diagnosis.json artifact below.
+      $rootCause = [string]$diagObj.rootCause
+      if ($rootCause.Length -gt 400) { $rootCause = $rootCause.Substring(0, 400) + ' [truncated]' }
+      $explanation = [string]$diagObj.explanation
+      if ($explanation.Length -gt 1500) { $explanation = $explanation.Substring(0, 1500) + ' [truncated - see diagnosis.json]' }
+      $fixPlan = [string]$diagObj.fixPlan
+      if ($fixPlan.Length -gt 1200) { $fixPlan = $fixPlan.Substring(0, 1200) + ' [truncated - see diagnosis.json]' }
+      $suggestedFix = [string]$diagObj.suggestedFix
+      if ($suggestedFix.Length -gt 2000) { $suggestedFix = $suggestedFix.Substring(0, 2000) + ' [truncated - see diagnosis.json]' }
+
+      # Cap per-step error text for the ledger copy (signature was already
+      # computed upstream from the fuller locate-run text, so this does not
+      # affect dedupe).
+      $ledgerSteps = @()
+      foreach ($fs in @($meta.failingSteps)) {
+        $e = [string]$fs.error
+        if ($e.Length -gt 1000) { $e = $e.Substring(0, 1000) + ' [truncated]' }
+        $ledgerSteps += [pscustomobject]@{
+          name          = [string]$fs.name
+          status        = [string]$fs.status
+          errorCategory = [string]$fs.errorCategory
+          error         = $e
+        }
+      }
+
+      $incoming = [ordered]@{
+        signature          = [string]$ctx.signature
+        runId              = [string]$meta.executionId
+        executionId        = [string]$meta.executionId
+        orchestrationName  = [string]$meta.orchestrationName
+        orchestrationPath  = [string]$meta.orchestrationPath
+        orchestrationFound = [bool]$meta.orchestrationFound
+        failedRunPath      = [string]$meta.failedRunPath
+        overallStatus      = [string]$meta.overallStatus
+        failingSteps       = $ledgerSteps
+        rootCause          = $rootCause
+        explanation        = $explanation
+        fixPlan            = $fixPlan
+        fixTarget          = [string]$diagObj.fixTarget
+        suggestedFix       = $suggestedFix
+        confidence         = [string]$diagObj.confidence
+        diagnosedAt        = (Get-Date).ToString('o')
+      }
+
+      # Audit artifact (best-effort; never fail the run over it). This keeps the
+      # FULL, uncapped model output for deep debugging.
+      try {
+        $dir = Join-Path $env:LOCALAPPDATA ('OrchestraHost/diagnoses/' + $incoming.executionId)
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $enc = New-Object System.Text.UTF8Encoding($false)
+        $fullAudit = [ordered]@{
+          incoming    = $incoming
+          fullRawModelOutput = $diagRaw
+        }
+        [System.IO.File]::WriteAllText((Join-Path $dir 'diagnosis.json'), ($fullAudit | ConvertTo-Json -Depth 50), $enc)
+      } catch { }
+
+      $incoming | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{diagnose.output}}"
+      - "{{locate-run.output}}"
+      - "{{compute-context.output}}"
+
+  - name: final
+    type: Transform
+    dependsOn: [assemble-incoming]
+    template: "{{assemble-incoming.output}}"
