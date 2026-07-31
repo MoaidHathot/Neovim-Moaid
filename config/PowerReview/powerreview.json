@@ -1,7 +1,6 @@
 {
   "git": {
     "strategy": "Worktree",
-    "repo_base_path": "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\ZTS-worktrees",
     "worktree_dir": "P:\\Work\\Networking\\Repo\\Zero-Trust-Segmentation\\PowerReviewSessions",
     "always_separate_worktree": true,
     "cleanup_on_close": true,
