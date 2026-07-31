@@ -6,11 +6,13 @@ tags: ["ZTS", "MSFT", "PR", "Code-Review", "auto"]
 defaultModel: claude-opus-4.8
 
 variables:
-  organization: msazure
-  project: One
-  repository: ZTS
   reviewerName: Moaid Hathot
   reviewerUniqueName: MoaidHathot@microsoft.com
+  # Organization / project / repository are NOT declared here. The repository
+  # list (and each repo's local clone path) lives outside this repository, in
+  # $env:ONEDRIVE/Orchestra/Orchestrations/PullRequests/repos.json, and is read
+  # via Shared/scripts/pr-repos.ps1. See that script's header for the schema.
+  sharedScriptsDir: "{{orchestration.sourceDirectory}}/../Shared/scripts"
 
 defaultRetryPolicy:
   maxRetries: 2
@@ -19,7 +21,12 @@ defaultRetryPolicy:
   retryOnTimeout: true
 
 defaultStepTimeoutSeconds: 900
-timeoutSeconds: 7200
+# Bounds the WHOLE run. Must stay above the dispatch step's timeoutSeconds,
+# otherwise the orchestration timeout fires first and the step budget is
+# unreachable. Scheduler triggers never overlap (Orchestra flips the trigger to
+# Running before firing and only recomputes NextFireTime after completion), so a
+# long run delays the next tick rather than stacking concurrent runs.
+timeoutSeconds: 54000
 
 mcps:
   - name: orchestra
@@ -33,9 +40,11 @@ steps:
     # Hard timeout so a regression in the underlying REST call fails fast instead
     # of hanging indefinitely like the prior `az repos pr list --reviewer` path
     # (which left 9 zombie az processes accumulating over 2 hours on 2026-06-04).
-    timeoutSeconds: 60
+    # Raised from 60s when discovery went multi-repo: the work is now one repo-ID
+    # lookup (cached 30d) plus one PR-list call PER repository.
+    timeoutSeconds: 120
     script: |
-      # Deterministic PR enumeration via az CLI.
+      # Deterministic PR enumeration via az CLI, across every configured repo.
       #
       # PREVIOUS APPROACH (broken): `az repos pr list --reviewer <email>` forces az
       # to translate the email into an identity descriptor via the SPS REST API
@@ -49,19 +58,23 @@ steps:
       # regardless of org size, because no directory scan is involved. We then
       # filter client-side to PRs where any reviewer's `uniqueName` matches the
       # configured reviewer email. Total cost: ~1 REST call + ~50 KB transfer +
-      # an O(N) loop over typically 20-50 active PRs in a single repo. Strictly
+      # an O(N) loop over typically 20-50 active PRs per repo. Strictly
       # faster AND more robust than the identity-resolved path.
       #
       # Bonus: `--repository <name>` previously forced a repo-name lookup as well;
-      # we now resolve the repo ID once (cached for 30 days) and address the
-      # endpoint by ID, which is the cheapest stable form.
+      # we now resolve the repo ID once per repository (cached for 30 days) and
+      # address the endpoint by ID, which is the cheapest stable form.
       #
       # Emits the same JSON-array shape downstream consumers (filter-prs,
-      # dispatch-candidates, etc.) expect.
+      # dispatch-candidates, etc.) expect, with two added per-PR fields --
+      # `repository` and `repoPath` -- so the dispatcher can hand PowerReview the
+      # correct local clone.
       $ErrorActionPreference = 'Stop'
       try { Get-Command az -ErrorAction Stop | Out-Null } catch {
         throw "az CLI is not available on PATH; cannot fetch assigned PRs."
       }
+
+      . '{{vars.sharedScriptsDir}}/pr-repos.ps1'
 
       # `az` ships an embedded Python that defaults to cp1252 on Windows and dies
       # with a UnicodeEncodeError if any HTTP response contains non-ASCII (the
@@ -76,44 +89,56 @@ steps:
         return [string]$value
       }
 
-      $organization = '{{vars.organization}}'
-      $project = '{{vars.project}}'
-      $repository = '{{vars.repository}}'
       $reviewerUnique = '{{vars.reviewerUniqueName}}'
-      $orgUrl = "https://dev.azure.com/$organization"
       # Azure DevOps OAuth resource ID -- same constant az CLI uses for ADO calls.
       $adoResource = '499b84ac-1321-427f-aa17-267ca6975798'
 
-      # ── Resolve & cache the repository ID (NOT the reviewer identity) ─────
+      # Throws if repos.json is missing/malformed or any configured clone is
+      # absent. Failing here is intentional: running with a partial repo list
+      # would silently stop reviewing whichever repos went missing.
+      $targets = Get-PrRepoTargets
+
+      # ── Repository-ID cache (shared across repos, keyed per repo) ─────────
       # The reviewer email is matched client-side below; only the repo ID needs
-      # a one-time lookup. We cache it for 30 days because repo IDs are
-      # effectively immutable.
+      # a one-time lookup per repository. We cache for 30 days because repo IDs
+      # are effectively immutable.
       $cacheRoot = Join-Path $env:LOCALAPPDATA 'Orchestra\pr-auto-reviewer'
       if (-not (Test-Path $cacheRoot)) { New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null }
       $cachePath = Join-Path $cacheRoot 'repo-cache.json'
-      $cacheKey = "$organization|$project|$repository"
       $cacheMaxAgeDays = 30
 
-      $repoId = $null
+      # Cache file holds one entry per "org|project|repo" key. Older builds of
+      # this step wrote a single flat object; tolerate that shape on read so the
+      # first multi-repo run does not fail on a stale cache.
+      $cacheMap = @{}
       if (Test-Path $cachePath) {
         try {
           $cacheDoc = Get-Content $cachePath -Raw | ConvertFrom-Json
-          if ($cacheDoc.key -eq $cacheKey -and $cacheDoc.cachedAt -and $cacheDoc.repositoryId) {
-            $cachedAt = [datetime]::Parse($cacheDoc.cachedAt)
-            if (((Get-Date) - $cachedAt).TotalDays -lt $cacheMaxAgeDays) {
-              $repoId = [string]$cacheDoc.repositoryId
+          if ($cacheDoc -and $cacheDoc.PSObject.Properties['entries']) {
+            foreach ($prop in $cacheDoc.entries.PSObject.Properties) {
+              $cacheMap[$prop.Name] = $prop.Value
             }
+          } elseif ($cacheDoc -and $cacheDoc.PSObject.Properties['key']) {
+            $cacheMap[[string]$cacheDoc.key] = $cacheDoc
           }
         } catch {
-          # Corrupt cache -- fall through to re-resolve.
+          # Corrupt cache -- fall through and re-resolve everything.
+          $cacheMap = @{}
         }
       }
 
-      if (-not $repoId) {
+      function Get-RepositoryId {
+        param(
+          [Parameter(Mandatory)][string]$OrgUrl,
+          [Parameter(Mandatory)][string]$Project,
+          [Parameter(Mandatory)][string]$Repository,
+          [Parameter(Mandatory)][string]$Resource
+        )
+
         # az rest is built-in; az repos show would require the `azure-devops` extension
         # which prompts interactively (via stdin) when missing -- that prompt receives
         # EOF in a piped-stdin orchestration context and crashes az with EOFError.
-        $repoBase = "$orgUrl/$project/_apis/git/repositories/$repository"
+        $repoBase = "$OrgUrl/$Project/_apis/git/repositories/$Repository"
         # Route stderr to a temp file rather than merging it into stdout with 2>&1.
         # az ignores $env:PYTHONIOENCODING on Windows and unconditionally emits
         # `WARNING: Unable to encode the output with cp1252 encoding...` whenever
@@ -127,116 +152,162 @@ steps:
             --method get `
             --uri $repoBase `
             --uri-parameters "api-version=7.1-preview.1" `
-            --resource $adoResource `
+            --resource $Resource `
             -o json 2>$repoStderr
           if ($LASTEXITCODE -ne 0) {
             $stderr = Get-Content -Raw -LiteralPath $repoStderr -ErrorAction SilentlyContinue
-            throw "az rest repository lookup failed (exit $LASTEXITCODE). stderr: $stderr"
+            throw "az rest repository lookup failed for '$Project/$Repository' (exit $LASTEXITCODE). stderr: $stderr"
           }
           $repoObj = (($repoRaw | ForEach-Object { [string]$_ }) -join "`n") | ConvertFrom-Json -Depth 100
         } finally {
           Remove-Item -LiteralPath $repoStderr -ErrorAction SilentlyContinue
         }
-        $repoId = [string]$repoObj.id
-        if ([string]::IsNullOrWhiteSpace($repoId)) {
-          throw "Could not resolve repository ID for '$project/$repository' in org '$organization'."
+
+        $id = [string]$repoObj.id
+        if ([string]::IsNullOrWhiteSpace($id)) {
+          throw "Could not resolve repository ID for '$Project/$Repository'."
         }
-        [pscustomobject]@{
-          key = $cacheKey
-          repositoryId = $repoId
-          cachedAt = (Get-Date).ToString('o')
-        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $cachePath -Encoding utf8
+        return $id
       }
 
-      # ── Fast PR list: all active PRs in the repo, filtered client-side ────
-      # The git REST API returns active PRs in ~1s regardless of org size when
-      # the request is keyed by repo ID with NO identity-based filter. We pass
-      # --uri-parameters so az re-encodes the query (going through --url with
-      # literal `&` characters breaks because az.cmd dispatches via cmd.exe and
-      # cmd interprets `&` as a command separator).
-      $listBase = "$orgUrl/$project/_apis/git/repositories/$repoId/pullrequests"
-      # '$top' is single-quoted so PowerShell doesn't try to interpolate $top.
-      # stderr is routed to a temp file (see the comment on the repo lookup
-      # above for why merging via 2>&1 corrupts ConvertFrom-Json).
-      $listStderr = [System.IO.Path]::GetTempFileName()
-      try {
-        $raw = & az rest `
-          --method get `
-          --uri $listBase `
-          --uri-parameters "api-version=7.1-preview.1" "searchCriteria.status=active" '$top=200' `
-          --resource $adoResource `
-          -o json 2>$listStderr
-        if ($LASTEXITCODE -ne 0) {
-          $stderr = Get-Content -Raw -LiteralPath $listStderr -ErrorAction SilentlyContinue
-          throw "az rest pullrequests list failed (exit $LASTEXITCODE). stderr: $stderr"
-        }
-        $jsonString = ($raw | ForEach-Object { [string]$_ }) -join "`n"
-        $envelope = $jsonString | ConvertFrom-Json -Depth 100
-      } finally {
-        Remove-Item -LiteralPath $listStderr -ErrorAction SilentlyContinue
-      }
-      # The REST API wraps results in { value: [...], count: N }; unwrap so the
-      # downstream foreach body (originally written against the unwrapped array
-      # that `az repos pr list` returns) keeps working unchanged.
-      $allActive = if ($null -ne $envelope.value) { $envelope.value } else { @() }
-
-      # Client-side filter: keep PRs where any reviewer's uniqueName matches the
-      # configured reviewer email (case-insensitive). The ADO PR list response
-      # includes the full reviewers[] array on every PR, so this is just a loop
-      # over typically 20-50 active PRs in a single repo -- microseconds.
-      $list = @($allActive | Where-Object {
-        $_ -and $_.reviewers -and @($_.reviewers | Where-Object {
-          $_ -and $_.uniqueName -and [string]::Equals([string]$_.uniqueName, $reviewerUnique, [StringComparison]::OrdinalIgnoreCase)
-        }).Count -gt 0
-      })
-
-      # ── Transform to the downstream output contract ──────────────────────
-      # Emits the same JSON-array shape `az repos pr list` used to produce, so
-      # the downstream `filter-prs` step (and everything keyed off
-      # \{{fetch-assigned-prs.output}}) keeps working without any change.
       $prs = New-Object System.Collections.Generic.List[object]
-      foreach ($p in @($list)) {
-        if ($null -eq $p) { continue }
+      $cacheDirty = $false
 
-        $reviewerNames = @()
-        if ($null -ne $p.reviewers) {
-          $reviewerNames = @(@($p.reviewers) | ForEach-Object { [string]$_.displayName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+      foreach ($target in @($targets)) {
+        $organization = $target.organization
+        $project = $target.project
+        $repository = $target.repository
+        $orgUrl = $target.orgUrl
+        $cacheKey = "$organization|$project|$repository"
+
+        $repoId = $null
+        if ($cacheMap.ContainsKey($cacheKey)) {
+          $cached = $cacheMap[$cacheKey]
+          try {
+            if ($cached -and $cached.repositoryId -and $cached.cachedAt) {
+              $cachedAt = [datetime]::Parse([string]$cached.cachedAt)
+              if (((Get-Date) - $cachedAt).TotalDays -lt $cacheMaxAgeDays) {
+                $repoId = [string]$cached.repositoryId
+              }
+            }
+          } catch {
+            $repoId = $null
+          }
         }
 
-        $createdByName = ""
-        $createdByUnique = ""
-        if ($null -ne $p.createdBy) {
-          $createdByName = [string]$p.createdBy.displayName
-          $createdByUnique = [string]$p.createdBy.uniqueName
+        if (-not $repoId) {
+          $repoId = Get-RepositoryId -OrgUrl $orgUrl -Project $project -Repository $repository -Resource $adoResource
+          $cacheMap[$cacheKey] = [pscustomobject]@{
+            key          = $cacheKey
+            repositoryId = $repoId
+            cachedAt     = (Get-Date).ToString('o')
+          }
+          $cacheDirty = $true
         }
 
-        $prId = [int]$p.pullRequestId
-        $webUrl = "https://dev.azure.com/$organization/$project/_git/$repository/pullrequest/$prId"
-
-        $lastCommit = ""
-        if ($null -ne $p.lastMergeSourceCommit -and $p.lastMergeSourceCommit.commitId) {
-          $lastCommit = [string]$p.lastMergeSourceCommit.commitId
+        # ── Fast PR list: all active PRs in the repo, filtered client-side ────
+        # The git REST API returns active PRs in ~1s regardless of org size when
+        # the request is keyed by repo ID with NO identity-based filter. We pass
+        # --uri-parameters so az re-encodes the query (going through --url with
+        # literal `&` characters breaks because az.cmd dispatches via cmd.exe and
+        # cmd interprets `&` as a command separator).
+        $listBase = "$orgUrl/$project/_apis/git/repositories/$repoId/pullrequests"
+        # '$top' is single-quoted so PowerShell doesn't try to interpolate $top.
+        # stderr is routed to a temp file (see Get-RepositoryId for why merging
+        # via 2>&1 corrupts ConvertFrom-Json).
+        $listStderr = [System.IO.Path]::GetTempFileName()
+        try {
+          $raw = & az rest `
+            --method get `
+            --uri $listBase `
+            --uri-parameters "api-version=7.1-preview.1" "searchCriteria.status=active" '$top=200' `
+            --resource $adoResource `
+            -o json 2>$listStderr
+          if ($LASTEXITCODE -ne 0) {
+            $stderr = Get-Content -Raw -LiteralPath $listStderr -ErrorAction SilentlyContinue
+            throw "az rest pullrequests list failed for '$project/$repository' (exit $LASTEXITCODE). stderr: $stderr"
+          }
+          $jsonString = ($raw | ForEach-Object { [string]$_ }) -join "`n"
+          $envelope = $jsonString | ConvertFrom-Json -Depth 100
+        } finally {
+          Remove-Item -LiteralPath $listStderr -ErrorAction SilentlyContinue
         }
+        # The REST API wraps results in { value: [...], count: N }; unwrap so the
+        # transform below (originally written against the unwrapped array that
+        # `az repos pr list` returns) keeps working unchanged.
+        $allActive = if ($null -ne $envelope.value) { $envelope.value } else { @() }
 
-        $isDraftVal = $false
-        if ($null -ne $p.isDraft) { $isDraftVal = [bool]$p.isDraft }
+        # Client-side filter: keep PRs where any reviewer's uniqueName matches the
+        # configured reviewer email (case-insensitive). The ADO PR list response
+        # includes the full reviewers[] array on every PR, so this is just a loop
+        # over typically 20-50 active PRs per repo -- microseconds.
+        $list = @($allActive | Where-Object {
+          $_ -and $_.reviewers -and @($_.reviewers | Where-Object {
+            $_ -and $_.uniqueName -and [string]::Equals([string]$_.uniqueName, $reviewerUnique, [StringComparison]::OrdinalIgnoreCase)
+          }).Count -gt 0
+        })
 
-        $entry = [ordered]@{
-          id = $prId
-          title = [string]$p.title
-          status = [string]$p.status
-          isDraft = $isDraftVal
-          createdBy = $createdByName
-          createdByUniqueName = $createdByUnique
-          creationDate = ConvertTo-IsoUtcString $p.creationDate
-          sourceRefName = [string]$p.sourceRefName
-          targetRefName = [string]$p.targetRefName
-          reviewers = $reviewerNames
-          url = $webUrl
-          apiUrl = [string]$p.url
-          lastMergeSourceCommitId = $lastCommit
+        # ── Transform to the downstream output contract ──────────────────────
+        # Emits the same JSON-array shape `az repos pr list` used to produce, so
+        # the downstream `filter-prs` step (and everything keyed off
+        # \{{fetch-assigned-prs.output}}) keeps working without any change. The
+        # `repository` / `repoPath` fields are additive.
+        foreach ($p in @($list)) {
+          if ($null -eq $p) { continue }
+
+          $reviewerNames = @()
+          if ($null -ne $p.reviewers) {
+            $reviewerNames = @(@($p.reviewers) | ForEach-Object { [string]$_.displayName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          }
+
+          $createdByName = ""
+          $createdByUnique = ""
+          if ($null -ne $p.createdBy) {
+            $createdByName = [string]$p.createdBy.displayName
+            $createdByUnique = [string]$p.createdBy.uniqueName
+          }
+
+          $prId = [int]$p.pullRequestId
+          $webUrl = "$($target.prUrlPrefix)$prId"
+
+          $lastCommit = ""
+          if ($null -ne $p.lastMergeSourceCommit -and $p.lastMergeSourceCommit.commitId) {
+            $lastCommit = [string]$p.lastMergeSourceCommit.commitId
+          }
+
+          $isDraftVal = $false
+          if ($null -ne $p.isDraft) { $isDraftVal = [bool]$p.isDraft }
+
+          $entry = [ordered]@{
+            id = $prId
+            title = [string]$p.title
+            status = [string]$p.status
+            isDraft = $isDraftVal
+            createdBy = $createdByName
+            createdByUniqueName = $createdByUnique
+            creationDate = ConvertTo-IsoUtcString $p.creationDate
+            sourceRefName = [string]$p.sourceRefName
+            targetRefName = [string]$p.targetRefName
+            reviewers = $reviewerNames
+            url = $webUrl
+            apiUrl = [string]$p.url
+            lastMergeSourceCommitId = $lastCommit
+            organization = $organization
+            project = $project
+            repository = $repository
+            repoPath = $target.repoPath
+          }
+          [void]$prs.Add($entry)
         }
-        [void]$prs.Add($entry)
+      }
+
+      if ($cacheDirty) {
+        $entriesObj = [ordered]@{}
+        foreach ($k in $cacheMap.Keys) { $entriesObj[$k] = $cacheMap[$k] }
+        [pscustomobject]@{
+          version = 2
+          entries = [pscustomobject]$entriesObj
+        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $cachePath -Encoding utf8
       }
 
       $prsArr = $prs.ToArray()
@@ -304,9 +375,9 @@ steps:
       mode: auto
       forceReview: "false"
     mode: sync
-    maxConcurrency: 4
+    maxConcurrency: 5
     continueOnItemFailure: true
-    timeoutSeconds: 17000
+    timeoutSeconds: 50000
 
   - name: aggregate-dispatch
     type: Script

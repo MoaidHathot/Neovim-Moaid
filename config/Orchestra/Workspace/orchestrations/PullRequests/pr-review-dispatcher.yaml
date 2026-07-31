@@ -32,9 +32,12 @@ inputs:
     default: "false"
 
 variables:
-  organization: msazure
-  project: One
-  repository: ZTS
+  # Organization / project / repository are NOT declared here. The repository
+  # list (and each repo's local clone path) lives outside this repository, in
+  # $env:ONEDRIVE/Orchestra/Orchestrations/PullRequests/repos.json, and is read
+  # via Shared/scripts/pr-repos.ps1. Everything downstream derives the repo
+  # from the PR URL, which is the single source of truth per invocation.
+  sharedScriptsDir: "{{orchestration.sourceDirectory}}/../Shared/scripts"
   zakiraCategory: pr-code-review-state
   staleReviewMinutes: "60"
   reviewerAgentNames: ".NET Expert, Principal Engineer, Security Expert, DTFx Expert, liabadi, ohads"
@@ -237,11 +240,12 @@ steps:
 
         $prId = if ($pr) { Get-OptionalProperty $pr 'id' } else { $null }
         if (-not $prId -and $prUrl -match '/pullrequest/(\d+)') { $prId = [int]$Matches[1] }
-        if ([string]::IsNullOrWhiteSpace($prUrl) -and $prId) {
-          $prUrl = "https://dev.azure.com/{{vars.organization}}/{{vars.project}}/_git/{{vars.repository}}/pullrequest/$prId"
-        }
         if ([string]::IsNullOrWhiteSpace($prUrl)) {
-          throw 'A PR URL or PR data with id/url is required.'
+          # A bare PR id is NOT enough to build a URL now that the pipeline
+          # spans several repositories: the id alone does not identify which
+          # repo it belongs to, and composing a URL against a default repo
+          # would send the review at the wrong codebase.
+          throw "A PR URL (or PR data carrying prUrl/url) is required; a bare PR id ($prId) cannot be resolved to a repository."
         }
 
         [pscustomobject]@{
@@ -273,6 +277,11 @@ steps:
     shell: pwsh
     script: |
         $ErrorActionPreference = 'Stop'
+
+        # Repository -> local clone map, consulted below to pass --repo-path
+        # to `powerreview open`. Defines functions only; deliberately does
+        # not call Set-StrictMode, which would apply to this scope.
+        . '{{vars.sharedScriptsDir}}/pr-repos.ps1'
 
         # Strict-safe optional property accessors (see normalize-review-request).
         function Get-OptionalProperty {
@@ -324,13 +333,25 @@ steps:
         function Invoke-PowerReviewOpen {
           param([Parameter(Mandatory)][string]$PrUrl)
 
+          # Hand PowerReview the local clone that actually backs this PR's
+          # repository. Without --repo-path it falls back to git.repo_base_path
+          # and runs `git worktree add <path> <pr-source-branch>` against
+          # whatever repo that points at. When the fallback repo happens to
+          # contain a branch of the same name -- `main`, `dev`, or any
+          # `dependabot/*` name, all of which recur verbatim across repos --
+          # the worktree is built from the WRONG repository's source, and the
+          # review agents read the wrong files while the diff and threads come
+          # from the right PR. Resolve-PrRepoPath throws for an unmapped
+          # repository rather than guessing.
+          $repoPath = Resolve-PrRepoPath -PrUrl $PrUrl
+
           $stdoutPath = [System.IO.Path]::GetTempFileName()
           $stderrPath = [System.IO.Path]::GetTempFileName()
           $previousNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
           $PSNativeCommandUseErrorActionPreference = $false
 
           try {
-            & dnx --yes --add-source https://api.nuget.org/v3/index.json PowerReview -- open --pr-url $PrUrl 1> $stdoutPath 2> $stderrPath
+            & dnx --yes --add-source https://api.nuget.org/v3/index.json PowerReview -- open --pr-url $PrUrl --repo-path $repoPath 1> $stdoutPath 2> $stderrPath
             $exitCode = $LASTEXITCODE
             $stdout = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
             $stderr = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue

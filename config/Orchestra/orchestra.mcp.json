@@ -51,7 +51,9 @@
 			"arguments": [
 				"-y",
 				"@azure-devops/mcp",
-				"msazure"
+				"msazure",
+				"-a",
+				"azcli"
 			]
 		},
 		{

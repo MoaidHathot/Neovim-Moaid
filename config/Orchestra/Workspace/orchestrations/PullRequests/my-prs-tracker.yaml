@@ -85,10 +85,11 @@ inputs:
     default: "false"
 
 variables:
-  organization: msazure
-  project: One
-  repository: ZTS
-  orgUrl: "https://dev.azure.com/msazure"
+  # Organization / project / repository are NOT declared here. The repository
+  # list (and each repo's local clone path) lives outside this repository, in
+  # $env:ONEDRIVE/Orchestra/Orchestrations/PullRequests/repos.json, and is read
+  # via Shared/scripts/pr-repos.ps1. See that script's header for the schema.
+  #
   # Identity is resolved dynamically per run via resolve-me (which uses
   # Shared/scripts/resolve-user-identity.ps1: az account show + Graph /me,
   # cached in Zakira for 24h). No hardcoded UPN here.
@@ -131,15 +132,19 @@ steps:
     dependsOn: [resolve-me]
     shell: pwsh
     script: |
-      # Deterministic discovery via Azure CLI. Lists active PRs in the
-      # ZTS repository and filters to ones I authored. The az CLI is the
-      # same tool zts-official-pipeline-tracker already relies on, so no
-      # new dependency. PR threads / policy detail are pulled lazily by
-      # downstream classify-state when actually needed.
+      # Deterministic discovery via Azure CLI across every configured
+      # repository. Lists active PRs and filters to ones I authored. PR
+      # threads / policy detail are pulled lazily by downstream
+      # classify-state when actually needed.
       #
       # Identity is supplied by the upstream resolve-me step (NOT
       # hardcoded). The identity JSON exposes `uniqueName` (UPN);
       # filtering is case-insensitive on `createdBy.uniqueName`.
+      #
+      # Uses `az rest` rather than `az repos pr list`: the latter needs the
+      # `azure-devops` extension, which prompts on stdin when missing and
+      # crashes with EOFError under Orchestra's piped stdin. `az rest` is
+      # built in and addresses the repo by ID.
       $ErrorActionPreference = 'Stop'
       $PSNativeCommandArgumentPassing = 'Standard'
 
@@ -147,10 +152,13 @@ steps:
         throw "az CLI is not available on PATH; cannot discover PRs."
       }
 
-      $orgUrl       = $args[0]
-      $project      = $args[1]
-      $repository   = $args[2]
-      $identityJson = $args[3]
+      . '{{vars.sharedScriptsDir}}/pr-repos.ps1'
+
+      # az's embedded Python defaults to cp1252 on Windows and dies with a
+      # UnicodeEncodeError when a response contains non-ASCII.
+      $env:PYTHONIOENCODING = 'utf-8'
+
+      $identityJson = $args[0]
 
       $identity = ConvertFrom-Json -InputObject $identityJson -Depth 10 -ErrorAction Stop
       $myUniqueName = [string]$identity.uniqueName
@@ -158,95 +166,183 @@ steps:
         throw "resolve-me did not return a uniqueName; cannot filter PRs."
       }
 
-      $stderrFile = [System.IO.Path]::GetTempFileName()
-      try {
-        $raw = & az repos pr list `
-          --org $orgUrl `
-          --project $project `
-          --repository $repository `
-          --status active `
-          --top 200 `
-          -o json 2>$stderrFile
-        if ($LASTEXITCODE -ne 0) {
-          $stderr = Get-Content -LiteralPath $stderrFile -Raw -ErrorAction SilentlyContinue
-          throw "az repos pr list failed (exit $LASTEXITCODE) for $project/$repository. stderr: $stderr"
-        }
-      } finally {
-        Remove-Item -LiteralPath $stderrFile -Force -ErrorAction SilentlyContinue
-      }
+      # Azure DevOps OAuth resource ID -- same constant az CLI uses for ADO calls.
+      $adoResource = '499b84ac-1321-427f-aa17-267ca6975798'
 
-      $jsonText = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
-      $allPrs = ConvertFrom-Json -InputObject $jsonText -Depth 100 -ErrorAction Stop
+      # Throws if repos.json is missing/malformed or a configured clone is absent.
+      $targets = Get-PrRepoTargets
+
+      # Repository IDs come from the same 30-day cache the PR trackers share.
+      $cacheRoot = Join-Path $env:LOCALAPPDATA 'Orchestra\pr-auto-reviewer'
+      if (-not (Test-Path $cacheRoot)) { New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null }
+      $cachePath = Join-Path $cacheRoot 'repo-cache.json'
+      $cacheMaxAgeDays = 30
+
+      $cacheMap = @{}
+      if (Test-Path $cachePath) {
+        try {
+          $cacheDoc = Get-Content $cachePath -Raw | ConvertFrom-Json
+          if ($cacheDoc -and $cacheDoc.PSObject.Properties['entries']) {
+            foreach ($prop in $cacheDoc.entries.PSObject.Properties) { $cacheMap[$prop.Name] = $prop.Value }
+          } elseif ($cacheDoc -and $cacheDoc.PSObject.Properties['key']) {
+            $cacheMap[[string]$cacheDoc.key] = $cacheDoc
+          }
+        } catch { $cacheMap = @{} }
+      }
 
       $now = (Get-Date).ToUniversalTime()
       $myUpnLower = $myUniqueName.ToLowerInvariant()
 
       $mine = New-Object System.Collections.Generic.List[object]
-      foreach ($pr in @($allPrs)) {
-        if ($null -eq $pr) { continue }
-        $createdBy = $pr.createdBy
-        if ($null -eq $createdBy) { continue }
-        $upn = [string]$createdBy.uniqueName
-        if ([string]::IsNullOrWhiteSpace($upn)) { continue }
-        if ($upn.ToLowerInvariant() -ne $myUpnLower) { continue }
+      $totalActive = 0
+      $cacheDirty = $false
 
-        $reviewers = @()
-        if ($pr.reviewers) {
-          foreach ($r in @($pr.reviewers)) {
-            if ($null -eq $r) { continue }
-            $reviewers += [pscustomobject]@{
-              uniqueName  = [string]$r.uniqueName
-              displayName = [string]$r.displayName
-              # Vote codes: 10=approved, 5=approved-with-suggestions,
-              # 0=no-vote, -5=waiting-for-author, -10=rejected.
-              vote        = [int]($r.vote -as [int])
-              isRequired  = [bool]($r.isRequired -eq $true)
-              hasDeclined = [bool]($r.hasDeclined -eq $true)
-              isContainer = [bool]($r.isContainer -eq $true)
+      foreach ($target in @($targets)) {
+        $project    = $target.project
+        $repository = $target.repository
+        $orgUrl     = $target.orgUrl
+        $cacheKey   = "$($target.organization)|$project|$repository"
+
+        $repoId = $null
+        if ($cacheMap.ContainsKey($cacheKey)) {
+          $cached = $cacheMap[$cacheKey]
+          try {
+            if ($cached -and $cached.repositoryId -and $cached.cachedAt) {
+              $cachedAt = [datetime]::Parse([string]$cached.cachedAt)
+              if (((Get-Date) - $cachedAt).TotalDays -lt $cacheMaxAgeDays) { $repoId = [string]$cached.repositoryId }
+            }
+          } catch { $repoId = $null }
+        }
+
+        if (-not $repoId) {
+          $repoStderr = [System.IO.Path]::GetTempFileName()
+          try {
+            $repoRaw = & az rest `
+              --method get `
+              --uri "$orgUrl/$project/_apis/git/repositories/$repository" `
+              --uri-parameters "api-version=7.1-preview.1" `
+              --resource $adoResource `
+              -o json 2>$repoStderr
+            if ($LASTEXITCODE -ne 0) {
+              $stderr = Get-Content -LiteralPath $repoStderr -Raw -ErrorAction SilentlyContinue
+              throw "az rest repository lookup failed for $project/$repository (exit $LASTEXITCODE). stderr: $stderr"
+            }
+            $repoObj = (($repoRaw | ForEach-Object { [string]$_ }) -join "`n") | ConvertFrom-Json -Depth 100
+          } finally {
+            Remove-Item -LiteralPath $repoStderr -Force -ErrorAction SilentlyContinue
+          }
+          $repoId = [string]$repoObj.id
+          if ([string]::IsNullOrWhiteSpace($repoId)) { throw "Could not resolve repository ID for $project/$repository." }
+          $cacheMap[$cacheKey] = [pscustomobject]@{ key = $cacheKey; repositoryId = $repoId; cachedAt = (Get-Date).ToString('o') }
+          $cacheDirty = $true
+        }
+
+        $stderrFile = [System.IO.Path]::GetTempFileName()
+        try {
+          # '$top' is single-quoted so PowerShell doesn't interpolate $top.
+          $raw = & az rest `
+            --method get `
+            --uri "$orgUrl/$project/_apis/git/repositories/$repoId/pullrequests" `
+            --uri-parameters "api-version=7.1-preview.1" "searchCriteria.status=active" '$top=200' `
+            --resource $adoResource `
+            -o json 2>$stderrFile
+          if ($LASTEXITCODE -ne 0) {
+            $stderr = Get-Content -LiteralPath $stderrFile -Raw -ErrorAction SilentlyContinue
+            throw "az rest pullrequests list failed (exit $LASTEXITCODE) for $project/$repository. stderr: $stderr"
+          }
+        } finally {
+          Remove-Item -LiteralPath $stderrFile -Force -ErrorAction SilentlyContinue
+        }
+
+        $jsonText = if ($raw -is [array]) { ($raw | ForEach-Object { [string]$_ }) -join "`n" } else { [string]$raw }
+        $envelope = ConvertFrom-Json -InputObject $jsonText -Depth 100 -ErrorAction Stop
+        $allPrs = if ($null -ne $envelope.value) { $envelope.value } else { @() }
+        $totalActive += @($allPrs).Count
+
+        foreach ($pr in @($allPrs)) {
+          if ($null -eq $pr) { continue }
+          $createdBy = $pr.createdBy
+          if ($null -eq $createdBy) { continue }
+          $upn = [string]$createdBy.uniqueName
+          if ([string]::IsNullOrWhiteSpace($upn)) { continue }
+          if ($upn.ToLowerInvariant() -ne $myUpnLower) { continue }
+
+          $reviewers = @()
+          if ($pr.reviewers) {
+            foreach ($r in @($pr.reviewers)) {
+              if ($null -eq $r) { continue }
+              $reviewers += [pscustomobject]@{
+                uniqueName  = [string]$r.uniqueName
+                displayName = [string]$r.displayName
+                # Vote codes: 10=approved, 5=approved-with-suggestions,
+                # 0=no-vote, -5=waiting-for-author, -10=rejected.
+                vote        = [int]($r.vote -as [int])
+                isRequired  = [bool]($r.isRequired -eq $true)
+                hasDeclined = [bool]($r.hasDeclined -eq $true)
+                isContainer = [bool]($r.isContainer -eq $true)
+              }
             }
           }
-        }
 
-        $webUrl = $null
-        if ($pr._links -and $pr._links.web -and $pr._links.web.href) {
-          $webUrl = [string]$pr._links.web.href
-        } else {
-          $webUrl = "$orgUrl/$project/_git/$repository/pullrequest/$($pr.pullRequestId)"
-        }
+          # `az repos pr list` used to surface a web href under _links; the
+          # raw REST list response does not always include it. Probe
+          # defensively and fall back to the composed PR URL.
+          $webUrl = $null
+          $linksProp = $pr.PSObject.Properties['_links']
+          if ($linksProp -and $linksProp.Value) {
+            $webProp = $linksProp.Value.PSObject.Properties['web']
+            if ($webProp -and $webProp.Value) {
+              $hrefProp = $webProp.Value.PSObject.Properties['href']
+              if ($hrefProp -and -not [string]::IsNullOrWhiteSpace([string]$hrefProp.Value)) {
+                $webUrl = [string]$hrefProp.Value
+              }
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($webUrl)) {
+            $webUrl = "$($target.prUrlPrefix)$($pr.pullRequestId)"
+          }
 
-        $mine.Add([pscustomobject]@{
-          prId            = [int]$pr.pullRequestId
-          title           = [string]$pr.title
-          status          = [string]$pr.status
-          mergeStatus     = [string]$pr.mergeStatus
-          isDraft         = [bool]($pr.isDraft -eq $true)
-          createdAt       = [string]$pr.creationDate
-          sourceRefName   = [string]$pr.sourceRefName
-          targetRefName   = [string]$pr.targetRefName
-          sourceCommit    = if ($pr.lastMergeSourceCommit) { [string]$pr.lastMergeSourceCommit.commitId } else { $null }
-          targetCommit    = if ($pr.lastMergeTargetCommit) { [string]$pr.lastMergeTargetCommit.commitId } else { $null }
-          reviewers       = $reviewers
-          repositoryId    = if ($pr.repository) { [string]$pr.repository.id } else { $null }
-          webUrl          = $webUrl
-          # The az CLI does not expose a generic "lastUpdated" field; the
-          # closest stable proxy is the source-commit timestamp, but it
-          # is not on the list response. Downstream classify-state treats
-          # creationDate as a fallback "last reference time" and the
-          # diff-against-prior step rolls forward to detect movement.
-          discoveredAt    = $now.ToString('o')
-        }) | Out-Null
+          $mine.Add([pscustomobject]@{
+            prId            = [int]$pr.pullRequestId
+            title           = [string]$pr.title
+            status          = [string]$pr.status
+            mergeStatus     = [string]$pr.mergeStatus
+            isDraft         = [bool]($pr.isDraft -eq $true)
+            createdAt       = [string]$pr.creationDate
+            sourceRefName   = [string]$pr.sourceRefName
+            targetRefName   = [string]$pr.targetRefName
+            sourceCommit    = if ($pr.lastMergeSourceCommit) { [string]$pr.lastMergeSourceCommit.commitId } else { $null }
+            targetCommit    = if ($pr.lastMergeTargetCommit) { [string]$pr.lastMergeTargetCommit.commitId } else { $null }
+            reviewers       = $reviewers
+            repositoryId    = if ($pr.repository) { [string]$pr.repository.id } else { $repoId }
+            organization    = $target.organization
+            project         = $project
+            repository      = $repository
+            repoPath        = $target.repoPath
+            webUrl          = $webUrl
+            # The list response does not expose a generic "lastUpdated"
+            # field. Downstream classify-state treats creationDate as a
+            # fallback "last reference time" and the diff-against-prior
+            # step rolls forward to detect movement.
+            discoveredAt    = $now.ToString('o')
+          }) | Out-Null
+        }
+      }
+
+      if ($cacheDirty) {
+        $entriesObj = [ordered]@{}
+        foreach ($k in $cacheMap.Keys) { $entriesObj[$k] = $cacheMap[$k] }
+        [pscustomobject]@{ version = 2; entries = [pscustomobject]$entriesObj } |
+          ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $cachePath -Encoding utf8
       }
 
       [pscustomobject]@{
         discoveredAt    = $now.ToString('o')
-        totalActive     = @($allPrs).Count
+        totalActive     = $totalActive
         mine            = $mine.ToArray()
         mineCount       = $mine.Count
       } | ConvertTo-Json -Depth 50 -Compress
     arguments:
-      - "{{vars.orgUrl}}"
-      - "{{vars.project}}"
-      - "{{vars.repository}}"
       - "{{resolve-me.output}}"
     timeoutSeconds: 300
 

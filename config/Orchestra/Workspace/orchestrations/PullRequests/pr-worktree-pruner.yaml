@@ -1,0 +1,746 @@
+name: pr-worktree-pruner
+description: |
+  Weekly sweep that reclaims PowerReview review worktrees which are no longer
+  useful: either their pull request is finished (completed / abandoned) or the
+  worktree has simply gone stale.
+
+  Why this is needed
+  ------------------
+  PowerReview creates a linked git worktree per review under
+  `git.worktree_dir/<repoId>/<prId>` and removes it on `powerreview close`
+  (`cleanup_on_close`). Any review that is never explicitly closed -- a crashed
+  orchestration, a terminated agent, a PR that merges while a review is open --
+  leaves its worktree behind forever. Those accumulate silently: each one is a
+  full checkout of the repository.
+
+  A second, larger source of garbage: PowerReview's `WorktreeManager.ComputeRepoId`
+  derives its directory name from `String.GetHashCode()`, which .NET Core
+  randomizes per process. Every `powerreview open` invocation therefore mints a
+  brand-new `<repoName>-<hash>` directory, and the "worktree already exists"
+  de-duplication can never hit across processes. Until that is fixed upstream,
+  this sweep is the only thing keeping the worktree root bounded.
+
+  What gets pruned
+  ----------------
+  A worktree is a candidate when EITHER holds:
+    * its pull request is no longer active (completed, abandoned, or simply
+      absent from the repo's active-PR list), OR
+    * its directory has not been modified in `maxAgeDays` days.
+
+  Safety guards -- a candidate is SKIPPED (unless `force` is true) when:
+    * the session still holds unsubmitted draft comments (`draft_count > 0`),
+      because closing would discard unreviewed work;
+    * the worktree has uncommitted changes (`git status --porcelain`);
+    * the directory was modified within the last `minIdleHours` hours.
+
+  How removal happens
+  -------------------
+  Session-backed worktrees go through `powerreview close --pr-url <url>`, which
+  runs `git worktree remove --force` against the correct main repo and clears
+  the worktree path from the session file (the session itself is preserved and
+  can be resumed). Orphans with no session are removed directly, resolving the
+  owning repo via `git rev-parse --git-common-dir`. Empty `<repoName>-<hash>`
+  directories -- created by the hash bug before a `worktree add` failed -- are
+  deleted outright. Every configured repo gets a final `git worktree prune`.
+version: 1.0.0
+# Deliberately NOT tagged "PR": the ZTS profile gates PR-tagged orchestrations
+# to working-hours windows, and this is a maintenance sweep that should run in
+# the quiet hours regardless.
+tags: ["cleanup", "system", "PowerReview"]
+defaultModel: claude-opus-4.8
+
+inputs:
+  dryRun:
+    type: boolean
+    description: |
+      When `true`, report what WOULD be pruned without touching anything.
+      Recommended for the first run.
+    required: false
+    default: "false"
+  maxAgeDays:
+    type: number
+    description: |
+      A worktree whose directory has not been modified in this many days is a
+      candidate regardless of its pull request's state.
+    required: false
+    default: "30"
+  minIdleHours:
+    type: number
+    description: |
+      Never touch a worktree modified more recently than this. Protects a
+      review that is actively in flight while the sweep runs.
+    required: false
+    default: "24"
+  force:
+    type: boolean
+    description: |
+      Ignore the draft-count and dirty-worktree guards. Destructive; only use
+      after inspecting a dry run.
+    required: false
+    default: "false"
+
+variables:
+  sharedScriptsDir: "{{orchestration.sourceDirectory}}/../Shared/scripts"
+  actionViewGroupId: "pr-worktree-prune-{{orchestration.runId}}"
+
+defaultRetryPolicy:
+  maxRetries: 1
+  backoffSeconds: 10
+  backoffMultiplier: 2.0
+  retryOnTimeout: false
+
+defaultStepTimeoutSeconds: 900
+timeoutSeconds: 5400
+
+trigger:
+  type: scheduler
+  enabled: true
+  # Sundays at 03:00 local.
+  cron: "0 3 * * 0"
+
+steps:
+  # ── Step 1: Inventory ────────────────────────────────────────────────
+  # Pure read. Collects, in one pass:
+  #   * the configured repositories and their local clones
+  #   * PowerReview's resolved worktree_dir
+  #   * every saved session (id, PR url/status, draft count, worktree path)
+  #   * every physical directory under worktree_dir (including .fixes)
+  #   * every worktree git itself has registered per configured repo
+  - name: inventory
+    type: Script
+    shell: pwsh
+    timeoutSeconds: 300
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      . '{{vars.sharedScriptsDir}}/pr-repos.ps1'
+
+      function Invoke-PowerReview {
+        param([Parameter(Mandatory)][string[]]$Arguments)
+
+        $stdoutPath = [System.IO.Path]::GetTempFileName()
+        $stderrPath = [System.IO.Path]::GetTempFileName()
+        $prev = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+        try {
+          & dnx --yes --add-source https://api.nuget.org/v3/index.json PowerReview -- @Arguments 1> $stdoutPath 2> $stderrPath
+          $code = $LASTEXITCODE
+          $out = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
+          $err = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+        } finally {
+          $PSNativeCommandUseErrorActionPreference = $prev
+          Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+        }
+        return [pscustomobject]@{ exitCode = $code; stdout = $out; stderr = $err }
+      }
+
+      # Normalise for comparison: PowerReview stores forward slashes, git
+      # reports forward slashes, .NET hands back backslashes on Windows.
+      function ConvertTo-ComparablePath {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+        try { $full = [System.IO.Path]::GetFullPath($Path) } catch { $full = $Path }
+        return $full.Replace('\', '/').TrimEnd('/').ToLowerInvariant()
+      }
+
+      # ── Configured repositories ──────────────────────────────────────
+      # SkipPathValidation: the pruner must still work (and report) when a
+      # configured clone has been moved or deleted.
+      $targets = Get-PrRepoTargets -SkipPathValidation
+
+      # ── PowerReview's resolved worktree root ─────────────────────────
+      $cfgResult = Invoke-PowerReview -Arguments @('config')
+      if ($cfgResult.exitCode -ne 0) {
+        throw "powerreview config failed (exit $($cfgResult.exitCode)). stderr: $($cfgResult.stderr)"
+      }
+      $cfg = ConvertFrom-Json -InputObject $cfgResult.stdout -Depth 20 -ErrorAction Stop
+      $worktreeDir = [string]$cfg.git.worktree_dir
+      if ([string]::IsNullOrWhiteSpace($worktreeDir)) {
+        throw "powerreview config did not report git.worktree_dir; nothing to sweep."
+      }
+      if (-not [System.IO.Path]::IsPathRooted($worktreeDir)) {
+        # A relative worktree_dir lives inside each repo; this sweep only
+        # understands the shared external layout.
+        throw "git.worktree_dir ('$worktreeDir') is relative. This orchestration only supports an absolute, shared worktree root."
+      }
+
+      # ── Saved sessions ───────────────────────────────────────────────
+      $sessResult = Invoke-PowerReview -Arguments @('sessions', 'list')
+      if ($sessResult.exitCode -ne 0) {
+        throw "powerreview sessions list failed (exit $($sessResult.exitCode)). stderr: $($sessResult.stderr)"
+      }
+      $summaries = @()
+      if (-not [string]::IsNullOrWhiteSpace($sessResult.stdout)) {
+        $summaries = @(ConvertFrom-Json -InputObject $sessResult.stdout -Depth 20 -ErrorAction Stop)
+      }
+
+      # `sessions list` does not expose the worktree path, so pair each summary
+      # with its on-disk session file. Reading the files directly avoids one
+      # `powerreview session` subprocess per session.
+      $sessionRoot = Join-Path $env:LOCALAPPDATA 'PowerReview\sessions'
+      $sessions = New-Object System.Collections.Generic.List[object]
+      foreach ($s in $summaries) {
+        if ($null -eq $s) { continue }
+        $sessionId = [string]$s.id
+        $file = Join-Path $sessionRoot "$sessionId.json"
+        $worktreePath = ''
+        $repoPath = ''
+        $strategy = ''
+        if (Test-Path -LiteralPath $file) {
+          try {
+            $doc = Get-Content -LiteralPath $file -Raw -Encoding utf8 | ConvertFrom-Json -Depth 30
+            if ($doc.PSObject.Properties['git'] -and $doc.git) {
+              if ($doc.git.PSObject.Properties['worktree_path']) { $worktreePath = [string]$doc.git.worktree_path }
+              if ($doc.git.PSObject.Properties['repo_path'])     { $repoPath     = [string]$doc.git.repo_path }
+              if ($doc.git.PSObject.Properties['strategy'])      { $strategy     = [string]$doc.git.strategy }
+            }
+          } catch {
+            # Unreadable session file -- treat as "no worktree recorded"; the
+            # filesystem sweep below still sees any directory it left behind.
+          }
+        }
+
+        [void]$sessions.Add([pscustomobject]@{
+          id                = $sessionId
+          prId              = [int]$s.pr_id
+          prTitle           = [string]$s.pr_title
+          prUrl             = [string]$s.pr_url
+          prStatusCached    = [string]$s.pr_status
+          organization      = [string]$s.organization
+          project           = [string]$s.project
+          repository        = [string]$s.repository
+          draftCount        = [int]$s.draft_count
+          createdAt         = [string]$s.created_at
+          updatedAt         = [string]$s.updated_at
+          sessionFile       = $file
+          worktreePath      = $worktreePath
+          repoPath          = $repoPath
+          strategy          = $strategy
+          worktreePathKey   = ConvertTo-ComparablePath $worktreePath
+        })
+      }
+
+      # ── Physical directories under the worktree root ─────────────────
+      # Layout: <worktree_dir>/<repoId>/<prId>  and  <worktree_dir>/.fixes/<repoId>/<prId>
+      $dirs = New-Object System.Collections.Generic.List[object]
+      $emptyRepoIdDirs = New-Object System.Collections.Generic.List[object]
+
+      function Add-WorktreeDirs {
+        param(
+          [Parameter(Mandatory)][string]$Root,
+          [Parameter(Mandatory)][bool]$IsFixes
+        )
+        if (-not (Test-Path -LiteralPath $Root)) { return }
+        foreach ($repoIdDir in @(Get-ChildItem -LiteralPath $Root -Directory -ErrorAction SilentlyContinue)) {
+          if (-not $IsFixes -and $repoIdDir.Name -eq '.fixes') { continue }
+          $children = @(Get-ChildItem -LiteralPath $repoIdDir.FullName -Directory -ErrorAction SilentlyContinue)
+          if ($children.Count -eq 0) {
+            [void]$emptyRepoIdDirs.Add([pscustomobject]@{
+              path         = $repoIdDir.FullName
+              repoId       = $repoIdDir.Name
+              lastWriteUtc = $repoIdDir.LastWriteTimeUtc.ToString('o')
+              isFixes      = $IsFixes
+            })
+            continue
+          }
+          foreach ($prDir in $children) {
+            $prIdParsed = 0
+            # Fix worktrees and some legacy layouts use a `<name>-<prId>` form.
+            $nameForId = $prDir.Name
+            if ($nameForId -match '(\d+)$') { [void][int]::TryParse($Matches[1], [ref]$prIdParsed) }
+            [void]$dirs.Add([pscustomobject]@{
+              path         = $prDir.FullName
+              pathKey      = ConvertTo-ComparablePath $prDir.FullName
+              repoId       = $repoIdDir.Name
+              dirName      = $prDir.Name
+              prId         = $prIdParsed
+              lastWriteUtc = $prDir.LastWriteTimeUtc.ToString('o')
+              isFixes      = $IsFixes
+            })
+          }
+        }
+      }
+
+      Add-WorktreeDirs -Root $worktreeDir -IsFixes $false
+      Add-WorktreeDirs -Root (Join-Path $worktreeDir '.fixes') -IsFixes $true
+
+      # ── Worktrees git has registered, per configured repo ────────────
+      $registered = New-Object System.Collections.Generic.List[object]
+      foreach ($t in @($targets)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $t.repoPath '.git'))) {
+          continue
+        }
+        $porcelain = & git -C $t.repoPath worktree list --porcelain 2>$null
+        if ($LASTEXITCODE -ne 0) { continue }
+        foreach ($line in @($porcelain)) {
+          $text = [string]$line
+          if ($text.StartsWith('worktree ')) {
+            $wt = $text.Substring('worktree '.Length).Trim()
+            [void]$registered.Add([pscustomobject]@{
+              ownerRepo = $t.repoPath
+              repository = $t.repository
+              path      = $wt
+              pathKey   = ConvertTo-ComparablePath $wt
+            })
+          }
+        }
+      }
+
+      [pscustomobject]@{
+        collectedAt     = (Get-Date).ToUniversalTime().ToString('o')
+        worktreeDir     = $worktreeDir
+        repositories    = @($targets | ForEach-Object {
+                            [pscustomobject]@{
+                              repository   = $_.repository
+                              repoPath     = $_.repoPath
+                              organization = $_.organization
+                              project      = $_.project
+                              orgUrl       = $_.orgUrl
+                              exists       = (Test-Path -LiteralPath (Join-Path $_.repoPath '.git'))
+                            }
+                          })
+        sessions        = $sessions.ToArray()
+        sessionCount    = $sessions.Count
+        worktreeDirs    = $dirs.ToArray()
+        worktreeDirCount = $dirs.Count
+        emptyRepoIdDirs = $emptyRepoIdDirs.ToArray()
+        emptyRepoIdDirCount = $emptyRepoIdDirs.Count
+        registered      = $registered.ToArray()
+      } | ConvertTo-Json -Depth 50 -Compress
+
+  # ── Step 2: Classify ─────────────────────────────────────────────────
+  # Still pure read, but hits Azure DevOps: one active-PR list per repo, then
+  # a targeted per-PR lookup ONLY for ids that are missing from that list.
+  # Two calls instead of one-per-session, and the targeted confirmation stops
+  # a `$top` cut-off from being mistaken for "PR is finished".
+  - name: classify
+    type: Script
+    dependsOn: [inventory]
+    shell: pwsh
+    timeoutSeconds: 600
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $inventory   = ConvertFrom-Json -InputObject $args[0] -Depth 50 -ErrorAction Stop
+      $maxAgeDays  = [double]$args[1]
+      $minIdleHrs  = [double]$args[2]
+      $forceRaw    = [string]$args[3]
+      $force       = $forceRaw -match '^(?i:true|1|yes)$'
+
+      try { Get-Command az -ErrorAction Stop | Out-Null } catch {
+        throw "az CLI is not available on PATH; cannot determine pull request states."
+      }
+      $env:PYTHONIOENCODING = 'utf-8'
+      $adoResource = '499b84ac-1321-427f-aa17-267ca6975798'
+
+      $now = (Get-Date).ToUniversalTime()
+      $ageCutoff  = $now.AddDays(-$maxAgeDays)
+      $idleCutoff = $now.AddHours(-$minIdleHrs)
+
+      function Invoke-AzRestJson {
+        param(
+          [Parameter(Mandatory)][string]$Uri,
+          [string[]]$UriParameters = @()
+        )
+        $stderrPath = [System.IO.Path]::GetTempFileName()
+        try {
+          $params = @('api-version=7.1-preview.1') + $UriParameters
+          $raw = & az rest --method get --uri $Uri --uri-parameters @params --resource $adoResource -o json 2>$stderrPath
+          if ($LASTEXITCODE -ne 0) {
+            $err = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+            return [pscustomobject]@{ ok = $false; error = "exit $LASTEXITCODE : $err"; value = $null }
+          }
+          $text = ($raw | ForEach-Object { [string]$_ }) -join "`n"
+          return [pscustomobject]@{ ok = $true; error = $null; value = (ConvertFrom-Json -InputObject $text -Depth 100) }
+        } finally {
+          Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        }
+      }
+
+      # ── Active PR ids per repository ─────────────────────────────────
+      $activeByRepo = @{}
+      $repoLookupErrors = New-Object System.Collections.Generic.List[object]
+      foreach ($r in @($inventory.repositories)) {
+        $uri = "$($r.orgUrl)/$($r.project)/_apis/git/repositories/$($r.repository)/pullrequests"
+        $res = Invoke-AzRestJson -Uri $uri -UriParameters @('searchCriteria.status=active', '$top=500')
+        if (-not $res.ok) {
+          [void]$repoLookupErrors.Add([pscustomobject]@{ repository = $r.repository; error = $res.error })
+          continue
+        }
+        $set = New-Object 'System.Collections.Generic.HashSet[int]'
+        foreach ($pr in @($res.value.value)) {
+          if ($null -ne $pr -and $pr.pullRequestId) { [void]$set.Add([int]$pr.pullRequestId) }
+        }
+        $activeByRepo[$r.repository] = $set
+      }
+
+      # Targeted confirmation, memoised, only for ids absent from the list.
+      $statusCache = @{}
+      function Get-PrStatus {
+        param(
+          [Parameter(Mandatory)]$Repo,
+          [Parameter(Mandatory)][int]$PrId
+        )
+        $key = "$($Repo.repository)/$PrId"
+        if ($statusCache.ContainsKey($key)) { return $statusCache[$key] }
+        $uri = "$($Repo.orgUrl)/$($Repo.project)/_apis/git/repositories/$($Repo.repository)/pullrequests/$PrId"
+        $res = Invoke-AzRestJson -Uri $uri
+        $status = if ($res.ok -and $res.value -and $res.value.status) { [string]$res.value.status } else { 'unknown' }
+        $statusCache[$key] = $status
+        return $status
+      }
+
+      $repoByName = @{}
+      foreach ($r in @($inventory.repositories)) { $repoByName[$r.repository] = $r }
+
+      # Index sessions by their recorded worktree path so a physical directory
+      # can be attributed back to the session that owns it.
+      $sessionByWorktree = @{}
+      foreach ($s in @($inventory.sessions)) {
+        if (-not [string]::IsNullOrWhiteSpace($s.worktreePathKey)) { $sessionByWorktree[$s.worktreePathKey] = $s }
+      }
+      $registeredByPath = @{}
+      foreach ($w in @($inventory.registered)) { $registeredByPath[$w.pathKey] = $w }
+
+      $candidates = New-Object System.Collections.Generic.List[object]
+      $keep = New-Object System.Collections.Generic.List[object]
+
+      foreach ($d in @($inventory.worktreeDirs)) {
+        $lastWrite = [datetime]::Parse($d.lastWriteUtc).ToUniversalTime()
+        $session = if ($sessionByWorktree.ContainsKey($d.pathKey)) { $sessionByWorktree[$d.pathKey] } else { $null }
+        $reg = if ($registeredByPath.ContainsKey($d.pathKey)) { $registeredByPath[$d.pathKey] } else { $null }
+
+        $repository = if ($session) { [string]$session.repository } elseif ($reg) { [string]$reg.repository } else { $null }
+        $prId = if ($session) { [int]$session.prId } else { [int]$d.prId }
+
+        # ── Reasons to prune ──
+        $reasons = New-Object System.Collections.Generic.List[string]
+        $prStatus = 'unknown'
+
+        if ($repository -and $repoByName.ContainsKey($repository) -and $prId -gt 0) {
+          $repo = $repoByName[$repository]
+          $activeSet = if ($activeByRepo.ContainsKey($repository)) { $activeByRepo[$repository] } else { $null }
+          if ($null -ne $activeSet -and -not $activeSet.Contains($prId)) {
+            # Absent from the active list -- confirm with a targeted lookup so a
+            # paging cut-off or a transient error is never read as "finished".
+            $prStatus = Get-PrStatus -Repo $repo -PrId $prId
+            if ($prStatus -in @('completed', 'abandoned')) {
+              [void]$reasons.Add("pr-$prStatus")
+            }
+          } elseif ($null -ne $activeSet) {
+            $prStatus = 'active'
+          }
+        }
+
+        if ($lastWrite -lt $ageCutoff) {
+          [void]$reasons.Add("stale-$([int]($now - $lastWrite).TotalDays)d")
+        }
+
+        # ── Guards ──
+        $skipReasons = New-Object System.Collections.Generic.List[string]
+        if ($lastWrite -gt $idleCutoff) {
+          [void]$skipReasons.Add('recently-modified')
+        }
+        if (-not $force -and $session -and [int]$session.draftCount -gt 0) {
+          [void]$skipReasons.Add("has-$($session.draftCount)-unsubmitted-drafts")
+        }
+        if (-not $force -and (Test-Path -LiteralPath $d.path)) {
+          $dirty = & git -C $d.path status --porcelain 2>$null
+          if ($LASTEXITCODE -eq 0 -and @($dirty | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+            [void]$skipReasons.Add('uncommitted-changes')
+          }
+        }
+
+        $record = [pscustomobject]@{
+          path         = $d.path
+          repoId       = $d.repoId
+          dirName      = $d.dirName
+          isFixes      = [bool]$d.isFixes
+          repository   = $repository
+          prId         = $prId
+          prStatus     = $prStatus
+          lastWriteUtc = $d.lastWriteUtc
+          ageDays      = [math]::Round(($now - $lastWrite).TotalDays, 1)
+          sessionId    = if ($session) { [string]$session.id } else { $null }
+          prUrl        = if ($session) { [string]$session.prUrl } else { $null }
+          draftCount   = if ($session) { [int]$session.draftCount } else { 0 }
+          ownerRepo    = if ($reg) { [string]$reg.ownerRepo } else { $null }
+          isRegistered = [bool]($null -ne $reg)
+          reasons      = $reasons.ToArray()
+          skipReasons  = $skipReasons.ToArray()
+        }
+
+        if ($reasons.Count -gt 0 -and $skipReasons.Count -eq 0) {
+          [void]$candidates.Add($record)
+        } else {
+          [void]$keep.Add($record)
+        }
+      }
+
+      # Empty <repoId> directories carry no work and no risk; age is the only
+      # gate, so an in-flight `open` that just created one is not disturbed.
+      $emptyCandidates = New-Object System.Collections.Generic.List[object]
+      foreach ($e in @($inventory.emptyRepoIdDirs)) {
+        $lastWrite = [datetime]::Parse($e.lastWriteUtc).ToUniversalTime()
+        if ($lastWrite -lt $idleCutoff) {
+          [void]$emptyCandidates.Add([pscustomobject]@{
+            path         = $e.path
+            repoId       = $e.repoId
+            isFixes      = [bool]$e.isFixes
+            lastWriteUtc = $e.lastWriteUtc
+            ageDays      = [math]::Round(($now - $lastWrite).TotalDays, 1)
+            reasons      = @('empty-repoid-dir')
+          })
+        }
+      }
+
+      [pscustomobject]@{
+        classifiedAt      = $now.ToString('o')
+        maxAgeDays        = $maxAgeDays
+        minIdleHours      = $minIdleHrs
+        force             = $force
+        worktreeDir       = [string]$inventory.worktreeDir
+        repositories      = $inventory.repositories
+        repoLookupErrors  = $repoLookupErrors.ToArray()
+        candidates        = $candidates.ToArray()
+        candidateCount    = $candidates.Count
+        emptyCandidates   = $emptyCandidates.ToArray()
+        emptyCandidateCount = $emptyCandidates.Count
+        kept              = $keep.ToArray()
+        keptCount         = $keep.Count
+        totalScanned      = @($inventory.worktreeDirs).Count
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{inventory.output}}"
+      - "{{input.maxAgeDays}}"
+      - "{{input.minIdleHours}}"
+      - "{{input.force}}"
+
+  # ── Step 3: Prune ────────────────────────────────────────────────────
+  # The only step that mutates anything, and a no-op when dryRun is true.
+  - name: prune
+    type: Script
+    dependsOn: [classify]
+    shell: pwsh
+    timeoutSeconds: 1800
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $PSNativeCommandArgumentPassing = 'Standard'
+
+      $plan     = ConvertFrom-Json -InputObject $args[0] -Depth 50 -ErrorAction Stop
+      $dryRun   = ([string]$args[1]) -match '^(?i:true|1|yes)$'
+
+      $actions = New-Object System.Collections.Generic.List[object]
+
+      function Add-Action {
+        param(
+          [Parameter(Mandatory)][string]$Path,
+          [Parameter(Mandatory)][string]$Method,
+          [Parameter(Mandatory)][string]$Result,
+          [string]$Detail = ''
+        )
+        [void]$actions.Add([pscustomobject]@{
+          path   = $Path
+          method = $Method
+          result = $Result
+          detail = $Detail
+        })
+      }
+
+      function Invoke-PowerReviewClose {
+        param([Parameter(Mandatory)][string]$PrUrl)
+        $stdoutPath = [System.IO.Path]::GetTempFileName()
+        $stderrPath = [System.IO.Path]::GetTempFileName()
+        $prev = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+        try {
+          & dnx --yes --add-source https://api.nuget.org/v3/index.json PowerReview -- close --pr-url $PrUrl 1> $stdoutPath 2> $stderrPath
+          $code = $LASTEXITCODE
+          $err = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+        } finally {
+          $PSNativeCommandUseErrorActionPreference = $prev
+          Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+        }
+        return [pscustomobject]@{ exitCode = $code; stderr = $err }
+      }
+
+      function Remove-OrphanWorktree {
+        param([Parameter(Mandatory)][string]$Path, [string]$OwnerRepo)
+
+        # Resolve the owning repo from the worktree itself when git registered
+        # it; that is the only place `git worktree remove` can be run from.
+        $owner = $OwnerRepo
+        if ([string]::IsNullOrWhiteSpace($owner) -and (Test-Path -LiteralPath $Path)) {
+          $commonDir = & git -C $Path rev-parse --git-common-dir 2>$null
+          if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($commonDir)) {
+            try {
+              $resolved = $commonDir
+              if (-not [System.IO.Path]::IsPathRooted($resolved)) { $resolved = Join-Path $Path $resolved }
+              $owner = [System.IO.Path]::GetFullPath((Join-Path $resolved '..'))
+            } catch { $owner = $null }
+          }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($owner) -and (Test-Path -LiteralPath $owner)) {
+          & git -C $owner worktree remove --force $Path 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) { return 'git-worktree-remove' }
+        }
+
+        # Fallback: delete the directory, then let `git worktree prune` (run at
+        # the end of this step) drop the now-dangling administrative entry.
+        if (Test-Path -LiteralPath $Path) {
+          Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+        }
+        return 'directory-delete'
+      }
+
+      # ── Worktrees ────────────────────────────────────────────────────
+      foreach ($c in @($plan.candidates)) {
+        $reasonText = (@($c.reasons) -join '+')
+        if ($dryRun) {
+          $method = if (-not [string]::IsNullOrWhiteSpace([string]$c.prUrl)) { 'powerreview-close' } else { 'orphan-remove' }
+          Add-Action -Path $c.path -Method $method -Result 'would-prune' -Detail $reasonText
+          continue
+        }
+
+        try {
+          if (-not [string]::IsNullOrWhiteSpace([string]$c.prUrl)) {
+            # Preferred path: PowerReview removes the worktree from the correct
+            # main repo AND clears worktree_path from the session (the session
+            # file itself survives and stays resumable).
+            $res = Invoke-PowerReviewClose -PrUrl ([string]$c.prUrl)
+            if ($res.exitCode -eq 0 -and -not (Test-Path -LiteralPath $c.path)) {
+              Add-Action -Path $c.path -Method 'powerreview-close' -Result 'pruned' -Detail $reasonText
+              continue
+            }
+            # close reported success but the directory survived, or it failed
+            # outright -- fall through to a direct removal.
+            $method = Remove-OrphanWorktree -Path $c.path -OwnerRepo ([string]$c.ownerRepo)
+            Add-Action -Path $c.path -Method "powerreview-close+$method" -Result 'pruned' -Detail "$reasonText (close exit $($res.exitCode))"
+          } else {
+            $method = Remove-OrphanWorktree -Path $c.path -OwnerRepo ([string]$c.ownerRepo)
+            Add-Action -Path $c.path -Method $method -Result 'pruned' -Detail $reasonText
+          }
+        } catch {
+          Add-Action -Path $c.path -Method 'error' -Result 'failed' -Detail $_.Exception.Message
+        }
+      }
+
+      # ── Empty <repoId> directories ───────────────────────────────────
+      foreach ($e in @($plan.emptyCandidates)) {
+        if ($dryRun) {
+          Add-Action -Path $e.path -Method 'directory-delete' -Result 'would-prune' -Detail 'empty-repoid-dir'
+          continue
+        }
+        try {
+          if (Test-Path -LiteralPath $e.path) {
+            Remove-Item -LiteralPath $e.path -Recurse -Force -ErrorAction Stop
+          }
+          Add-Action -Path $e.path -Method 'directory-delete' -Result 'pruned' -Detail 'empty-repoid-dir'
+        } catch {
+          Add-Action -Path $e.path -Method 'error' -Result 'failed' -Detail $_.Exception.Message
+        }
+      }
+
+      # ── Drop dangling administrative entries ─────────────────────────
+      $pruned = New-Object System.Collections.Generic.List[object]
+      foreach ($r in @($plan.repositories)) {
+        if (-not $r.exists) { continue }
+        if ($dryRun) {
+          [void]$pruned.Add([pscustomobject]@{ repository = $r.repository; result = 'would-prune' })
+          continue
+        }
+        & git -C $r.repoPath worktree prune 2>$null | Out-Null
+        [void]$pruned.Add([pscustomobject]@{ repository = $r.repository; result = "exit $LASTEXITCODE" })
+      }
+
+      # ── Second-pass sweep of newly-empty <repoId> directories ────────
+      # Removing `<repoId>/<prId>` usually leaves `<repoId>` behind as an
+      # empty shell. Those only become visible AFTER the removals above, so
+      # the inventory step could not have seen them; without this pass they
+      # would linger for a full week until the next run.
+      if (-not $dryRun -and -not [string]::IsNullOrWhiteSpace([string]$plan.worktreeDir)) {
+        $roots = @([string]$plan.worktreeDir, (Join-Path ([string]$plan.worktreeDir) '.fixes'))
+        foreach ($root in $roots) {
+          if (-not (Test-Path -LiteralPath $root)) { continue }
+          foreach ($dir in @(Get-ChildItem -LiteralPath $root -Directory -Force -ErrorAction SilentlyContinue)) {
+            if ($dir.Name -eq '.fixes') { continue }
+            $remaining = @(Get-ChildItem -LiteralPath $dir.FullName -Force -ErrorAction SilentlyContinue)
+            if ($remaining.Count -ne 0) { continue }
+            try {
+              Remove-Item -LiteralPath $dir.FullName -Recurse -Force -ErrorAction Stop
+              Add-Action -Path $dir.FullName -Method 'directory-delete' -Result 'pruned' -Detail 'emptied-by-this-run'
+            } catch {
+              Add-Action -Path $dir.FullName -Method 'error' -Result 'failed' -Detail $_.Exception.Message
+            }
+          }
+        }
+      }
+
+      $actionsArr = $actions.ToArray()
+      [pscustomobject]@{
+        dryRun         = $dryRun
+        prunedAt       = (Get-Date).ToUniversalTime().ToString('o')
+        actions        = $actionsArr
+        prunedCount    = @($actionsArr | Where-Object { $_.result -eq 'pruned' }).Count
+        wouldPruneCount = @($actionsArr | Where-Object { $_.result -eq 'would-prune' }).Count
+        failedCount    = @($actionsArr | Where-Object { $_.result -eq 'failed' }).Count
+        gitWorktreePrune = $pruned.ToArray()
+      } | ConvertTo-Json -Depth 50 -Compress
+    arguments:
+      - "{{classify.output}}"
+      - "{{input.dryRun}}"
+
+  # ── Step 4: Noise gate ───────────────────────────────────────────────
+  # A weekly sweep that found nothing should not manufacture a report.
+  - name: gate-noteworthy
+    type: Script
+    dependsOn: [prune]
+    shell: pwsh
+    timeoutSeconds: 60
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $result = ConvertFrom-Json -InputObject $args[0] -Depth 50 -ErrorAction Stop
+      $plan   = ConvertFrom-Json -InputObject $args[1] -Depth 50 -ErrorAction Stop
+
+      $touched = [int]$result.prunedCount + [int]$result.wouldPruneCount + [int]$result.failedCount
+      $errors  = @($plan.repoLookupErrors).Count
+
+      if ($touched -eq 0 -and $errors -eq 0) {
+        # Nothing to report; short-circuit the rest of the orchestration.
+        orchestra_complete "No PowerReview worktrees required pruning (scanned $($plan.totalScanned), kept $($plan.keptCount))."
+      }
+
+      [pscustomobject]@{
+        touched = $touched
+        errors  = $errors
+      } | ConvertTo-Json -Compress
+    arguments:
+      - "{{prune.output}}"
+      - "{{classify.output}}"
+
+  # ── Step 5: Report ───────────────────────────────────────────────────
+  - name: generate-summary
+    type: Prompt
+    dependsOn: [gate-noteworthy]
+    prompt: |
+      Summarise this PowerReview worktree pruning run.
+
+      Classification:
+      {{classify.output}}
+
+      Prune result:
+      {{prune.output}}
+
+      Produce a concise markdown report:
+      1. Header '## PowerReview Worktree Prune'
+      2. Whether this was a dry run
+      3. Scanned / pruned / would-prune / kept / failed counts
+      4. A table of pruned (or would-be-pruned) worktrees: repository, PR id,
+         PR status, age in days, reason, method
+      5. Anything skipped by a safety guard, with its skipReasons
+      6. Any repository lookup errors or prune failures, verbatim
+      7. Disk space reclaimed if determinable, otherwise omit the section
+    timeoutSeconds: 120
