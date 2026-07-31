@@ -67,16 +67,25 @@ function Get-LocalAppData
 
 function Start-Glaze
 {
-	Set-TerminalTitleFast "GlazeWM"
+	# `glazewm` on PATH is the console-subsystem CLI shim, so calling it directly
+	# blocks the current tab for as long as the WM runs. Start-Process hands it its
+	# own (hidden) console and returns immediately.
 	$glazeConfigPath = "$env:Moaid_Config_Path/config/glazewm/glazewm_config.yaml"
-	write-host $glazeConfigPath
-	glazewm start --config="$glazeConfigPath"
+	Start-Process -FilePath 'glazewm.exe' -WindowStyle Hidden `
+		-ArgumentList @('start', "--config=$glazeConfigPath")
 }
 
 function Start-Zebar
 {
-	$zebarConfigPath="$env:Moaid_Config_Path/config/zebar"
-	zebar startup --config-dir="$zebarConfigPath"
+	$zebarConfigPath = "$env:Moaid_Config_Path/config/zebar"
+	# zebar.exe is a GUI-subsystem app that calls AttachConsole(ATTACH_PARENT_PROCESS),
+	# so launching it directly binds it to the calling terminal: closing that terminal
+	# sends CTRL_CLOSE_EVENT and kills Zebar. `Start-Process zebar` is not enough --
+	# pwsh would still be the parent it attaches to. The `cmd /c start` wrapper exits
+	# immediately, orphaning zebar.exe so there is no parent console left to attach to.
+	Start-Process -FilePath 'cmd.exe' -WindowStyle Hidden -ArgumentList @(
+		'/c', 'start', '""', 'zebar.exe', 'startup', "--config-dir=$zebarConfigPath"
+	)
 }
 
 function Stop-Zebar
@@ -87,6 +96,12 @@ function Stop-Zebar
 function Restart-Zebar($overrideConfigs = $true)
 {
 	Stop-Zebar
+	# Wait for the old instance to actually die: `zebar startup` no-ops when it
+	# detects a running instance, so starting too early silently does nothing.
+	$deadline = (Get-Date).AddSeconds(2)
+	while ((Get-Process -Name zebar -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
+		Start-Sleep -Milliseconds 50
+	}
 	Start-Zebar
 }
 

@@ -2,7 +2,10 @@ general:
   # Commands to run when the WM has started (e.g. to run a script or launch
   # another application). Here we are running a batch script to start Zebar.
   #startup_commands: ['shell-exec zebar startup --config-dir="../zebar"']
-  startup_commands: ['shell-exec pwsh -Command Restart-Zebar']
+  # The pwsh hop is deliberate: it resolves $env:Moaid_Config_Path so the zebar
+  # config dir stays machine-independent. Start-Zebar launches zebar detached, so
+  # this shell exits immediately instead of lingering as an open terminal.
+  startup_commands: ['shell-exec pwsh -WindowStyle Hidden -Command Restart-Zebar']
 
   # Whether to automatically focus windows underneath the cursor.
   focus_follows_cursor: false
