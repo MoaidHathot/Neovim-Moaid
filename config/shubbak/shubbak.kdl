@@ -1,0 +1,607 @@
+// Shubbak configuration
+//
+// Location: $XDG_CONFIG_HOME/shubbak/shubbak.kdl
+//           -> P:\Github\Neovim-Moaid\config\shubbak\shubbak.kdl
+//
+// Run `shubbak config-path` to confirm which file is in effect, and
+// `shubbak check-config` to validate it. Both report problems with a line, a
+// column and a caret rather than failing silently.
+//
+// This is the KDL translation of glazewm_config.yaml, plus the features GlazeWM
+// does not have: tags, scratchpads, automatic layouts, animation and the bar.
+
+// ---------------------------------------------------------------------------
+// General
+// ---------------------------------------------------------------------------
+
+general {
+    // Focusing the workspace you are already on switches back to the previous one.
+    toggle-workspace-on-refocus #true
+
+    focus-follows-cursor #false
+
+    // New windows start tiled.
+    initial-window-state "tiling"
+
+    // How windows on inactive workspaces are concealed.
+    //
+    // "cloak" (default) asks the shell to cloak the window. A cloaked window still
+    // reports as visible to Win32, so if Shubbak exits or is killed the next run
+    // adopts it and un-cloaks it through the ordinary path.
+    //
+    // Note this is *not* DwmSetWindowAttribute(DWMWA_CLOAK), which cannot work: that
+    // attribute is scoped to the owning process and returns E_ACCESSDENIED for any
+    // window Shubbak manages. Concealment goes through the shell's application-view
+    // interface instead, as GlazeWM and komorebi both do.
+    //
+    // "minimize" is documented and reversible, but Shubbak cannot tell a window it
+    // minimised from one you minimised, so frequent workspace switching muddles that.
+    //
+    // "hide" is a last resort. SW_HIDE makes a window invisible to the filter, so it
+    // can only be recovered by matching the saved session - and if that record is
+    // lost the window is stranded. komorebi has marked the same approach end-of-life.
+    hide-method "cloak"
+
+    // Whether concealed windows keep their taskbar button.
+    //
+    // #true keeps the taskbar a complete list of what is open, so a window on another
+    // workspace is one click away. #false makes an inactive workspace vanish
+    // completely - tidier, but you have to remember where you left things.
+    keep-in-taskbar #true
+
+    // "Put this away" and "go there" stay separate intentions; the alt+shift+N
+    // bindings below combine them explicitly.
+    follow-window-on-move #false
+
+    cursor-jump {
+        enabled #true
+        // "monitor" jumps only when focus crosses displays; "window" on every
+        // focus change.
+        trigger "monitor"
+    }
+
+    // Taj reads the `bar` section at the bottom of this same file, so there is
+    // one config to maintain rather than two.
+    //
+    // Launched detached, so this shell exits immediately instead of lingering.
+    startup-command "shell-exec W:\\Github\\Shubbak\\dist\\taj.exe"
+}
+
+// ---------------------------------------------------------------------------
+// Logging
+//
+// Recent entries are kept in memory even at `info`, so `shubbak diagnose` can
+// explain something that has already happened without tracing being on first.
+//
+// To investigate a problem:
+//   shubbak log-level trace      (no restart needed)
+//   ...reproduce it...
+//   shubbak diagnose -o report.md
+// ---------------------------------------------------------------------------
+
+logging {
+    level "debug"
+
+    // An empty path means the standard location. Both processes read this section,
+    // and each writes its own file, because two processes cannot share one:
+    //   %LOCALAPPDATA%\Shubbak\shubbak.log   the window manager
+    //   %LOCALAPPDATA%\Shubbak\taj.log       the bar
+    file ""
+}
+
+// ---------------------------------------------------------------------------
+// Gaps
+// ---------------------------------------------------------------------------
+
+gaps {
+    // These are now real pixels. Shubbak compensates for the invisible drop shadow
+    // around every window - roughly seven pixels a side - so before that landed, a
+    // gap of 6 looked like about 20 and shrinking it barely helped. What is written
+    // here is now what appears on screen, which is why these numbers went up rather
+    // than down.
+    inner 10
+
+    // Taj reserves its own strip through the shell's appbar API, exactly as the
+    // taskbar does, so the work area Shubbak tiles already excludes it. There is no
+    // need to leave room for the bar here - doing so would double the space.
+    outer {
+        // A little more under the bar, so windows do not sit flush against it.
+        top 5
+        right 5
+        bottom 10
+        left 5
+    }
+}
+
+window-effects {
+    border #true
+    focused-colour "#8dbcff"
+    unfocused-colour "#a1a1a1"
+
+    // Untiled windows get their own colour, so it is obvious at a glance why a
+    // window is ignoring the layout. Amber for the focused one, a muted version of
+    // it otherwise.
+    floating-colour "#f9e2af"
+    floating-unfocused-colour "#6c5f3f"
+}
+
+// ---------------------------------------------------------------------------
+// Animation
+//
+// The curve matters more than the duration. ease-out covers most of the
+// distance immediately, which is why it reads as responsive rather than slow.
+// Available: linear, ease-in, ease-out, ease-in-out, ease-out-back, ease-out-expo
+// ---------------------------------------------------------------------------
+
+animation {
+    enabled #true
+
+    // 90 rather than the default 60.
+    //
+    // Shubbak paints nothing - it repositions windows and each application
+    // repaints itself, on its own thread, at whatever rate it can manage. Past
+    // the point where they keep up, asking for more frames does not buy smoother
+    // motion; it asks every window being moved to discard and redraw more often,
+    // and the ones that cannot fall behind and briefly show bare background
+    // where their content should be.
+    //
+    // 60 is komorebi's default and the safe answer, and was measured here at
+    // 18.22 ms between frames - 55 Hz against the 60 asked for. 90 reads as
+    // smoother and still asks a third less of each application than the 144 this
+    // was fixed at before it became a setting, which was never delivered anyway.
+    //
+    // Whole milliseconds are all the pump's timeout can express, so 90 is really
+    // a 12 ms wait and tops out near 83 Hz. Do not read that shortfall in
+    // `shubbak diagnose` as a fault - it is the rounding, not a dropped frame.
+    //
+    // If the grey flash on an expanding window comes back, this is the first
+    // thing to lower. That is what it was traced to, not a bug.
+    fps 60
+
+    // Below this many pixels a move is applied instantly. Animating a
+    // three-pixel nudge costs a dozen frames and reads as lag, not motion.
+    minimum-distance 8
+
+    // Turned on to try it. Off is the default and was the behaviour until now:
+    // a new window was placed straight into its tile while the windows already
+    // there animated aside.
+    //
+    // The case to judge it on is Win+E - File Explorer relays out its whole file
+    // view on every resize, so it is the window that shows the cost worst. If it
+    // stutters, set this back to #false; if it reads well, keep it.
+    //
+    // It uses window-open below, not window-move, so the two can be tuned apart.
+    // 120 ms rather than 180 because an opening window has further to travel and
+    // a long one feels sluggish.
+    animate-new-windows #true
+
+    window-open      duration=120 curve="ease-out-expo"
+    window-move      duration=140 curve="ease-out"
+    layout-change    duration=180 curve="ease-out"
+    workspace-switch duration=120 curve="ease-out"
+}
+
+// ---------------------------------------------------------------------------
+// Apps
+//
+// Named matchers, so rules read semantically instead of as a wall of inline
+// regexes. Operators: = exact, ~= regex, ^= prefix, $= suffix, *= contains.
+// All case-insensitive. Raw strings r"..." need no backslash escaping.
+//
+// `shubbak inspect` prints every matchable attribute of a window and shows
+// which of these matched - including, for each that did not, the specific
+// condition that failed.
+// ---------------------------------------------------------------------------
+
+app "taj" {
+    process = "taj"
+}
+
+app "zebar" {
+    process = "zebar"
+}
+
+app "browser-picture-in-picture" {
+    title regex=r"[Pp]icture.in.[Pp]icture"
+    class regex=r"Chrome_WidgetWin_1|MozillaDialogClass"
+}
+
+app "powertoys-accent" {
+    process = "PowerToys.PowerAccent"
+}
+
+app "lively-wallpaper" {
+    process = "Lively"
+    class   regex=r"HwndWrapper.*"
+}
+
+app "powerpoint-slideshow" {
+    // Note: no slashes around the pattern.
+    //
+    // The GlazeWM original was "/[Pp]ower[Pp]oint [Ss]lide [Ss]how.*/", where the
+    // slashes are matched literally - so that rule only matched titles that
+    // genuinely began and ended with a slash, i.e. never. Shubbak warns if you
+    // add them back.
+    title regex=r"[Pp]ower[Pp]oint [Ss]lide [Ss]how"
+}
+
+app "command-palette" {
+    title = "Command Palette"
+}
+
+// The Win+R box. #32770 is the standard Win32 dialog class, so this matches on the
+// title too - otherwise it would take every Save and Open dialog with it.
+//
+// Shubbak floats #32770 by default rather than tiling it, which is what GlazeWM does
+// and is right for a Save dialog: it stays reachable and can be moved. The Run box is
+// different - it is gone in seconds and never wants managing at all.
+app "run-dialog" {
+    class = "#32770"
+    title = "Run"
+}
+
+// Clipboard history. A popup that appears at the pointer, is used for a second and
+// dismissed - tiling it is meaningless and it steals a tile while it is up.
+app "ditto" {
+    process = "Ditto"
+}
+
+// Text expansion popup, same shape of thing.
+app "turbophrase" {
+    process = "TurboPhrase"
+}
+
+rules {
+    rule "leave these alone" {
+        match {
+            app "taj"
+            app "zebar"
+            app "browser-picture-in-picture"
+            app "powertoys-accent"
+            app "lively-wallpaper"
+            app "powerpoint-slideshow"
+            app "command-palette"
+            app "run-dialog"
+            app "ditto"
+            app "turbophrase"
+        }
+        do { ignore }
+    }
+
+    // WhatsApp and the Teams call window are passed over by the built-in filter -
+    // run `shubbak inspect` on one and the "manageable" line says exactly why.
+    // `manage` overrules that; the heuristics it overrules are only heuristics.
+    //
+    // Both are commented out because the matchers need checking against the real
+    // windows first: run the app, run `shubbak inspect`, and match on what it
+    // prints for process or class.
+    //
+    // rule "whatsapp" {
+    //     match { process = "WhatsApp" }
+    //     do { manage }
+    // }
+    //
+    // rule "teams call" {
+    //     match { process = "ms-teams"; title *= "Call" }
+    //     do { manage }
+    // }
+
+    // The commented-out rules from the GlazeWM config, translated. Enable if you
+    // still want them.
+    //
+    // rule "presenter view to Presentation" {
+    //     match { title regex=r".+[Pp]ower[Pp]oint [Pp]resenter [Vv]iew" }
+    //     do { move --workspace "\\" }
+    // }
+    //
+    // rule "outlook to Mail" {
+    //     match { process regex=r"olk|olkexthost" }
+    //     do { move --workspace "]" }
+    // }
+}
+
+// ---------------------------------------------------------------------------
+// Workspaces
+//
+// Declared workspaces persist when empty, so their bindings keep working.
+// Workspaces created on demand are reaped once their last window leaves.
+// ---------------------------------------------------------------------------
+
+workspaces {
+    workspace "1"  display-name="Firefox"      monitor=0
+    workspace "2"  display-name="Edge"         monitor=0
+    workspace "3"  display-name="Code"         monitor=0
+    workspace "4"
+    workspace "5"
+    workspace "6"
+    workspace "7"                              monitor=0
+    workspace "8"                              monitor=0
+    workspace "9"
+    workspace "0"  display-name="Docs"         monitor=0
+    workspace "-"  display-name="Chat"
+    workspace "\\" display-name="Presentation" monitor=0
+    workspace "="  display-name="Notes"
+    workspace "]"  display-name="Mail"         monitor=0
+    workspace "/"  display-name="Second Monitor"       monitor=1
+    workspace "`"  display-name="System"       monitor=1
+    workspace "'"  display-name="AI"           monitor=0
+    workspace ";"  display-name="Slides"       monitor=0
+    workspace "["  display-name="Recording"    monitor=2
+}
+
+// ---------------------------------------------------------------------------
+// Keybindings
+// ---------------------------------------------------------------------------
+
+keybindings {
+    // --- focus ---
+    bind "alt+h" { focus --direction left }
+    bind "alt+l" { focus --direction right }
+    bind "alt+k" { focus --direction up }
+    bind "alt+j" { focus --direction down }
+    bind "alt+y" { focus --recent-workspace }
+
+    // Up and down were commented out in the GlazeWM config; uncomment if you
+    // start using vertical splits more.
+    // bind "alt+k" { focus --direction up }
+    // bind "alt+j" { focus --direction down }
+
+    // --- move the focused window ---
+    bind "alt+shift+h" { move --direction left }
+    bind "alt+shift+l" { move --direction right }
+    bind "alt+shift+k" { move --direction up }
+    bind "alt+shift+j" { move --direction down }
+
+    // --- resize ---
+    bind "alt+u" { resize --width -2% }
+    bind "alt+p" { resize --width +2% }
+    bind "alt+o" { resize --height +2% }
+    bind "alt+i" { resize --height -2% }
+
+    // Give every window in the current container an equal share.
+    bind "alt+shift+u" { equalise }
+
+    // --- modes ---
+    bind "alt+r"       { wm-enable-binding-mode --name resize }
+    bind "alt+shift+p" { wm-enable-binding-mode --name pause }
+
+    // --- structure ---
+    bind "alt+v"       { toggle-tiling-direction }
+
+    // Takes on the window in front, or lets go of it. For a window Shubbak passed
+    // over, or one it took on that you would rather it had not.
+    bind "alt+shift+n" { toggle-managed }
+
+    // Untiles the window without releasing it: still tracked, still focusable, but
+    // free to be moved and resized. `toggle-tiling` is the same command from the
+    // other side, so this key used to be a duplicate of alt+shift+n.
+    bind "alt+shift+m" { toggle-floating }
+    bind "alt+x"       { toggle-fullscreen }
+    bind "alt+m"       { toggle-minimized }
+    bind "alt+shift+q" { close }
+
+    // --- layouts ---
+    //
+    // Layout belongs to a container, not a workspace, so these apply to whatever
+    // container the focused window is in. A fibonacci region can sit inside a
+    // columns region with no special case.
+    bind "alt+w"       { layout --cycle }
+    bind "alt+shift+f" { layout --set fibonacci }
+    bind "alt+shift+g" { layout --set grid }
+    bind "alt+shift+z" { layout --set monocle }
+    bind "alt+shift+v" { layout --set master-left }
+    bind "alt+shift+s" { layout --set splith }
+
+    // --- tags ---
+    //
+    // Unlike `move`, which relocates a window, tagging makes it a member of
+    // another workspace as well - it then follows to whichever tagged workspace
+    // you switch to. (A Windows window has one position on one monitor, so it
+    // relocates rather than appearing twice. AwesomeWM behaves the same way.)
+    bind "alt+t"      { tag --toggle "-" }     // also show on Chat
+    bind "alt+g"      { tag --toggle "'" }     // also show on AI
+    bind "alt+ctrl+t" { sticky }               // follow every workspace
+    bind "alt+ctrl+g" { tag --clear }
+
+    // --- scratchpad ---
+    //
+    // Stash a window out of sight; press again to summon it back on top of
+    // whatever workspace you are on. Named slots are independent.
+    bind "alt+n"       { scratchpad --name notes }
+    bind "alt+ctrl+n"  { scratchpad --name terminal }
+    bind "alt+shift+b" { scratchpad --name chat }
+
+    // --- move the current workspace between monitors ---
+    bind "alt+a" { move-workspace --direction left }
+    bind "alt+f" { move-workspace --direction right }
+    bind "alt+d" { move-workspace --direction up }
+    bind "alt+s" { move-workspace --direction down }
+
+    // --- lifecycle ---
+    bind "alt+shift+r" { wm-reload-config }
+    bind "alt+shift+w" { wm-redraw }
+    bind "alt+shift+e" { wm-exit }
+
+    // --- per-workspace bindings ---
+    //
+    // Generated from the workspaces declared above. This one block replaces the
+    // 40 hand-written lines the GlazeWM config needed, and cannot drift out of
+    // sync with the workspace list.
+    //
+    // Workspace names are quoted because several of them - `-`, `\`, `'` - would
+    // otherwise be read as command syntax.
+    for-each "workspace" {
+        bind "alt+{name}"       { focus --workspace "{name}" }
+        bind "alt+shift+{name}" { move --workspace "{name}"; focus --workspace "{name}" }
+    }
+}
+
+binding-modes {
+    // Resize with HJKL or the arrow keys until escape or enter.
+    mode "resize" {
+        bind "h"      { resize --width -2% }
+        bind "left"   { resize --width -2% }
+        bind "l"      { resize --width +2% }
+        bind "right"  { resize --width +2% }
+        bind "k"      { resize --height +2% }
+        bind "up"     { resize --height +2% }
+        bind "j"      { resize --height -2% }
+        bind "down"   { resize --height -2% }
+        bind "escape" { wm-disable-binding-mode }
+        bind "enter"  { wm-disable-binding-mode }
+    }
+
+    // Swallows every key except the ones that leave. `pass-through` is false by
+    // default, which is what makes the keyboard inert while this is active.
+    //
+    // Three ways out, deliberately. The keyboard is the thing this mode disables, so
+    // relying on a single keystroke to undo it is a single point of failure:
+    //   - alt+shift+p, the same key that started it
+    //   - escape
+    //   - clicking the indicator on the bar
+    // and if all else fails, from any shell:  shubbak wm-disable-binding-mode
+    mode "pause" {
+        bind "alt+shift+p" { wm-disable-binding-mode }
+        bind "escape"      { wm-disable-binding-mode }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Taj - the bar
+//
+// Widgets bind to sources with {{ name }} templates and re-render only when a
+// source they use actually changes, so an idle desktop does not repaint.
+//
+// The window title updates on browser tab switches, not just on focus changes -
+// the thing Zebar gets wrong - because the title comes from the window manager's
+// event stream rather than from the bar polling.
+// ---------------------------------------------------------------------------
+
+bar {
+    // The interval is how often a value is *checked*, not how often the bar
+    // redraws: an unchanged value is suppressed. So a clock showing minutes can be
+    // polled twice a second for a prompt tick without redrawing twice a second.
+    //
+    // `timezone` accepts a Windows id ("Pacific Standard Time") or an IANA one
+    // ("America/Los_Angeles").
+    source "clock"   kind="time" format="ddd d MMM HH:mm" interval=500
+    source "seattle" kind="time" format="ddd d MMM HH:mm" interval=500 timezone="America/Los_Angeles"
+
+    // The input language of whichever window is in front, as a two-letter code.
+    // Per window rather than per system, because that is what decides what typing
+    // actually produces.
+    source "keyboard" kind="keyboard" interval=250
+
+    // Any program that writes lines to stdout can drive a widget - in any
+    // language, with no Taj source code. This is the extension point that means
+    // Taj never has to grow a widget for everything.
+    //
+    // source "weather" kind="command" command="pwsh -NoProfile -File P:\\Github\\Neovim-Moaid\\scripts\\weather.ps1"
+
+    profile "default" {
+        height 34
+        background "#181825"
+        foreground "#cdd6f4"
+        font "Segoe UI Variable Text"
+        font-size 15
+        padding 10
+
+        // Zones are flex containers. Three is a convention, not a limit - add as
+        // many as you like, each with its own alignment and growth.
+        zone "left" justify="start" gap=2 {
+            // hide-empty leaves out workspaces with no windows, except the active
+            // one - which is kept so a freshly switched-to workspace still shows.
+            //
+            // Set it to #false to keep all 19 visible; positional muscle memory
+            // works better when the list does not move, so it is worth trying both.
+            //
+            // Colour rather than a filled pill, as in the Zebar config. A fully
+            // transparent active-background suppresses the fill entirely.
+            //
+            // Three states, because with three monitors two things are true at once:
+            // every monitor displays a workspace, but only one has the keyboard.
+            //   colour           - has windows, not on screen
+            //   empty-colour     - nothing on it
+            //   active-colour    - on screen, on some other monitor
+            //   focused-colour   - on screen and taking your keystrokes
+            //   hover-*          - under the pointer; workspaces are clickable
+            workspaces hide-empty=#true \
+                active-background="#00000000" \
+                colour="#ffffffcc" \
+                empty-colour="#ffffff59" \
+                active-colour="#8dbcff" \
+                focused-colour="#1dfb8d" \
+                hover-colour="#ffffff" \
+                hover-background="#ffffff1f" \
+                radius=6
+        }
+
+        zone "centre" justify="center" grow=1 {
+            text template="{{ window.title | truncate:90 }}" colour="#ffffffb3"
+        }
+
+        // Two clocks, as in the Zebar config: Seattle dimmed on the left, local
+        // accented on the right.
+        zone "right" justify="end" gap=14 {
+            // Keyboard language, left of the Seattle clock. Dim in English, since
+            // that is the ordinary case and does not need attention; red and bold in
+            // Hebrew, so it is noticed without being read.
+            text id="lang"    template="{{ keyboard }}" colour="#ffffff73" \
+                 bold=#true {
+                when value="HE" colour="#f38ba8"
+            }
+
+            text id="seattle" template="{{ seattle }}" colour="#ffffff73"
+            // The active binding mode. Empty most of the time, so it takes no room;
+            // when it is showing, the keyboard is behaving unusually and that is
+            // worth being obvious. Click it to return to the default bindings - the
+            // one way out that does not depend on the keyboard.
+            text id="mode"    template="{{ binding_mode }}" colour="#1e1e2e" \
+                 background="#f38ba8" bold=#true on-click="wm-disable-binding-mode"
+
+            // `icon` turns the layout name into a glyph that looks like the
+            // arrangement - two bars for a horizontal split, three stacked lines for
+            // a vertical one. Bold and a shade larger so it reads at a glance.
+            //
+            // Dim like the clock and the language while the layout is the ordinary
+            // horizontal split, and the focus green the moment it is anything else -
+            // so an unusual layout announces itself rather than having to be noticed.
+            //
+            // Matched on the layout's name rather than the glyph: `of` tests the
+            // source before the filter transformed it, which avoids writing
+            // box-drawing characters here and keeping them in step with the icon.
+            text id="layout"  template="{{ layout | icon }}" colour="#ffffff73" \
+                 bold=#true font-size=17 {
+                when of="layout" not="splith" colour="#1dfb8d"
+            }
+
+            text id="clock"   template="{{ clock }}" colour="#8dbcff" bold=#true
+        }
+    }
+
+    // A quieter bar for presenting. `extends` inherits everything not overridden -
+    // font, colours, padding, and zones, which are merged by id - so a variant costs
+    // a few lines rather than a duplicate. Redeclare a zone with no widgets to empty
+    // it while keeping its place in the layout.
+    //
+    // Deliberately the same height as the default. Changing it makes the bar jump on
+    // every switch to a presentation workspace, and the shell has to be told the new
+    // reservation each time - which is a lot of movement to save eight pixels.
+    profile "presentation" extends="default" {
+        // Emptied rather than dropped: it still grows, which is what keeps the
+        // clock anchored to the right-hand edge.
+        zone "centre" justify="center" grow=1 { }
+
+        zone "right" justify="end" gap=10 {
+            text id="clock" template="{{ clock }}" colour="#8dbcff" bold=#true
+        }
+    }
+
+    // No rules, so the default profile applies everywhere and the bar keeps the
+    // seattle clock, the binding mode and the layout icon on every workspace.
+    //
+    // The profile above is left defined as a working example: add a rule such as
+    //   rule use="presentation" workspace="\\"
+    // to bring it back for presenting. First matching rule wins, and profiles are
+    // built up front, so switching is a pointer swap rather than a restart.
+}
