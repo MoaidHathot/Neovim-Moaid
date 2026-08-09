@@ -80,7 +80,7 @@ general {
 // ---------------------------------------------------------------------------
 
 logging {
-    level "debug"
+    level "info"
 
     // An empty path means the standard location. Both processes read this section,
     // and each writes its own file, because two processes cannot share one:
@@ -136,7 +136,7 @@ window-effects {
 animation {
     enabled #true
 
-    // 90 rather than the default 60.
+    // Follow the display, which is what "auto" means and is now the default.
     //
     // Shubbak paints nothing - it repositions windows and each application
     // repaints itself, on its own thread, at whatever rate it can manage. Past
@@ -145,18 +145,18 @@ animation {
     // and the ones that cannot fall behind and briefly show bare background
     // where their content should be.
     //
-    // 60 is komorebi's default and the safe answer, and was measured here at
-    // 18.22 ms between frames - 55 Hz against the 60 asked for. 90 reads as
-    // smoother and still asks a third less of each application than the 144 this
-    // was fixed at before it became a setting, which was never delivered anyway.
+    // Both panels here report 59 Hz. The 90 that was set for a while was asking
+    // for half as many frames again as they can present, and the compositor threw
+    // them away after every application had already been told to repaint. There
+    // was no way to know that without checking, which is the argument for asking
+    // the display rather than choosing a number.
     //
-    // Whole milliseconds are all the pump's timeout can express, so 90 is really
-    // a 12 ms wait and tops out near 83 Hz. Do not read that shortfall in
-    // `shubbak diagnose` as a fault - it is the rounding, not a dropped frame.
+    // A number still overrides it, and is worth having on a very fast panel where
+    // the applications rather than the display are the limit.
     //
-    // If the grey flash on an expanding window comes back, this is the first
-    // thing to lower. That is what it was traced to, not a bug.
-    fps 60
+    // If the grey flash on an expanding window comes back, a lower number is the
+    // first thing to try. That is what it was traced to, not a bug.
+    fps "auto"
 
     // Below this many pixels a move is applied instantly. Animating a
     // three-pixel nudge costs a dozen frames and reads as lag, not motion.
@@ -376,7 +376,15 @@ keybindings {
     // free to be moved and resized. `toggle-tiling` is the same command from the
     // other side, so this key used to be a duplicate of alt+shift+n.
     bind "alt+shift+m" { toggle-floating }
+
+    // Two fullscreens, differing only in whether the bar survives. Plain alt+x
+    // stops at the work area, so the bar and the taskbar stay visible; the shifted
+    // one takes the whole monitor and covers them, which is what GlazeWM's alt+x
+    // does. The bar marks the first with a hollow square next to the title - it
+    // cannot mark the second, for the obvious reason.
     bind "alt+x"       { toggle-fullscreen }
+    bind "alt+shift+x" { toggle-fullscreen --monitor }
+
     bind "alt+m"       { toggle-minimized }
     bind "alt+shift+q" { close }
 
@@ -451,18 +459,25 @@ binding-modes {
         bind "enter"  { wm-disable-binding-mode }
     }
 
-    // Swallows every key except the ones that leave. `pass-through` is false by
-    // default, which is what makes the keyboard inert while this is active.
+    // Turns Shubbak's keybindings off and leaves the keyboard alone otherwise.
     //
-    // Three ways out, deliberately. The keyboard is the thing this mode disables, so
-    // relying on a single keystroke to undo it is a single point of failure:
+    // `pass-through #true` is the whole difference. Without it the mode swallows
+    // every key it has no binding for, which makes the keyboard inert rather than
+    // making Shubbak quiet - the wrong one of the two, and not obvious from the
+    // name. With it, alt+h and the rest stop being intercepted and everything else
+    // reaches whatever has focus.
+    //
+    // Escape is deliberately not an exit any more. It was one while the mode
+    // swallowed everything, where claiming it cost nothing; in a pass-through mode
+    // claiming escape would take it from the application, and escape is the one key
+    // a game or a full-screen video most needs.
+    //
+    // Still three ways out, so a single keystroke is not a single point of failure:
     //   - alt+shift+p, the same key that started it
-    //   - escape
     //   - clicking the indicator on the bar
     // and if all else fails, from any shell:  shubbak wm-disable-binding-mode
-    mode "pause" {
+    mode "pause" pass-through=#true {
         bind "alt+shift+p" { wm-disable-binding-mode }
-        bind "escape"      { wm-disable-binding-mode }
     }
 }
 
@@ -503,7 +518,7 @@ bar {
         background "#181825"
         foreground "#cdd6f4"
         font "Segoe UI Variable Text"
-        font-size 15
+        font-size 18
         padding 10
 
         // Zones are flex containers. Three is a convention, not a limit - add as
@@ -537,7 +552,17 @@ bar {
         }
 
         zone "centre" justify="center" grow=1 {
-            text template="{{ window.title | truncate:90 }}" colour="#ffffffb3"
+            // A hollow square when the focused window is fullscreen within the work
+            // area. Nothing at all otherwise - the widget hides itself when its
+            // template renders empty, so there is no gap to notice. There is
+            // deliberately no marker for the whole-monitor mode: it covers the bar,
+            // so anything the bar drew would be underneath it.
+            text id="window-state" template="{{ window.state | state-icon }}" \
+                 colour="#f9e2af"
+
+            text template="{{ window.title | truncate:90 }}" colour="#ffffffb3" {
+                when of="window.state" value="fullscreen" colour="#f9e2af"
+            }
         }
 
         // Two clocks, as in the Zebar config: Seattle dimmed on the left, local
