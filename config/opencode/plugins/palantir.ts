@@ -1,12 +1,38 @@
 import type { Plugin } from "@opencode-ai/plugin"
+import { existsSync, readdirSync } from "node:fs"
 
-export const PalantirPlugin: Plugin = async ({ $, directory }) => {
+// dnx --source takes a path or URL, not a configured NuGet source name, so the feed
+// location can't be committed to dotfiles. Set PRIVATE_LOCAL_NUGET_FEED per machine
+// (configuration.dev.dsc.yaml does this) to resolve from it in ~0.4s per notification.
+//
+// The existence check matters because the DSC sets the variable on every machine,
+// including ones where the feed isn't populated yet. Without it, dnx would be handed a
+// nonexistent path and every notification would fail. Falling back to all configured
+// sources still works, it just costs ~10s from the remote auth round-trip.
+const FEED = process.env.PRIVATE_LOCAL_NUGET_FEED
+const SOURCE = FEED && existsSync(FEED) && readdirSync(FEED).length > 0 ? ["--source", FEED] : []
+
+export const PalantirPlugin: Plugin = async ({ $, client, directory }) => {
   const childSessions = new Set<string>()
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
   let wasBusy = false
+  let notifyFailed = false
 
   const notify = async (...args: string[]) => {
-    await $`cmd /c dnx Palantir --yes --add-source https://api.nuget.org/v3/index.json -- -q ${args}`.nothrow().quiet()
+    // Highest stable version in the feed wins; version count doesn't affect lookup speed.
+    const result = await $`cmd /c dnx Palantir --yes ${SOURCE} -- -q ${args}`.nothrow().quiet()
+    if (result.exitCode === 0) return
+    // Report once. A dead feed otherwise disables notifications silently,
+    // which is how the nuget.org block went unnoticed for four months.
+    if (notifyFailed) return
+    notifyFailed = true
+    await client.tui.showToast({
+      body: {
+        title: "Palantir",
+        message: `Notifications disabled: dnx exited ${result.exitCode}`,
+        variant: "error",
+      },
+    })
   }
 
   const cancelPending = () => {

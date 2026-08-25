@@ -290,6 +290,48 @@ properties:
         name: YAZI_CONFIG_HOME
         value: '${WinGetConfigRoot}/../config/yazi'
 
+    - resource: PSDscResources/Environment
+      id: PRIVATE_LOCAL_NUGET_FEED
+      directives:
+        description: |
+          Local NuGet feed holding privately published packages. Absolute rather than
+          repo-relative so it resolves identically on every machine regardless of which
+          drives exist. The opencode palantir plugin reads this to resolve its tool
+          locally (~0.4s per notification instead of ~10s against remote feeds); it
+          falls back to the configured NuGet sources when the path is missing or empty,
+          so a machine where the feed hasn't been populated yet still works.
+        allowPrerelease: false
+      settings:
+        name: PRIVATE_LOCAL_NUGET_FEED
+        value: 'C:\nuget\local-feed'
+
+    - resource: PSDscResources/Script
+      id: Sync_Private_Nuget_Feed
+      dependsOn:
+        - Moaid_Config_Path
+        - PRIVATE_LOCAL_NUGET_FEED
+      directives:
+        description: |
+          Mirror the latest published version of every NuGet package owned by
+          MoaidHathot into the private local feed. Idempotent: versions already
+          present are skipped, so re-runs transfer no data. The feed path is read
+          across all scopes because the Environment resource above only writes
+          Machine when the configuration runs elevated, and DSC resources are not
+          guaranteed to share a process. Pruning of superseded versions is
+          deliberately not requested here.
+      settings:
+        GetScript: |
+          return @{ Result = [Environment]::GetEnvironmentVariable('PRIVATE_LOCAL_NUGET_FEED', 'Machine') }
+        TestScript: |
+          return $false
+        SetScript: |
+          $feed = @(
+            [Environment]::GetEnvironmentVariable('PRIVATE_LOCAL_NUGET_FEED', 'Machine')
+            [Environment]::GetEnvironmentVariable('PRIVATE_LOCAL_NUGET_FEED', 'User')
+            $env:PRIVATE_LOCAL_NUGET_FEED
+          ) | Where-Object { $_ } | Select-Object -First 1
+          & "$env:Moaid_Config_Path\scripts\Sync-PrivateNugetFeed.ps1" -FeedPath $feed
+
     - resource: PSDscResources/Script
       id: Update_PowerShell_Profile
       dependsOn:
