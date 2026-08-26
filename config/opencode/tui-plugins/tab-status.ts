@@ -88,6 +88,11 @@ const tui: TuiPlugin = async (api) => {
   // brand new tab doesn't latch a marker the user was actually watching.
   let focused = true
   let unseen = false
+  // Errors have to persist. Emitting red directly meant the next idle event
+  // repainted over it 27ms later, so the failure was never actually visible.
+  // Cleared when new work starts, not on focus — seeing the tab isn't the same
+  // as having dealt with what broke.
+  let errored = false
 
   // state.path is populated asynchronously and has been observed empty even
   // after activation, so try every source and resolve per render rather than
@@ -97,6 +102,11 @@ const tui: TuiPlugin = async (api) => {
       if (!candidate) continue
       const name = basename(candidate)
       if (name) return name
+      // Drive roots ("W:\") and "/" have no basename. Show the root itself
+      // rather than falling through to a literal, which would mislabel every
+      // workspace opened at a drive root as whatever the fallback happens to be.
+      const root = candidate.replace(/[\\/]+$/, "")
+      if (root) return root
     }
     return "opencode"
   }
@@ -122,8 +132,15 @@ const tui: TuiPlugin = async (api) => {
   }
 
   const esc = "\x1b"
+  // Several events collapse to the same visual state (session.status idle,
+  // session.idle and session.compacted all mean "not busy"), which produced
+  // 25 identical writes out of 55 in a real session. Skip unchanged repaints.
+  let lastEmit = ""
   const emit = (title: string, state: number, pct = 0) => {
-    debug(`emit state=${state} pct=${pct} focused=${focused} unseen=${unseen} title="${title}"`)
+    const key = `${title}\u0000${state}\u0000${pct}`
+    if (key === lastEmit) return
+    lastEmit = key
+    debug(`emit state=${state} pct=${pct} focused=${focused} unseen=${unseen} errored=${errored} title="${title}"`)
     if (EMIT_TITLE) {
       // Emit as two separate writes so terminals see two distinct OSCs.
       process.stdout.write(`${esc}]0;${title}${esc}\\`)
@@ -135,9 +152,13 @@ const tui: TuiPlugin = async (api) => {
   // deliberately never shown together, so the bell replaces the ring rather
   // than competing with it — busy and unseen were both yellow rings before,
   // which made the marker impossible to notice.
+  //
+  // Errors rank above the unseen bell: if a session failed while you were away,
+  // "it broke" is more useful than "you missed something".
   const render = () => {
     if (pending.size || questions.size) return emit(label(ICON.ask), 1, 50)
     if (busy) return emit(label(), 3)
+    if (errored) return emit(label(ICON.err), 2)
     if (unseen) return emit(label(ICON.unseen), 0)
     return emit(label(), 0)
   }
@@ -152,6 +173,8 @@ const tui: TuiPlugin = async (api) => {
   // otherwise every idle heartbeat while blurred would latch a marker.
   const setBusy = (next: boolean) => {
     if (busy && !next) markUnseen()
+    // New work supersedes an older failure.
+    if (next) errored = false
     busy = next
     render()
   }
@@ -202,8 +225,9 @@ const tui: TuiPlugin = async (api) => {
       if (foreign(e.properties as { sessionID?: string })) return
       pending.clear()
       busy = false
+      errored = true
       markUnseen()
-      emit(label(ICON.err), 2)
+      render()
     }),
     api.event.on("permission.asked", (e) => {
       const props = e.properties as { sessionID?: string }
