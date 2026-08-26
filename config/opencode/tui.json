@@ -12,5 +12,6 @@
     "input_select_buffer_end": "ctrl+shift+e"
   },
 	"plugin": [
+		"./tui-plugins/tab-status.ts"
 	]
 }
