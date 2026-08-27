@@ -42,13 +42,15 @@ return {
 			end
 		end,
 		opts = {
-			-- Run CLI from local nupkg source via dotnet dnx (no global install needed)
+			-- Run CLI from local nupkg source via dotnet dnx (no global install needed).
+			-- No --add-source: `api.nuget.org` is blocked at the TLS layer on the corp
+			-- network, and pinning it here made every invocation fail. Ambient NuGet
+			-- config resolves PowerReview from the machine-wide private feed
+			-- (PRIVATE_LOCAL_NUGET_FEED) or the approved proxy instead.
 			cli = {
 				executable = {
 					"dnx",
 					"--yes",
-					"--add-source",
-					"https://api.nuget.org/v3/index.json",
 					"PowerReview",
 					"--",
 				},

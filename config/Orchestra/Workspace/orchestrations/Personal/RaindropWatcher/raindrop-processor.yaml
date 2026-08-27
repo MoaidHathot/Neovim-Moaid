@@ -352,8 +352,11 @@ steps:
       $raw = [string]$args[0]
       if ([string]::IsNullOrWhiteSpace($raw)) { throw 'verify-dispatch: dispatch-processor produced no output; treating as failure.' }
 
-      # Extract the child status from the dispatch envelope as robustly as possible.
-      $status = $null; $finalContent = $null; $obj = $null
+      $successStates = @('succeeded', 'completed', 'success', 'ok')
+      $failureStates = @('failed', 'faulted', 'error', 'errored', 'cancelled', 'canceled', 'timedout', 'terminated', 'skipped')
+
+      # --- 1) Structured envelope (preferred) ---------------------------------
+      $status = $null; $finalContent = $null; $executionId = $null; $obj = $null
       try { $obj = $raw | ConvertFrom-Json -ErrorAction Stop } catch { $obj = $null }
       if (-not $obj -and ($raw -match '(?s)```(?:json)?\s*(\{.*?\})\s*```')) {
         try { $obj = $Matches[1] | ConvertFrom-Json -ErrorAction Stop } catch { $obj = $null }
@@ -364,24 +367,84 @@ steps:
       if ($obj) {
         if ($obj.PSObject.Properties['status'])       { $status = [string]$obj.status }
         if ($obj.PSObject.Properties['finalContent']) { $finalContent = [string]$obj.finalContent }
+        if ($obj.PSObject.Properties['executionId'])  { $executionId = [string]$obj.executionId }
       }
       if (-not $status -and ($raw -match '"status"\s*:\s*"([^"]+)"'))   { $status = $Matches[1] }
       if (-not $status -and ($raw -match 'status\s*\*\*([A-Za-z-]+)\*\*')) { $status = $Matches[1] }
 
-      $success = @('succeeded', 'completed', 'success', 'ok')
+      # --- 2) Prose fallback --------------------------------------------------
+      # `invoke_orchestration` sometimes narrates the outcome instead of echoing
+      # the envelope, e.g.
+      #   "Child orchestration X invoked synchronously; executionId 4e8aefe6c1f3
+      #    completed with status "succeeded". Returning the result envelope verbatim."
+      # Run 51af7212aa5b threw on exactly that sentence even though child
+      # 4e8aefe6c1f3 had SUCCEEDED, which re-queued a raindrop that was already
+      # done. Collect every status-like word and let any failure word win, so a
+      # narrative mentioning both ("status succeeded but the run failed") still
+      # fails safe rather than being read as a success.
+      if (-not $status) {
+        $seen = @()
+        foreach ($m in [regex]::Matches($raw, '(?i)status\s*(?:[:=]|is|was|of)?\s*["'']?([A-Za-z]+)["'']?')) {
+          $w = $m.Groups[1].Value.Trim().ToLowerInvariant()
+          if ($successStates -contains $w -or $failureStates -contains $w) { $seen += $w }
+        }
+        if ($seen.Count -gt 0) {
+          $bad = $seen | Where-Object { $failureStates -contains $_ } | Select-Object -First 1
+          $status = if ($bad) { $bad } else { $seen[0] }
+        }
+      }
+
+      # --- 3) Last resort: ask the run history what the child actually did -----
+      # Only reached when the envelope carries no readable status at all. The
+      # per-run `run.json` on disk is the source of truth (the SQLite index is a
+      # derived sidecar), and `status` sits in its first few hundred bytes, so a
+      # bounded read beats parsing a multi-megabyte document.
+      if (-not $status) {
+        if (-not $executionId -and ($raw -match '(?i)execution\s*id\s*[:=]?\s*["'']?([0-9a-f]{8,32})')) { $executionId = $Matches[1] }
+        if ($executionId) {
+          $root = Join-Path $env:LOCALAPPDATA 'OrchestraHost\executions'
+          if (Test-Path -LiteralPath $root) {
+            $runFile = Get-ChildItem -LiteralPath $root -Directory -Recurse -Depth 2 -Filter "*_$executionId" -ErrorAction SilentlyContinue |
+                       ForEach-Object { Join-Path $_.FullName 'run.json' } |
+                       Where-Object { Test-Path -LiteralPath $_ } |
+                       Select-Object -First 1
+            if ($runFile) {
+              try {
+                $fs = [System.IO.File]::OpenRead($runFile)
+                try {
+                  $buf = New-Object byte[] 2048
+                  $read = $fs.Read($buf, 0, $buf.Length)
+                } finally { $fs.Dispose() }
+                $head = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+                if ($head -match '"status"\s*:\s*"([^"]+)"') { $status = $Matches[1] }
+              } catch { }
+            }
+          }
+        }
+      }
+
       $norm = if ($status) { $status.Trim().ToLowerInvariant() } else { '' }
-      if ($success -notcontains $norm) {
+      if ($successStates -notcontains $norm) {
         $why = if ($status) { "child processing did not succeed (status='$status')" } else { 'could not determine child status from the dispatch envelope' }
         if (-not [string]::IsNullOrWhiteSpace($finalContent)) {
           $snippet = if ($finalContent.Length -gt 500) { $finalContent.Substring(0, 500) + ' ...[truncated]' } else { $finalContent }
           $why += ". Child error: $snippet"
+        }
+        # Always show the envelope we could not read. Without this, an unknown
+        # shape can only be diagnosed by digging through the run folder by hand.
+        if (-not $status) {
+          $envSnippet = if ($raw.Length -gt 400) { $raw.Substring(0, 400) + ' ...[truncated]' } else { $raw }
+          $why += ". Raw dispatch envelope: $envSnippet"
         }
         throw "verify-dispatch: $why"
       }
       "{ `"ok`": true, `"childStatus`": `"$status`" }"
     arguments:
       - "{{dispatch-processor.output}}"
-    timeoutSeconds: 60
+    # Was 60s. The last-resort branch walks the executions tree to resolve a
+    # child run by id, which is only reached for unparseable envelopes but can
+    # take a few seconds on a host with thousands of retained runs.
+    timeoutSeconds: 120
 
   - name: move-to-processed
     type: Script

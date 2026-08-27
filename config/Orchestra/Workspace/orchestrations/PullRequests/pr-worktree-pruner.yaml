@@ -124,7 +124,7 @@ steps:
         $prev = $PSNativeCommandUseErrorActionPreference
         $PSNativeCommandUseErrorActionPreference = $false
         try {
-          & dnx --yes --add-source https://api.nuget.org/v3/index.json PowerReview -- @Arguments 1> $stdoutPath 2> $stderrPath
+          & dnx --yes PowerReview -- @Arguments 1> $stdoutPath 2> $stderrPath
           $code = $LASTEXITCODE
           $out = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
           $err = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
@@ -556,7 +556,7 @@ steps:
         $prev = $PSNativeCommandUseErrorActionPreference
         $PSNativeCommandUseErrorActionPreference = $false
         try {
-          & dnx --yes --add-source https://api.nuget.org/v3/index.json PowerReview -- close --pr-url $PrUrl 1> $stdoutPath 2> $stderrPath
+          & dnx --yes PowerReview -- close --pr-url $PrUrl 1> $stdoutPath 2> $stderrPath
           $code = $LASTEXITCODE
           $err = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
         } finally {

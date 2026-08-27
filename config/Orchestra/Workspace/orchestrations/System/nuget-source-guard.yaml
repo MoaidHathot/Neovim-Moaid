@@ -1,0 +1,320 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: nuget-source-guard
+description: |
+  Hourly guard that re-enables the `nuget.org` package source when Microsoft's
+  Intune remediation "NuGet approved registry remediation v1.5" disables it
+  (that policy runs every 3 hours and forces traffic to the approved proxy).
+
+  Scope is deliberately narrow: this orchestration only ever runs
+  `dotnet nuget enable source`. It never adds, removes or disables a source,
+  and it never touches the approved proxy feed
+  (`packagefeedproxy.microsoft.io`) - that one is added once by hand and is
+  assumed to stay. If `nuget.org` is not registered at all, the step fails
+  loudly with the exact command to fix it rather than silently re-adding it,
+  because a missing source means the hand-managed baseline drifted.
+
+  Every command is pinned to an explicit `--configfile` (the user-level
+  NuGet.Config by default). Without that pin, `dotnet nuget` resolves the
+  *nearest* config relative to the host process's working directory, so the
+  guard would report whatever some checked-out repo's `nuget.config` says and
+  could write its remediation into that repo instead of the user profile.
+
+  Each run reads `dotnet nuget list source`, locates the target source (by
+  name, falling back to URL), and reacts to one of three states:
+
+    * enabled  -> nothing to do; the step ends as `no_action` so hourly
+                  no-op runs stay visually distinct from real remediations.
+    * disabled -> runs `dotnet nuget enable source <name>`, then re-reads the
+                  source list to confirm the change actually stuck.
+    * missing  -> fails with the command needed to restore it.
+
+  `dryRun` reports what would happen without touching any NuGet config.
+  Remediation that does not verify afterwards fails the step, so a silently
+  broken guard shows up as a red run instead of a green lie.
+version: 1.0.0
+tags: ["system", "nuget", "maintenance"]
+
+inputs:
+  sourceName:
+    type: string
+    description: Name of the NuGet source to guard, as shown by `dotnet nuget list source`.
+    required: false
+    default: "nuget.org"
+  sourceUrl:
+    type: string
+    description: |
+      Feed URL for the guarded source. Used only as a fallback match when the
+      source was registered under a different name. Never written anywhere.
+    required: false
+    default: "https://api.nuget.org/v3/index.json"
+  dryRun:
+    type: boolean
+    description: |
+      When `true`, report the detected state and the remediation that would run
+      without modifying any NuGet configuration.
+    required: false
+    default: "false"
+  configFile:
+    type: string
+    description: |
+      NuGet config file to inspect and modify. Leave empty to use the
+      user-level config (`%AppData%\NuGet\NuGet.Config` on Windows,
+      `~/.nuget/NuGet/NuGet.Config` elsewhere).
+    required: false
+    default: ""
+
+steps:
+  # -- Step 1: Inspect the source list and remediate if needed ---------------
+  # Emits a Markdown report on stdout. Signals `no_action` through the Script
+  # control channel when the source was already healthy, which skips the
+  # summary step and keeps 24 runs/day of no-ops out of the "did work" bucket.
+  - name: ensure-nuget-source
+    type: Script
+    shell: pwsh
+    timeoutSeconds: 180
+    parameters: [sourceName, sourceUrl, dryRun, configFile]
+    environment:
+      # Pin the CLI's UI language so the `[Enabled]` / `[Disabled]` state token
+      # parsed below is not localized on non-English machines.
+      DOTNET_CLI_UI_LANGUAGE: "en-US"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      $sourceName   = '{{param.sourceName}}'
+      $sourceUrl    = '{{param.sourceUrl}}'
+      $dryRun       = ('{{param.dryRun}}' -ieq 'true')
+      $configFile   = '{{param.configFile}}'
+
+      if (-not (Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue)) {
+        throw "The 'dotnet' CLI was not found on PATH; cannot inspect NuGet sources."
+      }
+
+      # Pin the config scope. `dotnet nuget` otherwise walks up from the current
+      # directory, so the host's working directory would decide which file is
+      # read *and written* - including a repo's checked-in nuget.config.
+      if ([string]::IsNullOrWhiteSpace($configFile)) {
+        $configFile = if ($IsWindows) {
+          Join-Path $env:AppData 'NuGet\NuGet.Config'
+        } else {
+          Join-Path $HOME '.nuget/NuGet/NuGet.Config'
+        }
+      }
+      if (-not (Test-Path -LiteralPath $configFile -PathType Leaf)) {
+        throw "NuGet config file not found: $configFile. Pass a different path via the 'configFile' input, or create it with: dotnet nuget add source $sourceUrl --name $sourceName --configfile $configFile"
+      }
+      $configFile = (Resolve-Path -LiteralPath $configFile).Path
+
+      # Native executables never raise terminating errors and PowerShell can turn
+      # their stderr lines into ErrorRecords, so relax the preference for the call
+      # and branch on the exit code instead.
+      function Invoke-DotnetNuget {
+        param([Parameter(Mandatory)][string[]] $DotnetArgs)
+
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+          $global:LASTEXITCODE = 0
+          $text = (& dotnet @DotnetArgs 2>&1 | Out-String)
+          return [pscustomobject]@{
+            Command  = "dotnet $($DotnetArgs -join ' ')"
+            ExitCode = $global:LASTEXITCODE
+            Output   = $text.Trim()
+          }
+        }
+        finally {
+          $ErrorActionPreference = $previous
+        }
+      }
+
+      # `dotnet nuget list source` detailed layout:
+      #   Registered Sources:
+      #     1.  nuget.org [Disabled]
+      #         https://api.nuget.org/v3/index.json
+      # The numbered header carries the name + state; the following line is the URL.
+      function Get-NuGetSourceList {
+        param([Parameter(Mandatory)][string] $ConfigFile)
+
+        $result = Invoke-DotnetNuget -DotnetArgs @('nuget', 'list', 'source', '--configfile', $ConfigFile)
+        if ($result.ExitCode -ne 0) {
+          throw "'$($result.Command)' exited with code $($result.ExitCode): $($result.Output)"
+        }
+
+        $sources = @()
+        $lines = $result.Output -split '\r?\n'
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+          $header = [regex]::Match($lines[$i], '^\s*\d+\.\s+(?<name>.+?)\s+\[(?<state>[^\]]+)\]\s*$')
+          if (-not $header.Success) { continue }
+
+          $state = $header.Groups['state'].Value.Trim()
+          $url = ''
+          if ($i + 1 -lt $lines.Count) { $url = $lines[$i + 1].Trim() }
+
+          $sources += [pscustomobject]@{
+            Name    = $header.Groups['name'].Value.Trim()
+            State   = $state
+            Url     = $url
+            Enabled = ($state -ieq 'Enabled')
+          }
+        }
+        return ,$sources
+      }
+
+      # Prefer an exact name match; fall back to the URL so a source registered
+      # under a different name is still recognised instead of being duplicated.
+      function Find-NuGetSource {
+        param([object[]] $Sources, [string] $Name, [string] $Url)
+
+        $byName = $Sources | Where-Object { $_.Name -ieq $Name } | Select-Object -First 1
+        if ($byName) { return $byName }
+        return $Sources | Where-Object { $_.Url.TrimEnd('/') -ieq $Url.TrimEnd('/') } | Select-Object -First 1
+      }
+
+      $report = [ordered]@{
+        summary      = $null
+        sourceName   = $sourceName
+        sourceUrl    = $sourceUrl
+        configFile   = $configFile
+        dryRun       = $dryRun
+        checkedAt    = (Get-Date).ToUniversalTime().ToString('o')
+        stateBefore  = $null
+        stateAfter   = $null
+        action       = 'none'
+        commands     = @()
+        sources      = @()
+      }
+
+      $sources = Get-NuGetSourceList -ConfigFile $configFile
+      $report.sources = @($sources | ForEach-Object {
+        [ordered]@{ name = $_.Name; state = $_.State; url = $_.Url }
+      })
+
+      $target = Find-NuGetSource -Sources $sources -Name $sourceName -Url $sourceUrl
+
+      # This guard never registers a source. `nuget.org` (and the approved proxy
+      # alongside it) are hand-managed; a missing entry means that baseline
+      # drifted, which is worth a red run rather than a silent re-add.
+      if ($null -eq $target) {
+        throw "NuGet source '$sourceName' is not registered in $configFile. This guard only enables an existing source; restore it by hand with: dotnet nuget add source $sourceUrl --name $sourceName --configfile $configFile"
+      }
+      elseif ($target.Enabled) {
+        $report.stateBefore = 'enabled'
+        $report.action = 'none'
+      }
+      else {
+        $report.stateBefore = 'disabled'
+        if ($dryRun) {
+          $report.action = 'would-enable'
+        } else {
+          $enable = Invoke-DotnetNuget -DotnetArgs @('nuget', 'enable', 'source', $target.Name, '--configfile', $configFile)
+          $report.commands += [ordered]@{ command = $enable.Command; exitCode = $enable.ExitCode; output = $enable.Output }
+          if ($enable.ExitCode -ne 0) {
+            throw "Failed to enable NuGet source '$($target.Name)' (exit code $($enable.ExitCode)): $($enable.Output)"
+          }
+          $report.action = 'enabled'
+        }
+      }
+
+      # Re-read the list after a real mutation: an exit code of 0 is not proof
+      # that the source is actually usable now.
+      if ($report.action -eq 'enabled') {
+        $verified = Find-NuGetSource -Sources (Get-NuGetSourceList -ConfigFile $configFile) -Name $sourceName -Url $sourceUrl
+        if ($null -eq $verified) {
+          throw "Verification failed: NuGet source '$sourceName' disappeared from $configFile after '$($report.action)'."
+        }
+        $report.stateAfter = if ($verified.Enabled) { 'enabled' } else { 'disabled' }
+        if (-not $verified.Enabled) {
+          throw "Verification failed: NuGet source '$($verified.Name)' is still disabled after '$($report.action)'."
+        }
+      } else {
+        $report.stateAfter = $report.stateBefore
+      }
+
+      $mode = if ($dryRun) { 'DRY RUN' } else { 'LIVE' }
+      $report.summary = [ordered]@{
+        mode           = $mode
+        source         = $sourceName
+        stateBefore    = $report.stateBefore
+        stateAfter     = $report.stateAfter
+        action         = $report.action
+        remediated     = ($report.action -eq 'enabled')
+        sourcesTotal   = $report.sources.Count
+        commandsRun    = $report.commands.Count
+      }
+
+      switch ($report.action) {
+        'none'         { $banner = "**MODE: $mode** - NuGet source ``$sourceName`` is already enabled; no action taken." }
+        'enabled'      { $banner = "**MODE: $mode** - NuGet source ``$sourceName`` was **disabled** and has been re-enabled." }
+        'would-enable' { $banner = "**MODE: $mode** - NuGet source ``$sourceName`` is **disabled**; it would be enabled." }
+        default        { $banner = "**MODE: $mode** - unexpected action '$($report.action)'." }
+      }
+
+      $lines = @()
+      $lines += $banner
+      $lines += ''
+      $lines += '## State'
+      $lines += ''
+      $lines += '| Field          | Value |'
+      $lines += '|----------------|-------|'
+      $lines += "| Source         | $sourceName |"
+      $lines += "| Config file    | $configFile |"
+      $lines += "| State before   | $($report.stateBefore) |"
+      $lines += "| State after    | $($report.stateAfter) |"
+      $lines += "| Action         | $($report.action) |"
+      $lines += "| Commands run   | $($report.commands.Count) |"
+      $lines += "| Sources listed | $($report.sources.Count) |"
+      $lines += ''
+      $lines += '## Report'
+      $lines += ''
+      $lines += '```json'
+      $lines += ($report | ConvertTo-Json -Depth 10)
+      $lines += '```'
+
+      ($lines -join "`n")
+
+      if ($report.action -eq 'none') {
+        Orchestra-SetStatus -Status no_action -Reason "NuGet source '$sourceName' is already enabled in $configFile ($($target.Url)); no action taken."
+      }
+
+  # -- Step 2: Human-readable summary (skipped on no-op runs) ----------------
+  - name: format-summary
+    type: Transform
+    dependsOn: [ensure-nuget-source]
+    template: |
+      # NuGet Source Guard - Summary
+
+      **Run ID:**     {{orchestration.runId}}
+      **Started at:** {{orchestration.startedAt}}
+      **Source:**     {{param.sourceName}}
+      **Dry run:**    {{param.dryRun}}
+
+      {{ensure-nuget-source.output}}
+
+      This step only renders when the guard actually did something (or would
+      have, under `dryRun`). Runs where the source was already enabled end as
+      `no_action` on `ensure-nuget-source` and skip this summary.
+
+trigger:
+  type: scheduler
+  # DISABLED 2026-08-26. This guard was written for machines where `nuget.org`
+  # is reachable and the Intune remediation is the only thing turning it off.
+  # On this device `api.nuget.org` is blocked outright at the TLS layer
+  # (the handshake is answered with alert 'HandshakeFailure'), so re-enabling
+  # the source does not restore access - it makes every `dnx`/`dotnet restore`
+  # fail hard, because NuGet treats an *enabled but unreachable* source as a
+  # fatal error rather than skipping it.
+  #
+  # The guard and the Intune policy were therefore flipping the machine between
+  # a working state (source disabled -> resolve via `azure-default` + the local
+  # feed) and a broken one (source enabled -> everything that shells out to a
+  # .NET tool dies). Observed 2026-08-26: guard ran 11:00Z and 12:00Z, Intune
+  # re-disabled at 11:07Z, and every raindrop/pr-dispatcher failure fell inside
+  # the enabled windows.
+  #
+  # First-party tools now resolve from C:\nuget\local-feed, which needs no
+  # network at all, so the guard has nothing left to protect. Re-enable this
+  # only on a device where `api.nuget.org` actually answers.
+  enabled: false
+  # Top of every hour (UTC).
+  cron: "0 * * * *"

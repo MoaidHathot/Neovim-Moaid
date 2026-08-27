@@ -44,6 +44,7 @@ function pp
 }
 set-Alias Copy-Path Copy-Location
 set-Alias ccp Copy-Location
+set-Alias ccd Copy-Location
 # Set-Alias .. cd..
 
 function ..

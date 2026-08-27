@@ -1,0 +1,861 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
+name: connect-evidence-pack
+description: >-
+  Collects Microsoft Connect evidence for the signed-in FTE across an arbitrary review
+  period: pull requests and work items from Azure DevOps, documents from WorkIQ and
+  M365 Copilot, and extracurricular signals from mail, calendar and WorkIQ. Aggregates
+  into topics, extracurricular work, domains, impact patterns and a month-by-month
+  timeline, renders a markdown evidence pack, and writes it to disk.
+version: 1.0.0
+defaultModel: claude-opus-4.8
+timeoutSeconds: 21600
+tags: [connect, evidence, personal, azdo, workiq, m365]
+metadata:
+  promotedFrom: ephemeral-f9d85e282456-attempt-1
+  promotedFromRun: "f9d85e282456"
+  notes: >-
+    Promoted from the ephemeral self-healing run of 2026-05-14, in which 22 of 24 steps
+    succeeded in 30 minutes. Changes from that run: added fetch-work-items-worked-on
+    (the original queried closure only and returned 34 work items where a broader pass
+    found far more), added aggregate-timeline, and added persist-report so the rendered
+    markdown is written to a real directory instead of only the volatile Orchestra temp
+    store.
+inputs:
+  startDate:
+    type: string
+    description: First day of the review period, inclusive. ISO 8601 (YYYY-MM-DD).
+    required: true
+  endDate:
+    type: string
+    description: Last day of the review period, inclusive. ISO 8601 (YYYY-MM-DD).
+    required: true
+  outputDirectory:
+    type: string
+    description: >-
+      Directory to write the final markdown into. Leave empty to use
+      %USERPROFILE%/OneDrive - Microsoft/Connect/<startDate>_<endDate>.
+    required: false
+    default: ""
+  domainHints:
+    type: string
+    description: >-
+      Comma-separated candidate domains used to seed domain inference. Evidence still
+      governs; hints are never asserted without support.
+    required: false
+    default: "AI, .NET, cloud infrastructure, security, developer tooling"
+variables:
+  startDate: "{{param.startDate}}"
+  endDate: "{{param.endDate}}"
+  dateRangeLabel: "{{param.startDate}} through {{param.endDate}} inclusive"
+  reportDateRangeLabel: "{{param.startDate}} to {{param.endDate}}"
+  domainHints: "{{param.domainHints}}"
+defaultRetryPolicy:
+  maxRetries: 2
+  backoffSeconds: 2
+  backoffMultiplier: 2
+  retryOnTimeout: true
+mcps:
+  - name: workiq
+    type: local
+    command: npx
+    arguments:
+      - "-y"
+      - "@microsoft/workiq"
+      - mcp
+steps:
+  - name: resolve-identity
+    type: Prompt
+    mcps: [me, workiq]
+    systemPrompt: |
+      You resolve the signed-in user's identity for downstream evidence collection.
+      Use the available MCPs to identify the current signed-in user and return strict JSON only.
+      Do not return markdown, commentary, or code fences.
+      Return exactly one JSON object with this shape:
+      {
+        "displayName": "string",
+        "primaryEmail": "string",
+        "aliases": ["string"],
+        "azdoIdentityHints": {
+          "displayNameVariants": ["string"],
+          "emails": ["string"],
+          "uniqueNames": ["string"],
+          "descriptors": ["string"],
+          "notes": ["string"]
+        }
+      }
+      Include only evidence-backed values. Use empty arrays when unknown.
+    userPrompt: |
+      Resolve the signed-in user's identity for evidence collection covering {{vars.dateRangeLabel}}.
+      Use me and workiq as needed.
+      Output strict JSON only.
+
+  - name: fetch-prs-azdo
+    type: Prompt
+    dependsOn: [resolve-identity]
+    mcps: [azdo]
+    timeoutSeconds: 1800
+    systemPrompt: |
+      You collect Azure DevOps pull request evidence for the signed-in user.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "azdo" and category to "pullRequests".
+      dateRange must be:
+      {
+        "start": "{{vars.startDate}}",
+        "end": "{{vars.endDate}}",
+        "inclusive": true
+      }
+      queryStrategy must briefly describe the AzDO retrieval strategy used.
+      notes must be an array of short strings.
+      items must be an array. Each item must include at least:
+      prId, title, repo, status, createdDate, closedDate, mergedDate, link.
+      Also include any useful fields such as sourceIdentity, author, repositoryId, targetBranch, sourceBranch, reviewers, and evidenceReason.
+      Use ISO 8601 dates whenever possible. Use null for unknown values.
+      Include only pull requests created by the resolved user within the inclusive window.
+    userPrompt: |
+      The resolved signed-in user is:
+      {{resolve-identity.output}}
+
+      Collect pull requests created by this user during {{vars.dateRangeLabel}} using Azure DevOps.
+      Prefer exact identity matches first, then safe aliases from the resolved identity.
+      Include repo, PR id, title, status, created date, closed or merged date if present, and link.
+      Output strict JSON only.
+
+  - name: fetch-prs-workiq
+    type: Prompt
+    dependsOn: [resolve-identity]
+    mcps: [workiq]
+    timeoutSeconds: 1800
+    systemPrompt: |
+      You collect a cross-check set of pull request evidence using WorkIQ.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "workiq" and category to "pullRequests".
+      dateRange must be:
+      {
+        "start": "{{vars.startDate}}",
+        "end": "{{vars.endDate}}",
+        "inclusive": true
+      }
+      items must be an array, and every item must include at least:
+      prId, title, repo, status, createdDate, closedDate, mergedDate, link.
+      Also include any helpful source-specific fields such as organization, repositoryId, author, sourceBranch, targetBranch, and evidenceReason.
+      Use ISO 8601 dates whenever possible.
+    userPrompt: |
+      The resolved signed-in user is:
+      {{resolve-identity.output}}
+
+      Use WorkIQ to find pull requests created by this user during {{vars.dateRangeLabel}} as a cross-check pass.
+      Use slightly different identity matching and query wording than an AzDO-first pass.
+      Include only evidence-backed items.
+      Output strict JSON only.
+
+  - name: aggregate-prs
+    type: Prompt
+    dependsOn: [fetch-prs-azdo, fetch-prs-workiq]
+    systemPrompt: |
+      You aggregate and deduplicate pull request evidence.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "aggregated" and category to "pullRequests".
+      Keep dateRange aligned to the requested inclusive window.
+      Deduplicate across sources using PR id, repo, title, dates, and links.
+      notes must mention duplicate handling and any ambiguities.
+      Each item must include at least:
+      prId, title, repo, status, createdDate, closedDate, mergedDate, link.
+      Also include sourceEvidence as an array and a stable evidenceId string for downstream references.
+      Sort items by createdDate ascending when possible.
+    userPrompt: |
+      Aggregate and dedupe these pull request result sets into one canonical list.
+
+      AzDO:
+      {{fetch-prs-azdo.output}}
+
+      WorkIQ:
+      {{fetch-prs-workiq.output}}
+
+      Output strict JSON only.
+
+  - name: fetch-work-items-closed-by-user
+    type: Prompt
+    dependsOn: [resolve-identity]
+    mcps: [azdo]
+    timeoutSeconds: 1800
+    systemPrompt: |
+      You collect Azure DevOps work items closed by the signed-in user.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "azdo" and category to "workItems".
+      dateRange must reflect the inclusive window.
+      queryStrategy must state that this pass targets work items closed by the user.
+      Each item must include at least:
+      workItemId, title, workItemType, state, changedDate, closedDate, createdDate, link, inclusionReason.
+      inclusionReason must be "closedByUser" for direct matches.
+      Add helpful fields such as assignedTo, closedBy, areaPath, iterationPath, tags, and evidenceReason when available.
+      Use ISO 8601 dates whenever possible.
+    userPrompt: |
+      The resolved signed-in user is:
+      {{resolve-identity.output}}
+
+      Use Azure DevOps to find work items that this user closed during {{vars.dateRangeLabel}}.
+      Include only items supported by evidence and include the closest equivalent query strategy if exact "closed by me" support differs.
+      Output strict JSON only.
+
+  - name: fetch-work-items-owned-and-closed
+    type: Prompt
+    dependsOn: [resolve-identity]
+    mcps: [azdo]
+    timeoutSeconds: 1800
+    systemPrompt: |
+      You collect Azure DevOps work items owned by the signed-in user and closed in the period.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "azdo" and category to "workItems".
+      queryStrategy must state that this pass targets items assigned or owned by the user and closed in the window.
+      Each item must include at least:
+      workItemId, title, workItemType, state, changedDate, closedDate, createdDate, link, inclusionReason.
+      inclusionReason must be "ownedAndClosed" for direct matches.
+      Add fields such as assignedTo, closedBy, resolvedBy, areaPath, iterationPath, tags, and evidenceReason when available.
+      Use ISO 8601 dates whenever possible.
+    userPrompt: |
+      The resolved signed-in user is:
+      {{resolve-identity.output}}
+
+      Use Azure DevOps to find work items assigned to or otherwise owned by this user that were closed during {{vars.dateRangeLabel}}.
+      Prefer a retrieval strategy distinct from the closed-by-user pass.
+      Output strict JSON only.
+
+  - name: fetch-work-items-worked-on
+    type: Prompt
+    dependsOn: [resolve-identity]
+    mcps: [azdo]
+    timeoutSeconds: 1800
+    systemPrompt: |
+      You collect Azure DevOps work items the signed-in user actively worked on during the period,
+      regardless of whether they were closed.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "azdo" and category to "workItems".
+      queryStrategy must state that this pass targets items the user touched, was assigned, or
+      changed within the window in ANY state, including active, in-progress, resolved and removed.
+      Each item must include at least:
+      workItemId, title, workItemType, state, changedDate, closedDate, createdDate, link, inclusionReason.
+      inclusionReason must be "workedOn" for matches from this pass.
+      Add fields such as assignedTo, closedBy, areaPath, iterationPath, tags, and evidenceReason when available.
+      Use ISO 8601 dates whenever possible.
+      Do not restrict to closed items. An item still in progress at the end of the window is in scope.
+    userPrompt: |
+      The resolved signed-in user is:
+      {{resolve-identity.output}}
+
+      Use Azure DevOps to find work items this user worked on during {{vars.dateRangeLabel}} in any
+      state - assigned to them, changed by them, or otherwise showing their activity in the window.
+      Deliberately include items that are still open, resolved, or removed; do not filter to closed.
+      Prefer a retrieval strategy distinct from the closed-by-user and owned-and-closed passes.
+      Output strict JSON only.
+  - name: aggregate-work-items
+    type: Prompt
+    dependsOn: [fetch-work-items-closed-by-user, fetch-work-items-owned-and-closed, fetch-work-items-worked-on]
+    systemPrompt: |
+      You aggregate and deduplicate work item evidence.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "aggregated" and category to "workItems".
+      Deduplicate using work item id first, then safe title/link/date matching as fallback.
+      Preserve all valid inclusion reasons per item.
+      Each item must include at least:
+      workItemId, title, workItemType, state, changedDate, closedDate, createdDate, link, inclusionReason.
+      If an item appears in multiple passes, inclusionReason should become an array of unique reasons.
+      Retain items that are not closed. Closure is not a condition of inclusion.
+      Also include sourceEvidence and a stable evidenceId string.
+    userPrompt: |
+      Aggregate and dedupe these work item result sets into one canonical list.
+
+      Closed by user:
+      {{fetch-work-items-closed-by-user.output}}
+
+      Owned and closed:
+      {{fetch-work-items-owned-and-closed.output}}
+
+      Worked on (any state):
+      {{fetch-work-items-worked-on.output}}
+
+      Output strict JSON only.
+
+  - name: fetch-docs-workiq-created
+    type: Prompt
+    dependsOn: [resolve-identity]
+    mcps: [workiq]
+    timeoutSeconds: 1800
+    systemPrompt: |
+      You collect document evidence from WorkIQ for documents created by the signed-in user.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "workiq" and category to "documents".
+      Each item must include at least:
+      actionType, title, date, link, source.
+      actionType for this pass should be "created" unless the evidence clearly supports something more precise.
+      Also include useful fields such as container, location, fileType, docId, workspace, participants, and evidenceReason when available.
+      Use ISO 8601 dates whenever possible.
+    userPrompt: |
+      The resolved signed-in user is:
+      {{resolve-identity.output}}
+
+      Use WorkIQ to find documents this user created during {{vars.dateRangeLabel}}.
+      Search broadly across Microsoft 365 content that WorkIQ can access.
+      Output strict JSON only.
+
+  - name: fetch-docs-workiq-shared-reviewed
+    type: Prompt
+    dependsOn: [resolve-identity]
+    mcps: [workiq]
+    timeoutSeconds: 1800
+    systemPrompt: |
+      You collect document evidence from WorkIQ for documents the signed-in user shared or reviewed.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "workiq" and category to "documents".
+      Each item must include at least:
+      actionType, title, date, link, source.
+      actionType must be "shared" or "reviewed" based on evidence.
+      Also include useful fields such as container, location, fileType, docId, collaborators, threadContext, and evidenceReason when available.
+      Use ISO 8601 dates whenever possible.
+    userPrompt: |
+      The resolved signed-in user is:
+      {{resolve-identity.output}}
+
+      Use WorkIQ to find documents this user shared or reviewed during {{vars.dateRangeLabel}}.
+      Use wording distinct from the created-documents pass and include only evidence-backed results.
+      Output strict JSON only.
+
+  - name: fetch-docs-copilot-created
+    type: Prompt
+    dependsOn: [resolve-identity]
+    mcps: [m365-copilot]
+    timeoutSeconds: 1800
+    systemPrompt: |
+      You collect document creation evidence using Microsoft 365 Copilot tools.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "m365-copilot" and category to "documents".
+      Each item must include at least:
+      actionType, title, date, link, source.
+      actionType for this pass should be "created" unless evidence supports a better value.
+      Also include useful fields such as container, location, docId, workspace, and evidenceReason when available.
+      Use ISO 8601 dates whenever possible.
+    userPrompt: |
+      The resolved signed-in user is:
+      {{resolve-identity.output}}
+
+      Use Microsoft 365 Copilot tools to find documents this user created during {{vars.dateRangeLabel}}.
+      Use a query wording different from the WorkIQ created-documents pass.
+      Output strict JSON only.
+
+  - name: fetch-docs-copilot-shared-reviewed
+    type: Prompt
+    dependsOn: [resolve-identity]
+    mcps: [m365-copilot]
+    timeoutSeconds: 1800
+    systemPrompt: |
+      You collect document sharing and review evidence using Microsoft 365 Copilot tools.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "m365-copilot" and category to "documents".
+      Each item must include at least:
+      actionType, title, date, link, source.
+      actionType must be "shared" or "reviewed" based on evidence.
+      Also include useful fields such as container, location, docId, collaborators, and evidenceReason when available.
+      Use ISO 8601 dates whenever possible.
+    userPrompt: |
+      The resolved signed-in user is:
+      {{resolve-identity.output}}
+
+      Use Microsoft 365 Copilot tools to find documents this user shared or reviewed during {{vars.dateRangeLabel}}.
+      Use a query wording distinct from the WorkIQ shared-reviewed pass.
+      Output strict JSON only.
+
+  - name: aggregate-docs
+    type: Prompt
+    dependsOn:
+      - fetch-docs-workiq-created
+      - fetch-docs-workiq-shared-reviewed
+      - fetch-docs-copilot-created
+      - fetch-docs-copilot-shared-reviewed
+    systemPrompt: |
+      You aggregate and deduplicate document evidence.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "aggregated" and category to "documents".
+      Deduplicate using strongest available document identifier, then safe title/link/date matching.
+      Preserve multiple supported action types when the same document has more than one evidenced action.
+      Each item must include at least:
+      actionType, title, date, link, source.
+      actionType may be a string or an array when multiple actions are supported.
+      Also include sourceEvidence, evidenceId, and any useful container or context fields.
+    userPrompt: |
+      Aggregate and dedupe these document result sets into one canonical list.
+
+      WorkIQ created:
+      {{fetch-docs-workiq-created.output}}
+
+      WorkIQ shared/reviewed:
+      {{fetch-docs-workiq-shared-reviewed.output}}
+
+      Copilot created:
+      {{fetch-docs-copilot-created.output}}
+
+      Copilot shared/reviewed:
+      {{fetch-docs-copilot-shared-reviewed.output}}
+
+      Output strict JSON only.
+
+  - name: fetch-activity-mail-pass-1
+    type: Prompt
+    dependsOn: [resolve-identity]
+    mcps: [mail]
+    timeoutSeconds: 1800
+    systemPrompt: |
+      You collect notable email and related activity evidence.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "mail" and category to "activities".
+      Search for evidence of mentoring, sessions, meetups, public speaking, demos, brown bags, reviews, onboarding, interviews, community work, and similar extracurricular contributions.
+      Each item must include at least:
+      activityType, title, date, link, source, evidence.
+      Also include subject, participants, threadId, conversationId, folders, and evidenceReason when available.
+      Use ISO 8601 dates whenever possible.
+    userPrompt: |
+      The resolved signed-in user is:
+      {{resolve-identity.output}}
+
+      Use Outlook mail evidence to find noteworthy emails or threads during {{vars.dateRangeLabel}} that suggest mentoring, sessions, meetups, public speaking, demos, brown bags, reviews, onboarding, interviews, or similar extracurricular contributions.
+      This is pass 1: search with direct contribution-oriented wording.
+      Output strict JSON only.
+
+  - name: fetch-activity-mail-pass-2
+    type: Prompt
+    dependsOn: [resolve-identity]
+    mcps: [mail]
+    timeoutSeconds: 1800
+    systemPrompt: |
+      You collect a second mail-based pass for notable activity evidence.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "mail" and category to "activities".
+      Each item must include at least:
+      activityType, title, date, link, source, evidence.
+      Also include subject, participants, threadId, conversationId, folders, and evidenceReason when available.
+      Use ISO 8601 dates whenever possible.
+    userPrompt: |
+      The resolved signed-in user is:
+      {{resolve-identity.output}}
+
+      Use Outlook mail evidence to run a second discovery pass during {{vars.dateRangeLabel}}.
+      This time search with alternate wording such as coaching, feedback, interview loops, onboarding help, design reviews, brown bags, demos, community posts, and meetup coordination.
+      Output strict JSON only.
+
+  - name: fetch-activity-calendar
+    type: Prompt
+    dependsOn: [resolve-identity]
+    mcps: [calendar]
+    timeoutSeconds: 1800
+    systemPrompt: |
+      You collect calendar-based activity evidence.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "calendar" and category to "activities".
+      Each item must include at least:
+      activityType, title, date, link, source, evidence.
+      Also include organizer, attendees, meetingId, responseStatus, location, and evidenceReason when available.
+      Use ISO 8601 dates whenever possible.
+    userPrompt: |
+      The resolved signed-in user is:
+      {{resolve-identity.output}}
+
+      Use calendar evidence to find events during {{vars.dateRangeLabel}} that suggest mentoring, sessions, demos, public speaking, brown bags, onboarding, interviews, meetups, community contributions, or other extracurricular impact.
+      Output strict JSON only.
+
+  - name: fetch-activity-workiq
+    type: Prompt
+    dependsOn: [resolve-identity]
+    mcps: [workiq]
+    timeoutSeconds: 1800
+    systemPrompt: |
+      You collect broader activity evidence using WorkIQ.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "workiq" and category to "activities".
+      Each item must include at least:
+      activityType, title, date, link, source, evidence.
+      Also include contextType, participants, workspace, threadContext, and evidenceReason when available.
+      Use ISO 8601 dates whenever possible.
+    userPrompt: |
+      The resolved signed-in user is:
+      {{resolve-identity.output}}
+
+      Use WorkIQ to find noteworthy activities during {{vars.dateRangeLabel}} across mail, meetings, chats, and related collaboration signals.
+      Focus on mentoring, sessions, meetups, public speaking, demos, brown bags, reviews, onboarding, interviews, and other extracurricular contributions.
+      Output strict JSON only.
+
+  - name: aggregate-activities
+    type: Prompt
+    dependsOn:
+      - fetch-activity-mail-pass-1
+      - fetch-activity-mail-pass-2
+      - fetch-activity-calendar
+      - fetch-activity-workiq
+    systemPrompt: |
+      You aggregate and deduplicate activity evidence.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      source, category, dateRange, queryStrategy, notes, items.
+      Set source to "aggregated" and category to "activities".
+      Deduplicate by strongest identifiers first, then safe title/date/participant/link similarity.
+      Preserve the best evidence text and merge source evidence.
+      Each item must include at least:
+      activityType, title, date, link, source, evidence.
+      Also include sourceEvidence and a stable evidenceId string.
+    userPrompt: |
+      Aggregate and dedupe these activity result sets into one canonical list.
+
+      Mail pass 1:
+      {{fetch-activity-mail-pass-1.output}}
+
+      Mail pass 2:
+      {{fetch-activity-mail-pass-2.output}}
+
+      Calendar:
+      {{fetch-activity-calendar.output}}
+
+      WorkIQ:
+      {{fetch-activity-workiq.output}}
+
+      Output strict JSON only.
+
+  - name: aggregate-topics
+    type: Prompt
+    dependsOn: [aggregate-prs, aggregate-work-items, aggregate-docs, aggregate-activities]
+    systemPrompt: |
+      You infer topics or subjects worked on from the deduplicated evidence.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      category, dateRange, notes, items.
+      Set category to "topics".
+      items must be an array of topic objects. Each topic object must include:
+      topic, summary, evidenceRefs.
+      evidenceRefs must reference supporting evidence ids, links, or titles from the provided aggregated inputs.
+      Use empty arrays when evidence is insufficient.
+    userPrompt: |
+      Infer topics or subjects worked on during {{vars.dateRangeLabel}} from this evidence.
+
+      Pull requests:
+      {{aggregate-prs.output}}
+
+      Work items:
+      {{aggregate-work-items.output}}
+
+      Documents:
+      {{aggregate-docs.output}}
+
+      Activities:
+      {{aggregate-activities.output}}
+
+      Output strict JSON only.
+
+  - name: aggregate-extracurricular
+    type: Prompt
+    dependsOn: [aggregate-prs, aggregate-work-items, aggregate-docs, aggregate-activities]
+    systemPrompt: |
+      You infer extracurricular work from the deduplicated evidence.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      category, dateRange, notes, items.
+      Set category to "extracurricular".
+      Cover sessions, public speaking, mentoring, meetups, interviews, onboarding, community contributions, and similar.
+      items must be an array where each item includes:
+      activity, summary, evidenceRefs.
+      evidenceRefs must point back to supporting evidence ids, links, or titles when possible.
+    userPrompt: |
+      Infer extracurricular work during {{vars.dateRangeLabel}} from this evidence.
+
+      Pull requests:
+      {{aggregate-prs.output}}
+
+      Work items:
+      {{aggregate-work-items.output}}
+
+      Documents:
+      {{aggregate-docs.output}}
+
+      Activities:
+      {{aggregate-activities.output}}
+
+      Output strict JSON only.
+
+  - name: aggregate-domains
+    type: Prompt
+    dependsOn: [aggregate-prs, aggregate-work-items, aggregate-docs, aggregate-activities]
+    systemPrompt: |
+      You infer technical or product domains from the deduplicated evidence.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      category, dateRange, notes, items.
+      Set category to "domains".
+      Candidate examples include {{vars.domainHints}}, and similar, only when supported by evidence.
+      items must be an array where each item includes:
+      domain, summary, evidenceRefs.
+      evidenceRefs must point back to supporting evidence ids, links, or titles when possible.
+    userPrompt: |
+      Infer supported domains or technical areas during {{vars.dateRangeLabel}} from this evidence.
+
+      Pull requests:
+      {{aggregate-prs.output}}
+
+      Work items:
+      {{aggregate-work-items.output}}
+
+      Documents:
+      {{aggregate-docs.output}}
+
+      Activities:
+      {{aggregate-activities.output}}
+
+      Output strict JSON only.
+
+  - name: aggregate-impact-patterns
+    type: Prompt
+    dependsOn: [aggregate-prs, aggregate-work-items, aggregate-docs, aggregate-activities]
+    systemPrompt: |
+      You infer contribution and impact patterns from the deduplicated evidence.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      category, dateRange, notes, items.
+      Set category to "impactPatterns".
+      Candidate patterns include implementation, design, reviews, debugging, mentoring, coordination, and similar only when evidence supports them.
+      items must be an array where each item includes:
+      pattern, summary, evidenceRefs.
+      evidenceRefs must point back to supporting evidence ids, links, or titles when possible.
+    userPrompt: |
+      Infer supported contribution or impact patterns during {{vars.dateRangeLabel}} from this evidence.
+
+      Pull requests:
+      {{aggregate-prs.output}}
+
+      Work items:
+      {{aggregate-work-items.output}}
+
+      Documents:
+      {{aggregate-docs.output}}
+
+      Activities:
+      {{aggregate-activities.output}}
+
+      Output strict JSON only.
+
+  - name: aggregate-timeline
+    type: Prompt
+    dependsOn: [aggregate-prs, aggregate-work-items, aggregate-docs, aggregate-activities]
+    systemPrompt: |
+      You build a month-by-month timeline from the deduplicated evidence.
+      Return strict JSON only, never markdown.
+      Return exactly one JSON object with fields:
+      category, dateRange, notes, items.
+      Set category to "timeline".
+      items must be an array where each item includes:
+      month, title, category, date, link, evidenceRefs.
+      month must be "YYYY-MM". category must be one of:
+      pullRequest, workItem, document, activity.
+      Emit one entry per notable evidence item that carries a usable date, sorted by date ascending.
+      Group nothing; the consumer groups by month.
+      Items whose date cannot be established must be omitted rather than guessed.
+    userPrompt: |
+      Build a month-by-month timeline for {{vars.dateRangeLabel}} from this evidence.
+
+      Pull requests:
+      {{aggregate-prs.output}}
+
+      Work items:
+      {{aggregate-work-items.output}}
+
+      Documents:
+      {{aggregate-docs.output}}
+
+      Activities:
+      {{aggregate-activities.output}}
+
+      Output strict JSON only.
+  - name: render-report
+    type: Prompt
+    dependsOn:
+      - resolve-identity
+      - aggregate-prs
+      - aggregate-work-items
+      - aggregate-docs
+      - aggregate-activities
+      - aggregate-topics
+      - aggregate-extracurricular
+      - aggregate-domains
+      - aggregate-impact-patterns
+      - aggregate-timeline
+    systemPrompt: |
+      You render a polished Microsoft Connect evidence report in markdown.
+      Output markdown only.
+      The report must cover the period {{vars.reportDateRangeLabel}} for the signed-in user.
+      Requirements:
+      1. Include a concise overview of the period and evidence counts.
+      2. Include a pull requests section with a markdown table.
+      3. Include a work items section with a markdown table.
+      4. Include a documents section with a markdown table.
+      5. Include an emails and other activities section with a markdown table or grouped bullet list.
+      6. Include separate sections for topics or subjects, extracurricular work, domains or technical areas, and contribution or impact patterns.
+      6b. Include a Timeline section grouped by month in ascending order, rendered from the timeline evidence.
+      7. Include a short caveats or coverage section noting duplicates removed, ambiguous matches, or partial coverage.
+      8. At the very end, include fenced json code blocks for:
+         deduped PRs, deduped work items, deduped documents, deduped activities,
+         topics, extracurricular, domains, impact patterns.
+      9. If a category has no results, still include the section, clearly show an empty list or empty table plus notes, and do not omit the category.
+      10. Do not output reviewer notes or process commentary.
+      11. Before returning, save the complete markdown to a file with a .md extension using the orchestra_save_file tool, then return that same markdown as your response. The saved file is what gets archived; returning the markdown as well keeps the review step working.
+    userPrompt: |
+      Render the final Microsoft Connect evidence report for {{vars.reportDateRangeLabel}}.
+
+      Identity:
+      {{resolve-identity.output}}
+
+      Pull requests:
+      {{aggregate-prs.output}}
+
+      Work items:
+      {{aggregate-work-items.output}}
+
+      Documents:
+      {{aggregate-docs.output}}
+
+      Activities:
+      {{aggregate-activities.output}}
+
+      Topics:
+      {{aggregate-topics.output}}
+
+      Extracurricular:
+      {{aggregate-extracurricular.output}}
+
+      Domains:
+      {{aggregate-domains.output}}
+
+      Impact patterns:
+      {{aggregate-impact-patterns.output}}
+
+      Timeline:
+      {{aggregate-timeline.output}}
+
+      Output markdown only.
+
+  # Writes the rendered markdown to a real directory the moment it exists, so a later
+  # cancellation or review failure cannot strand the report in the volatile temp store.
+  # Depends on render-report only, deliberately, not on the review loop.
+  #
+  # The report arrives on stdin. Orchestra pins UTF-8 on both sides of the pipe
+  # (host StandardInputEncoding + an injected [Console]::InputEncoding prologue), so
+  # em-dashes and curly quotes survive. Read it with [Console]::In.ReadToEnd() -- the
+  # $input automatic variable is NOT encoding-safe and drains the same stream.
+  - name: persist-report
+    type: Script
+    dependsOn: [render-report]
+    shell: pwsh
+    timeoutSeconds: 300
+    strictMode: true
+    stdin: "{{render-report.output}}"
+    environment:
+      CONNECT_OUTPUT_DIR: "{{param.outputDirectory}}"
+      CONNECT_START: "{{param.startDate}}"
+      CONNECT_END: "{{param.endDate}}"
+    script: |
+      $markdown = [Console]::In.ReadToEnd()
+      if ([string]::IsNullOrWhiteSpace($markdown)) {
+          throw 'render-report produced no content to persist.'
+      }
+
+      $start = $env:CONNECT_START
+      $end   = $env:CONNECT_END
+      $dir   = $env:CONNECT_OUTPUT_DIR
+      if ([string]::IsNullOrWhiteSpace($dir)) {
+          $dir = Join-Path $env:USERPROFILE "OneDrive - Microsoft/Connect/${start}_${end}"
+      }
+      if (-not (Test-Path -LiteralPath $dir)) {
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+      }
+
+      $target = Join-Path $dir "connect-evidence-pack_${start}_${end}.md"
+      $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+      [System.IO.File]::WriteAllText($target, ($markdown -replace "`r`n", "`n"), $utf8NoBom)
+
+      $bytes = (Get-Item -LiteralPath $target).Length
+      if ($bytes -le 0) { throw "Persisted report is empty: $target" }
+
+      [pscustomobject]@{
+          path  = $target
+          bytes = $bytes
+      } | ConvertTo-Json -Compress
+  - name: review-report
+    type: Prompt
+    dependsOn: [render-report]
+    loop:
+      target: render-report
+      maxIterations: 3
+      exitPattern: APPROVED
+    systemPrompt: |
+      You are a strict report completeness checker.
+      Review the markdown report and verify that all required sections and all required raw JSON fenced blocks are present.
+      Required sections:
+      - Overview
+      - Pull Requests
+      - Work Items
+      - Documents
+      - Emails and Other Activities
+      - Topics or Subjects
+      - Extracurricular Work
+      - Domains or Technical Areas
+      - Contribution or Impact Patterns
+      - Timeline
+      - Caveats or Coverage
+      Required raw JSON blocks at the end:
+      - pull requests
+      - work items
+      - documents
+      - activities
+      - topics
+      - extracurricular
+      - domains
+      - impact patterns
+      If the report is complete, reply with exactly:
+      APPROVED
+      If anything is missing or malformed, reply with:
+      REVISE
+      followed by a concise bullet list of exact missing or incorrect items for the renderer to fix.
+    userPrompt: |
+      Review this markdown report for completeness and required raw JSON blocks.
+
+      {{render-report.output}}
+
+  - name: final-report
+    type: Transform
+    dependsOn: [render-report, review-report]
+    template: |
+      {{render-report.output}}

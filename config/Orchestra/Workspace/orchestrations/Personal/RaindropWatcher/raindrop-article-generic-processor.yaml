@@ -249,6 +249,14 @@ steps:
       - "-EntryFile"
       - "{{orchestration.tempDir}}/raindrop-{{param.raindropId}}-article-entry.json"
     timeoutSeconds: 120
+    # ActionView's API answers 503 while it restarts, and a cold `dnx` cache can
+    # fail to resolve ActionView.Cli. Both are transient. The submit is an upsert
+    # keyed on a stable entry id, so re-running it is idempotent and safe.
+    retry:
+      maxRetries: 3
+      backoffSeconds: 2
+      backoffMultiplier: 2
+      retryOnTimeout: true
 
   - name: result-envelope
     type: Prompt
@@ -274,4 +282,6 @@ steps:
       ActionView submission: {{submit-action-view-entry.output}}
 
       Output ONLY the JSON.
-    timeoutSeconds: 60
+    # 60s was too tight for this Prompt step and produced spurious run failures
+    # (runs e6fdead94953, fe03e6d2da8b) after all the real work had succeeded.
+    timeoutSeconds: 180

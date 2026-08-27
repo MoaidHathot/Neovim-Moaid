@@ -332,7 +332,7 @@ steps:
           $PSNativeCommandUseErrorActionPreference = $false
 
           try {
-            & dnx --yes --add-source https://api.nuget.org/v3/index.json PowerReview -- open --pr-url $PrUrl --repo-path $repoPath 1> $stdoutPath 2> $stderrPath
+            & dnx --yes PowerReview -- open --pr-url $PrUrl --repo-path $repoPath 1> $stdoutPath 2> $stderrPath
             $exitCode = $LASTEXITCODE
             $stdout = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
             $stderr = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue

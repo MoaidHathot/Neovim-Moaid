@@ -110,6 +110,17 @@ steps:
       - "{{param.url}}"
       - "{{orchestration.runId}}"
     timeoutSeconds: 5400
+    # dnx can fail fast when the tool package can't be resolved (a blocked or
+    # flaky feed), which is transient and worth retrying. retryOnTimeout stays
+    # false on purpose: a genuine timeout here means the analysis really did run
+    # for the full budget, and re-running an hour-long video analysis is not a
+    # sensible response to that. Zakira.Replay is invoked with --cache, so a
+    # retry after a fast failure re-uses whatever it already downloaded.
+    retry:
+      maxRetries: 2
+      backoffSeconds: 5
+      backoffMultiplier: 2
+      retryOnTimeout: false
 
   - name: read-artifacts
     type: Script
@@ -308,8 +319,15 @@ steps:
     type: Command
     command: dnx
     arguments: [ActionView.Cli, "--yes", "--", schema]
-    timeoutSeconds: 120
-
+    # 120s was not enough for a cold `dnx` restore of ActionView.Cli (run
+    # 5bc4a333bf6c timed out here). The step is a pure read of the entry schema,
+    # so a longer budget plus retries costs nothing on the happy path.
+    timeoutSeconds: 300
+    retry:
+      maxRetries: 3
+      backoffSeconds: 2
+      backoffMultiplier: 2
+      retryOnTimeout: true
   - name: create-action-view-entry
     type: Prompt
     workingDirectory: "{{orchestration.tempDir}}"
@@ -401,6 +419,14 @@ steps:
       - "-EntryFile"
       - "{{create-action-view-entry.files[0]}}"
     timeoutSeconds: 120
+    # ActionView's API answers 503 while it restarts, and a cold `dnx` cache can
+    # fail to resolve ActionView.Cli. Both are transient. The submit is an upsert
+    # keyed on a stable entry id, so re-running it is idempotent and safe.
+    retry:
+      maxRetries: 3
+      backoffSeconds: 2
+      backoffMultiplier: 2
+      retryOnTimeout: true
 
   - name: result-envelope
     type: Prompt
@@ -435,4 +461,6 @@ steps:
       ActionView submission:        {{submit-action-view-entry.output}}
 
       Output ONLY the JSON.
-    timeoutSeconds: 60
+    # 60s was too tight for this Prompt step and produced spurious run failures
+    # (runs e6fdead94953, fe03e6d2da8b) after all the real work had succeeded.
+    timeoutSeconds: 180
