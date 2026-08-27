@@ -65,6 +65,15 @@ general {
     //
     // Launched detached, so this shell exits immediately instead of lingering.
     startup-command "shell-exec W:\\Github\\Shubbak\\dist\\taj.exe"
+
+    // Dalil, the palette. Resident so that opening it is a ShowWindow rather
+    // than a process start - it reads the `dalil` section of this same file, and
+    // works on its defaults if there isn't one.
+    //
+    // Shubbak has no idea what this program is. It subscribes to the signal the
+    // keybindings below raise, which is what keeps the palette from being tied
+    // to the bar.
+    startup-command "shell-exec W:\\Github\\Shubbak\\dist\\dalil.exe"
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +260,17 @@ app "turbophrase" {
     process = "TurboPhrase"
 }
 
+// Elgato. The Control Center tray flyout is caught by the built-in filter now - it
+// has neither a title bar nor a sizing border, so it is Chromeless - but the audio
+// control server and its watcher are not: those carry WS_CAPTION and WS_THICKFRAME
+// and would be tiled under a raw GUID for a title if they ever became visible.
+//
+// Matched on path rather than process, because that is the one matcher that covers
+// all three executables at once and does not care what the next installer renames.
+app "elgato" {
+    path *= "\\Elgato\\"
+}
+
 rules {
     rule "leave these alone" {
         match {
@@ -264,6 +284,7 @@ rules {
             app "run-dialog"
             app "ditto"
             app "turbophrase"
+            app "elgato"
         }
         do { ignore }
     }
@@ -334,6 +355,24 @@ workspaces {
 // ---------------------------------------------------------------------------
 
 keybindings {
+    // --- Dalil, the palette ---
+    // A searchable list of every window on the desktop - including the ones
+    // Shubbak is not managing, which are the ones most likely to be lost.
+    //
+    // Shubbak does not know what "palette" means. It raises a named signal and
+    // whichever client is subscribed decides; that is why the palette is not
+    // tied to the bar. Run `dalil` for anything to be listening.
+    //
+    // alt+space is taken on this machine, so these are the stand-ins - change
+    // them to whatever you settle on. Inside the palette, Tab moves between
+    // modes and "?" lists every key, so the bindings here are only doors in.
+    bind "alt+shift+space" { signal "palette" }
+    bind "alt+ctrl+space"  { signal "palette" "commands" }
+
+    // Back to the window you were just in. Press it twice and you are where you
+    // started, because leaving a window makes it the most recent one.
+    bind "alt+shift+tab" { focus-recent-window }
+
     // --- focus ---
     bind "alt+h" { focus --direction left }
     bind "alt+l" { focus --direction right }
@@ -363,7 +402,22 @@ keybindings {
 
     // --- modes ---
     bind "alt+r"       { wm-enable-binding-mode --name resize }
+
+    // Two halves of "leave me alone", bound separately because they are separate
+    // things and wanting one without the other is normal.
+    //
+    //   alt+shift+p   stops Shubbak's keybindings. Every other key reaches the
+    //                 application, so this is the one for a game or a full-screen
+    //                 video that wants alt and the arrow keys for itself.
+    //   alt+shift+t   stops Shubbak arranging windows - t for tiling. Keybindings
+    //                 stay live, so you can still move around; windows just stay
+    //                 where they are and new ones are left where they open.
+    //
+    // Press both for a game: nothing is intercepted and nothing is moved. They are
+    // independent toggles, so the order does not matter and neither undoes the
+    // other. `shubbak diagnose` reports both, under "Binding mode" and "Paused".
     bind "alt+shift+p" { wm-enable-binding-mode --name pause }
+    bind "alt+shift+t" { wm-toggle-pause }
 
     // --- structure ---
     bind "alt+v"       { toggle-tiling-direction }
