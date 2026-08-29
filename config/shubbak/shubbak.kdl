@@ -18,8 +18,6 @@ general {
     // Focusing the workspace you are already on switches back to the previous one.
     toggle-workspace-on-refocus #true
 
-    focus-follows-cursor #false
-
     // New windows start tiled.
     initial-window-state "tiling"
 
@@ -53,12 +51,14 @@ general {
     // bindings below combine them explicitly.
     follow-window-on-move #false
 
-    cursor-jump {
-        enabled #true
-        // "monitor" jumps only when focus crosses displays; "window" on every
-        // focus change.
-        trigger "monitor"
-    }
+    // Removed: `focus-follows-cursor` and `cursor-jump { enabled; trigger }`.
+    //
+    // Both parse, both are stored on the config, and neither reaches the daemon -
+    // they are absent from ShubbakConfig.ToWmOptions() and read by nothing, so
+    // setting them had no effect whatever they were set to. They were translated
+    // from the GlazeWM config, where they do work. Worth putting back if Shubbak
+    // ever implements them; until then they are only a way to believe the pointer
+    // is doing something it is not.
 
     // Taj reads the `bar` section at the bottom of this same file, so there is
     // one config to maintain rather than two.
@@ -403,21 +403,37 @@ keybindings {
     // --- modes ---
     bind "alt+r"       { wm-enable-binding-mode --name resize }
 
-    // Two halves of "leave me alone", bound separately because they are separate
-    // things and wanting one without the other is normal.
+    // Three degrees of "leave me alone", bound separately because they are separate
+    // things and wanting one without the others is normal.
     //
-    //   alt+shift+p   stops Shubbak's keybindings. Every other key reaches the
-    //                 application, so this is the one for a game or a full-screen
+    //   alt+shift+p   stops Shubbak's keybindings. The mode is pass-through, so
+    //                 every other key reaches the application - for a full-screen
     //                 video that wants alt and the arrow keys for itself.
     //   alt+shift+t   stops Shubbak arranging windows - t for tiling. Keybindings
     //                 stay live, so you can still move around; windows just stay
     //                 where they are and new ones are left where they open.
+    //   alt+shift+o   off. Releases the keyboard hook and the window event hooks
+    //                 altogether, and leaves every window where it is.
     //
-    // Press both for a game: nothing is intercepted and nothing is moved. They are
-    // independent toggles, so the order does not matter and neither undoes the
-    // other. `shubbak diagnose` reports both, under "Binding mode" and "Paused".
+    // The first two are independent toggles, so the order does not matter and
+    // neither undoes the other. `shubbak diagnose` reports both, under
+    // "Binding mode" and "Paused".
+    //
+    // The third is the one for a competitive game, and it is different in kind. The
+    // other two leave the low-level keyboard hook installed: nothing is swallowed
+    // any more, but every keystroke on the machine still passes through Shubbak's
+    // callback on its way to the application. Measured at well under a microsecond
+    // - so this is not really about speed - but it is a global hook, which is a
+    // thing anti-cheat software notices and an awkward position to argue from
+    // mid-match. alt+shift+o removes it, so there is nothing left to argue about.
+    //
+    // The same key brings it back: while suspended, Shubbak asks the system to
+    // watch for this one chord and tell it. That is RegisterHotKey, not a hook, so
+    // nothing of Shubbak's runs on any other keystroke. `shubbak wm-resume` works
+    // too, and `shubbak status` will say "running, suspended" if you forget.
     bind "alt+shift+p" { wm-enable-binding-mode --name pause }
     bind "alt+shift+t" { wm-toggle-pause }
+    bind "alt+shift+o" { wm-toggle-suspend }
 
     // --- structure ---
     bind "alt+v"       { toggle-tiling-direction }
@@ -631,6 +647,23 @@ bar {
             }
 
             text id="seattle" template="{{ seattle }}" colour="#ffffff73"
+            // Shubbak has let go of the keyboard - alt+shift+o, or the tray. Empty
+            // and invisible the rest of the time.
+            //
+            // This is the only thing on screen that says so. Suspended looks exactly
+            // like crashed from the outside: windows stay where they are and no key
+            // does anything, and there is no way to tell the difference by looking.
+            // Click it to resume, which is a way back that does not need the keyboard
+            // - the one thing suspending took away.
+            text id="suspended" template="{{ suspended }}" colour="#1e1e2e" \
+                 background="#f38ba8" bold=#true on-click="wm-resume"
+
+            // Shubbak has stopped arranging windows - alt+shift+t. Less alarming than
+            // suspended, because the keyboard still works, so it is amber rather than
+            // red. Click it to start arranging again.
+            text id="paused"  template="{{ paused }}" colour="#1e1e2e" \
+                 background="#f9e2af" bold=#true on-click="wm-toggle-pause"
+
             // The active binding mode. Empty most of the time, so it takes no room;
             // when it is showing, the keyboard is behaving unusually and that is
             // worth being obvious. Click it to return to the default bindings - the
