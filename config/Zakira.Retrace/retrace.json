@@ -1,0 +1,72 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MoaidHathot/Zakira.Retrace/main/schemas/retrace.schema.json",
+  "version": 1,
+  "sources": {
+    "opencode": {
+      "enabled": true,
+      "dataDirectory": null,
+      "preferLegacyJsonStore": false,
+      "includeChildSessions": false
+    },
+    "copilot-cli": {
+      "enabled": true,
+      "dataDirectory": null,
+      "minTurns": 1,
+      "useNativeSearchIndex": true
+    },
+    "copilot-vscode": {
+      "enabled": true,
+      "dataDirectory": null,
+      "editors": [
+        "stable",
+        "insiders"
+      ],
+      "includeEmptySessions": false
+    }
+  },
+  "index": {
+    "path": null,
+    "autoRefresh": true,
+    "autoRefreshMinIntervalMinutes": 5,
+    "autoRefreshMaxSeconds": 5,
+    "autoRefreshEmbed": false,
+    "includeToolOutput": true,
+    "includeReasoning": true,
+    "chunkCharacters": 1200,
+    "chunkOverlapCharacters": 150,
+    "minChunkCharacters": 16,
+    "maxToolOutputCharacters": 4000
+  },
+  "search": {
+    "defaultTop": 20,
+    "snippetsPerSession": 3,
+    "mode": "hybrid",
+    "rrfK": 60,
+    "lexicalWeight": 1,
+    "semanticWeight": 1,
+    "recencyBoost": 0.15,
+    "recencyHalfLifeDays": 30,
+    "workspaceBoost": 0.1,
+    "lexicalCandidateMultiplier": 20,
+    "lexicalCandidateCap": 500,
+    "semanticSessionShortlist": 50
+  },
+  "embeddings": {
+    "enabled": true,
+    "model": "bge-small-en-v1.5",
+    "modelKind": null,
+    "modelPath": null,
+    "tokenizerPath": null,
+    "modelsDirectory": null,
+    "maxSequenceLength": 512,
+    "batchSize": 32,
+    "maxThreads": 0,
+    "autoDownload": true
+  },
+  "output": {
+    "color": "auto",
+    "defaultFormat": "text",
+    "dateFormat": "relative",
+    "previewCharacters": 120
+  }
+}
