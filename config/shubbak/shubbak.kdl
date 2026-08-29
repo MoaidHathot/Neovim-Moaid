@@ -206,10 +206,6 @@ app "taj" {
     process = "taj"
 }
 
-app "zebar" {
-    process = "zebar"
-}
-
 app "browser-picture-in-picture" {
     title regex=r"[Pp]icture.in.[Pp]icture"
     class regex=r"Chrome_WidgetWin_1|MozillaDialogClass"
@@ -275,7 +271,6 @@ rules {
     rule "leave these alone" {
         match {
             app "taj"
-            app "zebar"
             app "browser-picture-in-picture"
             app "powertoys-accent"
             app "lively-wallpaper"
@@ -347,7 +342,7 @@ workspaces {
     workspace "`"  display-name="System"       monitor=1
     workspace "'"  display-name="AI"           monitor=0
     workspace ";"  display-name="Slides"       monitor=0
-    workspace "["  display-name="Recording"    monitor=2
+    workspace "["  display-name="Recording"    monitor=1
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +547,57 @@ binding-modes {
 }
 
 // ---------------------------------------------------------------------------
+// Dalil - the palette
+//
+// Everything here is optional; the defaults are a working palette, which is why
+// this section did not exist until now. `shubbak check-config` validates it as of
+// this build - before that a misspelt setting here was accepted in silence.
+//
+// Inside the palette: type to filter, Tab or Ctrl+1..8 to change mode, Enter to
+// act, Ctrl+Enter for what else can be done, Ctrl+Space to mark several windows
+// and act on all of them at once, and "?" for every key.
+// ---------------------------------------------------------------------------
+
+dalil {
+    // Named sequences, run from the commands list (Ctrl+2, or ">") by typing
+    // roughly what they are called. This is the thing a keybinding cannot be:
+    // there are only so many chords worth memorising, so anything done twice a
+    // week never gets bound and is then done by hand for ever. A palette row
+    // costs nothing to have and nothing to remember.
+    //
+    // The commands are written exactly as they are in a keybinding above, one per
+    // line, and are checked against the same parser at load time - so a mistake is
+    // reported here with a line and a caret rather than discovered by pressing
+    // Enter and watching nothing happen.
+    //
+    // The whole sequence is sent as one message and stops at the first refusal, so
+    // a half-applied layout is not a thing that can happen.
+
+    action "Code layout" description="Editor workspace, main window left" {
+        focus --workspace "3"
+        layout --set "master-left"
+        equalise
+    }
+
+    action "Reading layout" description="One window at a time, on Docs" {
+        focus --workspace "0"
+        layout --set "monocle"
+    }
+
+    action "Reset this workspace" description="Side by side, equal shares, redrawn" {
+        layout --set "splith"
+        equalise
+        wm-redraw
+    }
+
+    action "Presenting" description="Presentation workspace, one window, full screen" {
+        focus --workspace "\\"
+        layout --set "monocle"
+        toggle-fullscreen
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Taj - the bar
 //
 // Widgets bind to sources with {{ name }} templates and re-render only when a
@@ -663,6 +709,22 @@ bar {
             // red. Click it to start arranging again.
             text id="paused"  template="{{ paused }}" colour="#1e1e2e" \
                  background="#f9e2af" bold=#true on-click="wm-toggle-pause"
+
+            // Something in this file is wrong. Empty and invisible when it is not,
+            // like the two above.
+            //
+            // Each process reports only the part it reads, so this one is the bar's
+            // view: a misspelt bar setting, or a file that would not parse at all. The
+            // window manager and the palette say the same about their own sections, in
+            // their own logs, and `>config` in the palette lists its own.
+            //
+            // Worth having because the failure it catches is quiet: a setting that
+            // parses but is not understood simply never does anything, and a file that
+            // does not parse leaves every process running on what it already had - so
+            // nothing on screen changes and the edit appears to have been ignored.
+            // Clicking it re-reads the file, which is the other half of the loop.
+            text id="config"  template="{{ config }}" colour="#1e1e2e" \
+                 background="#fab387" bold=#true on-click="wm-reload-config"
 
             // The active binding mode. Empty most of the time, so it takes no room;
             // when it is showing, the keyboard is behaving unusually and that is
