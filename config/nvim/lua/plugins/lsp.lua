@@ -87,38 +87,86 @@ local function choose_roslyn_target(targets)
 	return candidates[1]
 end
 
-local function roslyn_root_dir(bufnr, on_dir)
-	local config = require("roslyn.config").get()
-	if config.lock_target and vim.g.roslyn_nvim_selected_solution then
-		on_dir(vim.fs.dirname(vim.g.roslyn_nvim_selected_solution))
-		return
-	end
-
-	local buf_name = vim.api.nvim_buf_get_name(bufnr)
-	if buf_name:match("^roslyn%-source%-generated://") then
-		local existing_client = vim.lsp.get_clients({ name = "roslyn" })[1]
-		if existing_client and existing_client.config.root_dir then
-			on_dir(existing_client.config.root_dir)
-			return
-		end
-	end
-
-	local root_dir = require("roslyn.sln.utils").root_dir(bufnr)
-	if root_dir then
-		on_dir(root_dir)
-		return
-	end
-
-	local fallback = vim.fs.root(bufnr, {
+local function roslyn_fallback_root(bufnr)
+	return vim.fs.root(bufnr, {
 		"global.json",
 		"Directory.Build.props",
 		"Directory.Build.targets",
 		"Directory.Packages.props",
 		".git",
-	}) or normalize_path(vim.fs.dirname(buf_name)) or vim.fn.getcwd()
-
-	on_dir(fallback)
+	}) or normalize_path(vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr))) or vim.fn.getcwd()
 end
+
+-- roslyn.nvim ships its own `root_dir` in `lsp/roslyn.lua`. It handles lock_target,
+-- `roslyn-source-generated://` client reuse and solution/project discovery, and it
+-- performs the `target.remember()` -> `target.consume()` handshake that `on_init`
+-- depends on. Wrap it rather than replacing it, and only supply a fallback root when
+-- it cannot resolve one.
+local function wrap_roslyn_root_dir(default_root_dir)
+	return function(bufnr, on_dir)
+		if type(default_root_dir) ~= "function" then
+			on_dir(roslyn_fallback_root(bufnr))
+			return
+		end
+
+		local ok = pcall(default_root_dir, bufnr, function(dir)
+			on_dir(dir or roslyn_fallback_root(bufnr))
+		end)
+
+		if not ok then
+			on_dir(roslyn_fallback_root(bufnr))
+		end
+	end
+end
+
+-- Roslyn reports "private member is unused" (IDE0051) against the compiler-synthesized
+-- entry point of files that use top-level statements. That symbol's declaration span is
+-- the whole compilation unit, so the diagnostic arrives with the LSP `Unnecessary` tag
+-- covering every line, and Neovim then paints the entire buffer with DiagnosticUnnecessary
+-- (grey) plus DiagnosticUnderlineHint (underline). The symbol name is compiler-generated
+-- and never localised, so matching on it is stable across UI languages.
+local function is_synthesized_entry_point_diagnostic(diagnostic)
+	local message = type(diagnostic) == "table" and diagnostic.message or nil
+	return type(message) == "string"
+		and message:find("<top-level-statements-entry-point>", 1, true) ~= nil
+end
+
+local function filter_roslyn_diagnostics(diagnostics)
+	if type(diagnostics) ~= "table" then
+		return diagnostics
+	end
+
+	return vim.tbl_filter(function(diagnostic)
+		return not is_synthesized_entry_point_diagnostic(diagnostic)
+	end, diagnostics)
+end
+
+local roslyn_handlers = {
+	-- Push diagnostics.
+	["textDocument/publishDiagnostics"] = function(err, result, ctx, config)
+		if type(result) == "table" and result.diagnostics then
+			result.diagnostics = filter_roslyn_diagnostics(result.diagnostics)
+		end
+
+		return vim.lsp.handlers["textDocument/publishDiagnostics"](err, result, ctx, config)
+	end,
+	-- Pull diagnostics, which is what Roslyn actually uses.
+	["textDocument/diagnostic"] = function(err, result, ctx, config)
+		if type(result) == "table" then
+			if result.items then
+				result.items = filter_roslyn_diagnostics(result.items)
+			end
+
+			for _, related in pairs(result.relatedDocuments or {}) do
+				if type(related) == "table" and related.items then
+					related.items = filter_roslyn_diagnostics(related.items)
+				end
+			end
+		end
+
+		return vim.lsp.handlers["textDocument/diagnostic"](err, result, ctx, config)
+	end,
+}
 
 local function select_roslyn_target_broad()
 	local config = require("roslyn.config").get()
@@ -224,9 +272,45 @@ local function toggle_inlay_hints(buf)
 	vim.lsp.inlay_hint.enable(not enabled, { bufnr = buf })
 end
 
+-- Nvim 0.12 replaced `codelens.refresh({ bufnr })` with `codelens.enable(true, { bufnr })`
+-- and changed `codelens.get()` to take a filter table and return `{ client_id, lens }` pairs.
+local has_codelens_enable = vim.lsp.codelens ~= nil and type(vim.lsp.codelens.enable) == "function"
+
 local function refresh_codelens(buf)
 	buf = buf or vim.api.nvim_get_current_buf()
-	pcall(vim.lsp.codelens.refresh, { bufnr = buf })
+	if has_codelens_enable then
+		pcall(vim.lsp.codelens.enable, true, { bufnr = buf })
+	else
+		pcall(vim.lsp.codelens.refresh, { bufnr = buf })
+	end
+end
+
+-- Force a re-request by cycling the capability off and on (0.12+ auto-refreshes otherwise).
+local function force_refresh_codelens(buf)
+	buf = buf or vim.api.nvim_get_current_buf()
+	if has_codelens_enable then
+		pcall(vim.lsp.codelens.enable, false, { bufnr = buf })
+	end
+	refresh_codelens(buf)
+end
+
+local function get_codelenses(buf)
+	local ok, result
+	if has_codelens_enable then
+		ok, result = pcall(vim.lsp.codelens.get, { bufnr = buf })
+	else
+		ok, result = pcall(vim.lsp.codelens.get, buf)
+	end
+
+	if not ok or type(result) ~= "table" then
+		return {}
+	end
+
+	local lenses = {}
+	for _, item in ipairs(result) do
+		lenses[#lenses + 1] = item.lens or item
+	end
+	return lenses
 end
 
 local function run_codelens(buf)
@@ -234,7 +318,7 @@ local function run_codelens(buf)
 	local line = vim.api.nvim_win_get_cursor(0)[1] - 1
 	local line_lenses = vim.tbl_filter(function(lens)
 		return lens.range and lens.range.start.line == line and lens.command
-	end, vim.lsp.codelens.get(buf))
+	end, get_codelenses(buf))
 
 	if #line_lenses == 0 then
 		vim.notify("No executable codelens found at current line", vim.log.levels.INFO, { title = "CodeLens" })
@@ -273,7 +357,7 @@ local function refresh_roslyn_after_project_change(buf)
 		return
 	end
 
-	refresh_codelens(buf)
+	force_refresh_codelens(buf)
 	pcall(function()
 		vim.lsp.diagnostic._refresh()
 	end)
@@ -362,6 +446,12 @@ return {
 		},
 		opts = {
 			auto_install = false,
+			-- roslyn.nvim ships `lsp/roslyn.lua` and calls `vim.lsp.enable("roslyn")`
+			-- itself. Letting mason-lspconfig also enable it races the lazy load and
+			-- can start the server before our `vim.lsp.config("roslyn", ...)` applies.
+			automatic_enable = {
+				exclude = { "roslyn" },
+			},
 		},
 	},
 	{
@@ -377,10 +467,18 @@ return {
 		config = function(_, opts)
 			require("roslyn").setup(opts)
 
+			-- Capture the plugin's shipped root_dir before overriding it, so the
+			-- wrapper delegates instead of recursing into itself.
+			local ok, resolved = pcall(function()
+				return vim.lsp.config["roslyn"]
+			end)
+			local default_root_dir = ok and type(resolved) == "table" and resolved.root_dir or nil
+
 			vim.lsp.config("roslyn", {
 				capabilities = get_roslyn_capabilities(),
 				filetypes = roslyn_filetypes,
-				root_dir = roslyn_root_dir,
+				root_dir = wrap_roslyn_root_dir(default_root_dir),
+				handlers = roslyn_handlers,
 				settings = {
 					roslyn = {
 						enable_roslyn_analysers = true,
@@ -483,7 +581,7 @@ return {
 						vim.keymap.set('n', '<leader>lI', show_roslyn_info, bopts("Show Roslyn Info"))
 						vim.keymap.set('n', '<leader>lH', function() toggle_inlay_hints(buf) end, bopts("Toggle Inlay Hints"))
 						vim.keymap.set('n', '<leader>lc', function() run_codelens(buf) end, bopts("Run CodeLens"))
-						vim.keymap.set('n', '<leader>lC', function() refresh_codelens(buf) end, bopts("Refresh CodeLens"))
+						vim.keymap.set('n', '<leader>lC', function() force_refresh_codelens(buf) end, bopts("Refresh CodeLens"))
 						vim.keymap.set('n', '<leader>lA', toggle_roslyn_analyzers, bopts("Toggle Roslyn Analyzers"))
 						vim.keymap.set('n', '<leader>lB', toggle_roslyn_analysis_scope, bopts("Cycle Background Analysis"))
 						vim.keymap.set('n', '<leader>lD', cycle_diagnostic_severity, bopts("Cycle Diagnostic Severity"))
