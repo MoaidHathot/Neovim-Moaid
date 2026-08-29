@@ -175,7 +175,7 @@ steps:
       $rootDir       = $args[0]
       $lookbackDays  = [int]$args[1]
 
-      # Orchestra does NOT expand `{{...}}` templates that appear in
+      # Orchestra does NOT expand `\{{...}}` templates that appear in
       # input defaults (it expands them in vars, arguments, prompts,
       # etc., but not in `default:` strings). Detect a literal template
       # leak and fall back to the canonical env-derived path so this

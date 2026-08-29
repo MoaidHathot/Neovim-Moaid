@@ -330,7 +330,7 @@ steps:
     script: |
       # Deterministic filter (replaces the prior text-template that asked the
       # LLM to keep PRs created by anyone other than the reviewer).
-      # Drops PRs whose createdBy display name matches `{{vars.reviewerName}}`
+      # Drops PRs whose createdBy display name matches `\{{vars.reviewerName}}`
       # (case-insensitive). Emits the same JSON-array shape downstream consumers
       # (`dispatch-candidates`, `create-action-view-entry`, `generate-summary`)
       # expect.
@@ -508,8 +508,17 @@ steps:
          - 'View PRs' (style: primary)
          - 'Dismiss' (style: default)
 
-      Save the JSON using orchestra_save_file. Output ONLY the raw JSON.
-    timeoutSeconds: 120
+      Save the JSON using orchestra_save_file. The saved file IS the output of
+      this step -- `submit-action-view-entry` consumes
+      `\{{create-action-view-entry.files[0]}}`, never this step's text. Do not
+      re-print the JSON; reply with one short line confirming what was saved.
+    # No timeoutSeconds override: this step inherits defaultStepTimeoutSeconds
+    # (900s), matching its sibling Prompt `gate-noteworthy-activity`. It used to
+    # pin 120s, which is far too short to ingest the full ActionView schema plus
+    # the dispatcher/PR payloads and emit a nested entry (alert block, summary
+    # table, Dispatcher Results, Skipped, Failed) -- it timed out on every run.
+    # `defaultRetryPolicy.retryOnTimeout` is true, so an undersized budget was
+    # burned 3x before failing; one adequate budget is the actual fix.
 
   - name: submit-action-view-entry
     type: Command

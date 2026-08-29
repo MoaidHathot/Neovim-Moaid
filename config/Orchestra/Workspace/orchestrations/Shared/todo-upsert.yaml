@@ -188,10 +188,10 @@ steps:
       $dbPath      = $args[1]
       $todoItemRaw = $args[2]
 
-      # Resolve dbPath. The input default is '{{env.XDG_CONFIG_HOME}}/...',
+      # Resolve dbPath. The input default is '\{{env.XDG_CONFIG_HOME}}/...',
       # but the engine does NOT expand template tokens inside input default
       # values (only inside direct step fields), so a child/forEach dispatch
-      # can arrive here with the literal '{{...}}' path. Rebuild it from the
+      # can arrive here with the literal '\{{...}}' path. Rebuild it from the
       # environment so the Zakira cache lands on the real db instead of a
       # bogus literal path (which would defeat externalId -> taskId dedupe
       # and create duplicate tasks every run).
@@ -382,7 +382,7 @@ steps:
 
       # Resolve dbPath - see resolve-list-id: template tokens in input
       # default values are not expanded by the engine, so rebuild the real
-      # Zakira db path from the environment when a literal '{{...}}' (or an
+      # Zakira db path from the environment when a literal '\{{...}}' (or an
       # empty value) arrives. Keeps the externalId -> taskId mapping write
       # on the same db the cache was read from.
       if ([string]::IsNullOrWhiteSpace($dbPath) -or $dbPath -like '*{{*') {

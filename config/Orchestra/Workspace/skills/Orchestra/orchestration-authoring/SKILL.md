@@ -917,7 +917,7 @@ hooks:
       type: script
       shell: pwsh
       script: |
-        $payload = $input | Out-String | ConvertFrom-Json
+        $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
         $body = @{
           text = "[$($payload.orchestration.name)] needs input on '$($payload.step.name)'"
         } | ConvertTo-Json

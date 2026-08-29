@@ -315,7 +315,11 @@ steps:
 
   - name: create-actionview-entry
     type: Prompt
-    dependsOn: [generate-handoff-document]
+    # save-handoff-to-disk is required, not just generate-handoff-document: the
+    # userPrompt below interpolates {{save-handoff-to-disk.output}} for the saved
+    # path. Without it both steps fan out from generate-handoff-document in
+    # parallel and the path is unresolvable when this step starts.
+    dependsOn: [generate-handoff-document, save-handoff-to-disk]
     systemPrompt: |
       You are an ActionView entry generator. Create an ActionView entry for the on-call handoff.
 

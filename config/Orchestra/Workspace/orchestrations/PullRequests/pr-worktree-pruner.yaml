@@ -514,9 +514,9 @@ steps:
       } | ConvertTo-Json -Depth 50 -Compress
     arguments:
       - "{{inventory.output}}"
-      - "{{input.maxAgeDays}}"
-      - "{{input.minIdleHours}}"
-      - "{{input.force}}"
+      - "{{param.maxAgeDays}}"
+      - "{{param.minIdleHours}}"
+      - "{{param.force}}"
 
   # ── Step 3: Prune ────────────────────────────────────────────────────
   # The only step that mutates anything, and a no-op when dryRun is true.
@@ -691,7 +691,7 @@ steps:
       } | ConvertTo-Json -Depth 50 -Compress
     arguments:
       - "{{classify.output}}"
-      - "{{input.dryRun}}"
+      - "{{param.dryRun}}"
 
   # ── Step 4: Noise gate ───────────────────────────────────────────────
   # A weekly sweep that found nothing should not manufacture a report.
@@ -725,7 +725,11 @@ steps:
   - name: generate-summary
     type: Prompt
     dependsOn: [gate-noteworthy]
-    prompt: |
+    systemPrompt: |
+      You are a reporting assistant. Produce a clear, concise markdown summary of
+      a PowerReview worktree pruning run. Report only what the supplied step
+      output states; never infer a deletion that is not in the data.
+    userPrompt: |
       Summarise this PowerReview worktree pruning run.
 
       Classification:

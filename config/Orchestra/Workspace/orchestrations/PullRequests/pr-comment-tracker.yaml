@@ -40,7 +40,7 @@ steps:
     timeoutSeconds: 120
     script: |
       # Deterministic PR enumeration via az CLI, across every configured repo.
-      # Lists active PRs CREATED BY `{{vars.authorUniqueName}}`. Emits a JSON
+      # Lists active PRs CREATED BY `\{{vars.authorUniqueName}}`. Emits a JSON
       # array -- the same contract the downstream `dispatch-candidates` step
       # consumes (an empty array is fine; the engine's forEach handles zero
       # items gracefully and the noteworthy-activity gate downstream
