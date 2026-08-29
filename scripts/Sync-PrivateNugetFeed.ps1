@@ -81,6 +81,53 @@ if (-not (Test-Path -LiteralPath $FeedPath)) {
 Write-Host "Feed   : $FeedPath"
 Write-Host "Source : $Source"
 
+# --- normalise stray flat packages -----------------------------------------
+# `dotnet nuget push <pkg> -s <feed>` writes into the feed ROOT using the old v2
+# flat layout. A single root-level .nupkg makes NuGet treat the whole folder as a
+# flat feed, so every hierarchically-stored package becomes invisible and the
+# entire feed silently stops resolving - no error, packages just "not found".
+# One stray Zakira.Retrace push took all 32 packages down this way.
+$strays = @(Get-ChildItem -LiteralPath $FeedPath -File -Filter *.nupkg -ErrorAction SilentlyContinue)
+$normalised = [System.Collections.Generic.List[string]]::new()
+
+if ($strays.Count -gt 0) {
+    Write-Warning "$($strays.Count) package(s) sitting in the feed root - this disables the whole feed until folded in."
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    foreach ($stray in $strays) {
+        # Trust the embedded nuspec over the filename for id/version.
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($stray.FullName)
+        try {
+            $entry = $zip.Entries | Where-Object { $_.FullName -notmatch '/' -and $_.Name -like '*.nuspec' } | Select-Object -First 1
+            if (-not $entry) {
+                Write-Warning "  $($stray.Name): no nuspec inside, leaving it alone"
+                continue
+            }
+            $reader = New-Object System.IO.StreamReader($entry.Open())
+            $nuspec = $reader.ReadToEnd()
+            $reader.Close()
+        } finally {
+            $zip.Dispose()
+        }
+
+        $meta = ([xml]$nuspec).package.metadata
+        $key = $meta.id.ToLowerInvariant()
+        $destDir = Join-Path $FeedPath (Join-Path $key $meta.version)
+
+        if ($PSCmdlet.ShouldProcess("$($meta.id) $($meta.version)", "Fold into hierarchical layout")) {
+            New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+            Move-Item -LiteralPath $stray.FullName -Destination (Join-Path $destDir "$key.$($meta.version).nupkg") -Force
+            $nuspec | Set-Content -LiteralPath (Join-Path $destDir "$key.nuspec") -Encoding utf8 -NoNewline
+            # .nupkg.sha512 is mandatory: without it NuGet cannot see the package.
+            $sha = [Convert]::ToBase64String(
+                [System.Security.Cryptography.SHA512]::Create().ComputeHash(
+                    [System.IO.File]::ReadAllBytes((Join-Path $destDir "$key.$($meta.version).nupkg"))))
+            $sha | Set-Content -LiteralPath (Join-Path $destDir "$key.$($meta.version).nupkg.sha512") -Encoding ascii -NoNewline
+            $normalised.Add("$($meta.id) $($meta.version)")
+            Write-Host "  folded $($meta.id) $($meta.version) into $key\$($meta.version)\"
+        }
+    }
+}
+
 # --- discovery -------------------------------------------------------------
 # nuget.org's search endpoint supports owner: filtering and is reachable even on
 # networks that block api.nuget.org. Its per-package "version" field reports the
@@ -145,10 +192,19 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
 $upToDate = [System.Collections.Generic.List[string]]::new()
 $missing = [System.Collections.Generic.List[object]]::new()
 $failed = [System.Collections.Generic.List[string]]::new()
+$localOnly = [System.Collections.Generic.List[string]]::new()
 
 foreach ($entry in $resolved) {
     if ($entry.Error) {
-        $failed.Add("$($entry.Id): $($entry.Error)")
+        # A package that is present in the feed but unresolvable upstream is a
+        # locally-built package that was never published, not a failure. Treating
+        # it as one made the script exit 1 on every run and would fail the DSC
+        # resource forever.
+        if (Test-Path -LiteralPath (Join-Path $FeedPath $entry.Id.ToLowerInvariant()) -PathType Container) {
+            $localOnly.Add($entry.Id)
+        } else {
+            $failed.Add("$($entry.Id): $($entry.Error)")
+        }
         continue
     }
     $versionDir = Join-Path $FeedPath (Join-Path $entry.Id.ToLowerInvariant() $entry.Version)
@@ -235,7 +291,15 @@ if ($PruneOldVersions) {
 Write-Host ""
 Write-Host "=== summary ==="
 Write-Host "discovered : $($ids.Count)"
+if ($normalised.Count) {
+    Write-Host "normalised : $($normalised.Count)"
+    $normalised | ForEach-Object { Write-Host "  ~ $_" }
+}
 Write-Host "up to date : $($upToDate.Count)"
+if ($localOnly.Count) {
+    Write-Host "local only : $($localOnly.Count) (in the feed, not published upstream)"
+    $localOnly | ForEach-Object { Write-Host "  = $_" }
+}
 Write-Host "downloaded : $($downloaded.Count)"
 if ($downloaded.Count) { $downloaded | ForEach-Object { Write-Host "  + $_" } }
 if ($PruneOldVersions) {
