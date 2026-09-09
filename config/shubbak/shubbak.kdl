@@ -317,6 +317,25 @@ rules {
 }
 
 // ---------------------------------------------------------------------------
+// Monitors, named by what they are.
+//
+// `monitor=1` is a position in the order Windows reports displays, and Windows
+// reorders that on replug. These name the panel instead. Two of the same model
+// report the same name, so the connector path - the segment after the last `&` -
+// is what tells them apart. `shubbak monitors` prints these ready to paste.
+// ---------------------------------------------------------------------------
+
+monitor "dell-left" {
+    // DELL U3219Q
+    path *= "UID4355"
+}
+
+monitor "dell-right" {
+    // DELL U3219Q
+    path *= "UID4357"
+}
+
+// ---------------------------------------------------------------------------
 // Workspaces
 //
 // Declared workspaces persist when empty, so their bindings keep working.
@@ -324,25 +343,25 @@ rules {
 // ---------------------------------------------------------------------------
 
 workspaces {
-    workspace "1"  display-name="Firefox"      monitor=0
-    workspace "2"  display-name="Edge"         monitor=0
-    workspace "3"  display-name="Code"         monitor=0
+    workspace "1"  display-name="Firefox"      monitor="dell-left"
+    workspace "2"  display-name="Edge"         monitor="dell-left"
+    workspace "3"  display-name="Code"         monitor="dell-left"
     workspace "4"
     workspace "5"
     workspace "6"
-    workspace "7"                              monitor=0
-    workspace "8"                              monitor=0
+    workspace "7"                              monitor="dell-left"
+    workspace "8"                              monitor="dell-left"
     workspace "9"
-    workspace "0"  display-name="Docs"         monitor=0
+    workspace "0"  display-name="Docs"         monitor="dell-left"
     workspace "-"  display-name="Chat"
-    workspace "\\" display-name="Presentation" monitor=0
+    workspace "\\" display-name="Presentation" monitor="dell-left"
     workspace "="  display-name="Notes"
-    workspace "]"  display-name="Mail"         monitor=0
-    workspace "/"  display-name="Second Monitor"       monitor=1
-    workspace "`"  display-name="System"       monitor=1
-    workspace "'"  display-name="AI"           monitor=0
-    workspace ";"  display-name="Slides"       monitor=0
-    workspace "["  display-name="Recording"    monitor=1
+    workspace "]"  display-name="Mail"         monitor="dell-left"
+    workspace "/"  display-name="Second Monitor"       monitor="dell-right"
+    workspace "`"  display-name="System"       monitor="dell-right"
+    workspace "'"  display-name="AI"           monitor="dell-left"
+    workspace ";"  display-name="Slides"       monitor="dell-left"
+    workspace "["  display-name="Recording"    monitor="dell-right"
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +382,20 @@ keybindings {
     // modes and "?" lists every key, so the bindings here are only doors in.
     bind "alt+shift+space" { signal "palette" }
     bind "alt+ctrl+space"  { signal "palette" "commands" }
+
+    // An action, straight from a key, without opening anything.
+    //
+    // Shubbak still has no idea what an action is - it carries the name and the
+    // palette is what knows. So this is the bridge between the two halves of
+    // this file: a sequence written once under `dalil` below, reachable both by
+    // typing roughly what it is called and by a chord when it earns one.
+    //
+    // An action that asks a question cannot be answered by a key, so those open
+    // the palette with their name already typed and the picker one Enter away.
+    // That is what alt+ctrl+w does.
+    bind "alt+ctrl+d" { signal "palette" "run" "Deep work" }
+    bind "alt+ctrl+w" { signal "palette" "run" "Send it to..." }
+    bind "alt+ctrl+r" { signal "palette" "run" "Reset everything" }
 
     // Back to the window you were just in. Press it twice and you are where you
     // started, because leaving a window makes it the most recent one.
@@ -503,9 +536,17 @@ keybindings {
     //
     // Workspace names are quoted because several of them - `-`, `\`, `'` - would
     // otherwise be read as command syntax.
+    //
+    // `--focus` is what makes the second binding "send it there and go with it".
+    // It used to be a second command on the same key - `move --workspace "{name}";
+    // focus --workspace "{name}"` - which reads well and is wrong: press it for the
+    // workspace the window is already on and the move does nothing, leaving a plain
+    // focus command that toggle-workspace-on-refocus answers as a re-focus. The
+    // window stayed put and the screen jumped to the previous workspace, from a key
+    // whose whole subject was moving a window.
     for-each "workspace" {
         bind "alt+{name}"       { focus --workspace "{name}" }
-        bind "alt+shift+{name}" { move --workspace "{name}"; focus --workspace "{name}" }
+        bind "alt+shift+{name}" { move --workspace "{name}" --focus }
     }
 }
 
@@ -594,6 +635,143 @@ dalil {
         focus --workspace "\\"
         layout --set "monocle"
         toggle-fullscreen
+    }
+
+    // -----------------------------------------------------------------------
+    // Actions that ask
+    //
+    // A `param` turns one row into a question. The placeholder is filled in at
+    // the moment the value is chosen, which is what lets a single row stand in
+    // for one per workspace - nineteen of them here, each of which would
+    // otherwise need its own name to invent and its own line to maintain.
+    //
+    // `from=` draws the choices from a list the palette already holds:
+    //   workspaces  layouts  binding-modes  scratchpads  directions
+    // `values=` writes them out instead, for a set the window manager does not
+    // know - which is the right answer for scratchpad slots, because the list
+    // it does know is the slots currently holding a window and stashing wants
+    // the empty ones.
+    //
+    // Enter opens the picker; Escape goes back one question rather than
+    // dismissing. Two params ask one after the other.
+    // -----------------------------------------------------------------------
+
+    action "Go to..." description="Any workspace, chosen by name rather than by key" {
+        param "ws" from="workspaces"
+        focus --workspace "{ws}"
+    }
+
+    // The distinction alt+shift+{name} cannot make, because it does both:
+    // `follow-window-on-move #false` above says these are separate intentions,
+    // and here they are two separate rows.
+    action "Send it to..." description="Move this window there and stay where you are" {
+        param "ws" from="workspaces"
+        move --workspace "{ws}"
+    }
+
+    action "Send it and follow..." description="Move this window there and go with it" {
+        param "ws" from="workspaces"
+        move --workspace "{ws}"
+        focus --workspace "{ws}"
+    }
+
+    // Tagging is bound on exactly two keys above - alt+t for Chat and alt+g for
+    // AI - because there are not nineteen chords to spare. This is the other
+    // seventeen.
+    action "Tag it onto..." description="Make it follow you to another workspace as well" {
+        param "ws" from="workspaces"
+        tag --toggle "{ws}"
+    }
+
+    action "Layout..." description="Set this container's layout" {
+        param "l" from="layouts"
+        layout --set "{l}"
+    }
+
+    // Written out rather than discovered. `from="scratchpads"` lists the slots
+    // that currently hold a window, which is the wrong list for putting one
+    // away: the slot you want is usually the empty one.
+    action "Stash it in..." description="Put this window away in a named slot" {
+        param "s" values="notes terminal chat"
+        scratchpad --name "{s}"
+    }
+
+    action "Enter mode..." description="One of the modal keymaps, without remembering its key" {
+        param "m" from="binding-modes"
+        wm-enable-binding-mode --name "{m}"
+    }
+
+    action "Push this workspace..." description="Send the whole workspace to another monitor" {
+        param "d" from="directions"
+        move-workspace --direction "{d}"
+    }
+
+    // Two questions, asked one after the other. The first picker chooses a
+    // workspace and opens the second; the second chooses a layout and runs.
+    action "Arrange..." description="Go somewhere and lay it out, in one gesture" {
+        param "ws" from="workspaces"
+        param "l"  from="layouts"
+        focus --workspace "{ws}"
+        layout --set "{l}"
+        equalise
+    }
+
+    // -----------------------------------------------------------------------
+    // Modes of working
+    //
+    // Nothing to do with layouts. An action is a sequence of window manager
+    // commands, so anything a keybinding can express it can express - which
+    // includes letting go of the keyboard for a game and coming back after.
+    // -----------------------------------------------------------------------
+
+    action "Deep work" description="Code, one window at a time, nothing else in the way" {
+        focus --workspace "3"
+        layout --set "monocle"
+    }
+
+    action "Meeting" description="Chat and whatever is beside it, equal shares" {
+        focus --workspace "-"
+        layout --set "splith"
+        equalise
+    }
+
+    action "Triage mail" description="Mail, full width" {
+        focus --workspace "]"
+        layout --set "monocle"
+    }
+
+    action "Recording" description="The capture workspace on the second monitor, whole screen" {
+        focus --workspace "["
+        layout --set "monocle"
+        toggle-fullscreen --monitor
+    }
+
+    action "Slides and notes" description="Slides on the left, notes beside them" {
+        focus --workspace ";"
+        layout --set "master-left"
+        equalise
+    }
+
+    // The one for a competitive game. Removes the keyboard hook altogether
+    // rather than merely stopping the bindings, so there is nothing of
+    // Shubbak's on any keystroke for anti-cheat software to have an opinion
+    // about. alt+shift+o brings it back, and so does `shubbak wm-resume`.
+    action "Gaming" description="Let go of the keyboard entirely - alt+shift+o takes it back" {
+        wm-suspend
+    }
+
+    // -----------------------------------------------------------------------
+    // Getting out of trouble
+    // -----------------------------------------------------------------------
+
+    action "Put it back in the flow" description="Tile this window and give everything an equal share" {
+        tile
+        equalise
+    }
+
+    action "Reset everything" description="Re-read this file, then put every window back where it belongs" {
+        wm-reload-config
+        wm-redraw
     }
 }
 
