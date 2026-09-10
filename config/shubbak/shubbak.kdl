@@ -74,6 +74,13 @@ general {
     // keybindings below raise, which is what keeps the palette from being tied
     // to the bar.
     startup-command "shell-exec W:\\Github\\Shubbak\\dist\\dalil.exe"
+
+    // Ayn, the eye. Watches the camera and the microphone and holds the `camera`
+    // and `microphone` contexts declared below while a program has either open -
+    // with a lease, so they drop the moment it stops or the moment ayn does. It
+    // reads the `ayn` section if there is one and runs on its defaults if not.
+    // `ayn --report` says what Windows thinks is using each device right now.
+    startup-command "shell-exec W:\\Github\\Shubbak\\dist\\ayn.exe"
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +369,29 @@ workspaces {
     workspace "'"  display-name="AI"           monitor="dell-left"
     workspace ";"  display-name="Slides"       monitor="dell-left"
     workspace "["  display-name="Recording"    monitor="dell-right"
+}
+
+// ---------------------------------------------------------------------------
+// Contexts
+//
+// Named conditions on the desktop that layer overrides on this file while they
+// hold. `shubbak contexts` says which hold and why.
+// ---------------------------------------------------------------------------
+
+contexts {
+    // External: nothing on the desktop decides these, so they have no `when`.
+    // The watcher started from `general` above holds them while a program has
+    // the device open, with a lease, so they drop the moment it stops. Facts
+    // only; what a meeting should do to the desktop belongs in a context that
+    // composes them, for example:
+    //
+    //   context "meeting" {
+    //       when { context "camera" }
+    //       window-effects { focused-colour "#f38ba8" }
+    //       bindings { bind "alt+shift+q" { } }
+    //   }
+    context "camera" { }
+    context "microphone" { }
 }
 
 // ---------------------------------------------------------------------------
