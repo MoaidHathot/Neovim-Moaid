@@ -920,15 +920,11 @@ bar {
         // Two clocks, as in the Zebar config: Seattle dimmed on the left, local
         // accented on the right.
         zone "right" justify="end" gap=14 {
-            // Keyboard language, left of the Seattle clock. Dim in English, since
-            // that is the ordinary case and does not need attention; red and bold in
-            // Hebrew, so it is noticed without being read.
-            text id="lang"    template="{{ keyboard }}" colour="#ffffff73" \
-                 bold=#true {
-                when value="HE" colour="#f38ba8"
-            }
+            // Everything that is only there when something is up - suspended, paused,
+            // a broken file, a binding mode, the camera and the microphone - sits
+            // left of the two readouts that are always there, so the readouts stay
+            // put when a pill appears and the eye finds the unusual thing first.
 
-            text id="seattle" template="{{ seattle }}" colour="#ffffff73"
             // Shubbak has let go of the keyboard - alt+shift+o, or the tray. Empty
             // and invisible the rest of the time.
             //
@@ -990,6 +986,18 @@ bar {
             text id="mic-off" template="{{ context.meeting-muted | then:\u{EC54} }}" \
                  font="Segoe Fluent Icons" font-size=15 colour="#1e1e2e" background="#f38ba8" \
                  on-click="signal ayn microphone unmute"
+
+
+            // Keyboard language, left of the Seattle clock and right of anything
+            // unusual. Dim in English, since
+            // that is the ordinary case and does not need attention; red and bold in
+            // Hebrew, so it is noticed without being read.
+            text id="lang"    template="{{ keyboard }}" colour="#ffffff73" \
+                 bold=#true {
+                when value="HE" colour="#f38ba8"
+            }
+
+            text id="seattle" template="{{ seattle }}" colour="#ffffff73"
 
             // `icon` turns the layout name into a glyph that looks like the
             // arrangement - two bars for a horizontal split, three stacked lines for
