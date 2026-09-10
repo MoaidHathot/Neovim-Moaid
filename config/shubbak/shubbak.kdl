@@ -379,19 +379,47 @@ workspaces {
 // ---------------------------------------------------------------------------
 
 contexts {
-    // External: nothing on the desktop decides these, so they have no `when`.
-    // The watcher started from `general` above holds them while a program has
-    // the device open, with a lease, so they drop the moment it stops. Facts
-    // only; what a meeting should do to the desktop belongs in a context that
-    // composes them, for example:
-    //
-    //   context "meeting" {
-    //       when { context "camera" }
-    //       window-effects { focused-colour "#f38ba8" }
-    //       bindings { bind "alt+shift+q" { } }
-    //   }
-    context "camera" { }
-    context "microphone" { }
+    // External facts: nothing on the desktop decides these, so they have no
+    // `when`. Ayn, started from `general` above, holds each while it is true -
+    // with a lease, so they drop the moment it stops being true or the moment ayn
+    // does. Named subject-state so the ones about one device sit together.
+    context "camera-in-use" { }
+    context "microphone-in-use" { }
+    context "microphone-muted" { }
+
+    // Policy, composed from the facts. A meeting is the microphone being open:
+    // Teams and its kind keep the device open for the whole call, muted in-app or
+    // not, so this is the reliable "in a call" signal; the camera is shown on its
+    // own. Nothing changes on the desktop yet - the bar keys off these - but this
+    // is where "quieter keyboard while on a call" would go.
+    context "meeting" {
+        when { context "microphone-in-use" }
+    }
+
+    // Muted while in a meeting, which is the only time being muted is worth an
+    // icon. Muted at the desk with no call up is nobody's business. Its twin is
+    // for the other glyph: one of the two always holds during a meeting, never
+    // both, so the bar shows exactly one microphone.
+    context "meeting-muted" {
+        when { context "meeting"; context "microphone-muted" }
+    }
+    context "meeting-live" {
+        when { context "meeting"; !context "microphone-muted" }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ayn - the eye
+//
+// Every setting has a default; this section only pins the names down beside the
+// contexts above so that renaming one means renaming both. `ayn --report` says
+// what Windows thinks about each device right now.
+// ---------------------------------------------------------------------------
+
+ayn {
+    camera     { in-use "camera-in-use" }
+    microphone { in-use "microphone-in-use"; muted "microphone-muted" }
+    settle 500
 }
 
 // ---------------------------------------------------------------------------
@@ -940,6 +968,28 @@ bar {
             // one way out that does not depend on the keyboard.
             text id="mode"    template="{{ binding_mode }}" colour="#1e1e2e" \
                  background="#f38ba8" bold=#true on-click="wm-disable-binding-mode"
+
+            // What ayn sees, one glyph each, in the icon font Windows ships. Each
+            // `context.<name>` value is the name while the context holds and empty
+            // when it does not, and `then:` turns that into a glyph or nothing - so
+            // these take no room until there is something to say.
+            //
+            // The camera, whenever any program has it open.
+            text id="camera" template="{{ context.camera-in-use | then:\u{E722} }}" \
+                 font="Segoe Fluent Icons" font-size=15 colour="#a6e3a1"
+
+            // The microphone, while in a meeting and not muted. Click to mute: the
+            // click raises a signal the window manager carries without reading, ayn
+            // flips the system mute, and the endpoint's own notification turns this
+            // into the red one below.
+            text id="mic" template="{{ context.meeting-live | then:\u{E720} }}" \
+                 font="Segoe Fluent Icons" font-size=15 colour="#a6e3a1" \
+                 on-click="signal ayn microphone mute"
+
+            // Muted while in a meeting: red, and click to unmute.
+            text id="mic-off" template="{{ context.meeting-muted | then:\u{EC54} }}" \
+                 font="Segoe Fluent Icons" font-size=15 colour="#1e1e2e" background="#f38ba8" \
+                 on-click="signal ayn microphone unmute"
 
             // `icon` turns the layout name into a glyph that looks like the
             // arrangement - two bars for a horizontal split, three stacked lines for
