@@ -584,7 +584,11 @@ keybindings {
     // --- lifecycle ---
     bind "alt+shift+r" { wm-reload-config }
     bind "alt+shift+w" { wm-redraw }
-    bind "alt+shift+e" { wm-exit }
+
+    // Everything goes - the window manager, the bar, the palette and the watcher.
+    // `wm-exit` stops the window manager alone and the other three wait for it to
+    // come back, which is for restarting it, not for leaving.
+    bind "alt+shift+e" { exit-all }
 
     // --- per-workspace bindings ---
     //
