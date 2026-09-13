@@ -871,7 +871,28 @@ bar {
 
     profile "default" {
         height 34
-        background "#181825"
+
+        // Translucent: the alpha is what lets the backdrop through. 60% of the old
+        // opaque colour keeps the text readable over a blurred desktop; raise it
+        // towards "ff" for a more solid bar, lower it to see more of what is behind.
+        background "#18182599"
+
+        // Acrylic blurs whatever is behind the bar and keeps doing so however focus
+        // moves - Mica is a material for windows that are sometimes active, which a
+        // bar never is. Windows 11 only; elsewhere the desktop shows through as it is.
+        backdrop "acrylic"
+
+        // A one-pixel hairline along the bottom edge, where the bar meets the
+        // windows. 8% white: there rather than seen.
+        border "#ffffff14"
+
+        // To float the bar off the screen edges instead, with rounded corners and the
+        // wallpaper around it, uncomment these two. The reserved strip grows by the
+        // margin on both sides of the bar, so the windows below keep their distance.
+        //
+        // margin 8
+        // radius 8
+
         foreground "#cdd6f4"
         font "Segoe UI Variable Text"
         font-size 18
@@ -908,6 +929,12 @@ bar {
         }
 
         zone "centre" justify="center" grow=1 {
+            // The focused window's icon - the one its taskbar button shows - fetched
+            // from the window manager over the pipe and cached, so switching between
+            // the same windows all day costs one read per window. Hidden when nothing
+            // is focused, so the title beside it does not gain a gap.
+            icon size=20
+
             // A hollow square when the focused window is fullscreen within the work
             // area. Nothing at all otherwise - the widget hides itself when its
             // template renders empty, so there is no gap to notice. There is
@@ -916,7 +943,11 @@ bar {
             text id="window-state" template="{{ window.state | state-icon }}" \
                  colour="#f9e2af"
 
-            text template="{{ window.title | truncate:90 }}" colour="#ffffffb3" {
+            // No `truncate`: the centre zone grows, so it is also the zone that gives
+            // when a title is longer than the room, and the title is cut with an
+            // ellipsis exactly where the clocks begin. A character cap knew nothing
+            // about how much room there actually was.
+            text template="{{ window.title }}" colour="#ffffffb3" {
                 when of="window.state" value="fullscreen" colour="#f9e2af"
             }
         }
@@ -996,8 +1027,15 @@ bar {
             // unusual. Dim in English, since
             // that is the ordinary case and does not need attention; red and bold in
             // Hebrew, so it is noticed without being read.
+            //
+            // Clickable: `keyboard next` switches the window in front to its next
+            // installed layout - the same thing the language hotkey does - and the
+            // indicator follows on its next poll. The bar performs this one itself
+            // rather than sending it to the window manager, since it already watches
+            // the layout of the window in front and the switch is a message to that
+            // same window. `keyboard previous` and `keyboard he` are the other forms.
             text id="lang"    template="{{ keyboard }}" colour="#ffffff73" \
-                 bold=#true {
+                 bold=#true on-click="keyboard next" {
                 when value="HE" colour="#f38ba8"
             }
 
@@ -1014,12 +1052,19 @@ bar {
             // Matched on the layout's name rather than the glyph: `of` tests the
             // source before the filter transformed it, which avoids writing
             // box-drawing characters here and keeping them in step with the icon.
+            //
+            // Clickable: each click steps the focused workspace to the next layout,
+            // the same `layout --cycle` a keybinding would send. `layout --cycle-back`
+            // goes the other way, and `layout --set <name>` jumps to one.
             text id="layout"  template="{{ layout | icon }}" colour="#ffffff73" \
-                 bold=#true font-size=17 {
+                 bold=#true font-size=17 on-click="layout --cycle" {
                 when of="layout" not="splith" colour="#1dfb8d"
             }
 
-            text id="clock"   template="{{ clock }}" colour="#8dbcff" bold=#true
+            // `accent` is the colour Windows is set to, so the clock follows the
+            // machine rather than a blue picked once; the bar re-reads this file when
+            // Windows announces a change. Any colour may take an opacity: `accent 40%`.
+            text id="clock"   template="{{ clock }}" colour="accent" bold=#true
         }
     }
 
@@ -1037,7 +1082,7 @@ bar {
         zone "centre" justify="center" grow=1 { }
 
         zone "right" justify="end" gap=10 {
-            text id="clock" template="{{ clock }}" colour="#8dbcff" bold=#true
+            text id="clock" template="{{ clock }}" colour="accent" bold=#true
         }
     }
 
