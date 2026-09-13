@@ -1,5 +1,5 @@
 {
-	"dataDirectory": "data",
+	"dataDirectory": "$ONEDRIVECOMMERCIAL/Synced/ActionView/data",
 	"listenUrl": "http://localhost:5180",
 	"watchConfig": true,
 	"templates": {
