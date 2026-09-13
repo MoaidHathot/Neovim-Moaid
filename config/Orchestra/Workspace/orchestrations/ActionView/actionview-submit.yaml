@@ -1,9 +1,24 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json
 name: actionview-submit
 description: |
-  Reusable orchestration for submitting entries to ActionView. Accepts pre-built entry JSON and an optional template name. Validates against the ActionView schema before submission.
-version: 1.0.1
+  Reusable orchestration for submitting entries to ActionView. Accepts a
+  pre-built entry JSON string, validates it deterministically against the
+  ActionView schema and its type template with the ActionView CLI, and
+  submits it with `add --wait --strict` so the CLI itself fails fast on a
+  bad entry instead of writing it to the error queue later.
+
+  Fully deterministic (no LLM steps). Version 1.x routed the whole entry
+  through a Prompt step that re-emitted the JSON via orchestra_save_file;
+  for real payloads (tens of KB) that alone took longer than the step
+  timeout, so every large submission was retried from scratch and then
+  killed by the 600s cap. The CLI's `validate` and `add --wait --strict`
+  do the same checks (required fields, content-block types, template
+  defaults and required blocks) in well under a second.
+
+  Output: `submit-entry` prints the CLI's `add` output; `validate-entry`
+  prints the CLI's `{ ok, errors[], warnings[] }` report.
+version: 2.0.0
 tags: ["utility", "actionview", "reusable", "auto"]
-defaultModel: claude-opus-4.8
 
 inputs:
   entryJson:
@@ -14,13 +29,13 @@ inputs:
   template:
     type: String
     description: |
-      Optional ActionView template name. If provided, the entry will be validated and merged against this template's definition before submission.
+      Optional ActionView template (entry type) name. When provided it selects the template used for validation (`validate --type`), so a mismatch between the entry's `type` and the caller's intent is caught before submission.
     required: false
     default: ""
   groupId:
     type: String
     description: |
-      Optional group ID to assign to the entry. When set, overrides any groupId in the entry JSON. Useful for callers that want to group entries from the same orchestration run.
+      Optional group ID to assign to the entry. When set, overrides any groupId in the entry JSON (`add --group-id`). Useful for callers that want to group entries from the same orchestration run.
     required: false
     default: ""
 
@@ -30,70 +45,85 @@ defaultRetryPolicy:
   backoffMultiplier: 2.0
   retryOnTimeout: true
 
-defaultStepTimeoutSeconds: 240
-timeoutSeconds: 600
+# Each step is a single short-lived `dnx ActionView.Cli` invocation. A cold
+# dnx start can take a while, so leave headroom, but nothing here should ever
+# approach the old 600s budget.
+defaultStepTimeoutSeconds: 120
+timeoutSeconds: 300
 
 steps:
-  - name: fetch-schema
-    type: Command
-    command: dnx
-    arguments:
-      - ActionView.Cli
-      - "--yes"
-      - "--"
-      - schema
-
-  - name: fetch-template
+  - name: validate-entry
     type: Script
     shell: pwsh
     script: |
+      # Writes the entry to a per-run temp file (the JSON can be far larger than a
+      # command line allows) and validates it with the ActionView CLI. Emits the
+      # temp file path on the LAST line of stdout so submit-entry can reuse it;
+      # everything before it is the CLI's validation report.
       $ErrorActionPreference = 'Stop'
-      $template = $args[0]
-      if (-not [string]::IsNullOrWhiteSpace($template)) {
-        & dnx ActionView.Cli --yes -- template show $template
-      } else {
-        Write-Output 'NO_TEMPLATE'
+      $entryJson = $args[0]
+      $template  = $args[1]
+
+      if ([string]::IsNullOrWhiteSpace($entryJson)) {
+        throw 'entryJson is empty.'
       }
+
+      # Fail early with a readable message if the payload is not even JSON.
+      try { $null = $entryJson | ConvertFrom-Json -Depth 64 } catch {
+        throw "entryJson is not valid JSON: $($_.Exception.Message)"
+      }
+
+      $runId = if ($env:ORCHESTRA_RUN_ID) { $env:ORCHESTRA_RUN_ID } else { [guid]::NewGuid().ToString('N') }
+      $entryPath = Join-Path ([System.IO.Path]::GetTempPath()) "actionview-entry-$runId.json"
+      [System.IO.File]::WriteAllText($entryPath, $entryJson, [System.Text.UTF8Encoding]::new($false))
+
+      $cliArgs = @('ActionView.Cli', '--yes', '--', 'validate', '--file', $entryPath, '--strict')
+      if (-not [string]::IsNullOrWhiteSpace($template)) {
+        $cliArgs += @('--type', $template)
+      }
+
+      $report = & dnx @cliArgs 2>&1 | Out-String
+      $exit = $LASTEXITCODE
+      Write-Output $report.TrimEnd()
+      if ($exit -ne 0) {
+        throw "ActionView validation failed (exit $exit). Entry kept at $entryPath for inspection. Report: $($report.Trim())"
+      }
+      Write-Output $entryPath
     arguments:
+      - "{{param.entryJson}}"
       - "{{param.template}}"
 
-  - name: prepare-entry
-    type: Prompt
-    dependsOn: [fetch-schema, fetch-template]
-    systemPrompt: |
-      You are an ActionView entry validator and preparer. Your job is to take a raw entry JSON, validate it against the ActionView schema, optionally apply template defaults, and produce a final clean entry JSON.
-
-      Rules:
-      1. The entry MUST have at minimum: type, source, title
-      2. If a template definition was provided (not 'NO_TEMPLATE'), use it to fill in any missing defaults or validate that required template fields are present
-      3. If a groupId parameter was provided (non-empty), set or override the entry's groupId field with that value
-      4. Ensure all content blocks have valid 'type' fields
-      5. Ensure severity is one of: low, medium, high, critical (default to 'medium' if not set)
-      6. Do NOT modify the entry content beyond validation fixes, template merging, and groupId override
-      7. Save the final validated JSON using orchestra_save_file with extension 'json'
-      8. If the entry JSON is malformed or missing required fields and cannot be fixed, call orchestra_set_status with status 'failed' and explain the validation error
-    userPrompt: |
-      ActionView Schema:
-      {{fetch-schema.output}}
-
-      Template Definition:
-      {{fetch-template.output}}
-
-      GroupId Parameter: '{{param.groupId}}'
-
-      Raw Entry JSON:
-      {{param.entryJson}}
-
-      Validate the entry against the schema. If a template was provided, merge any template defaults into the entry for fields that are missing. If groupId is non-empty, set it on the entry. Save the final JSON via orchestra_save_file.
-
   - name: submit-entry
-    type: Command
-    dependsOn: [prepare-entry]
-    command: dnx
+    type: Script
+    dependsOn: [validate-entry]
+    shell: pwsh
+    script: |
+      # Submits the validated entry. `--wait --strict` re-validates synchronously
+      # inside the CLI so a bad entry fails this step with a precise report rather
+      # than landing in ActionView's errors/ queue. The temp file is removed on
+      # success and kept on failure for inspection.
+      $ErrorActionPreference = 'Stop'
+      $validateOutput = $args[0]
+      $groupId        = $args[1]
+
+      $lines = $validateOutput -split "`r?`n" | Where-Object { $_.Trim().Length -gt 0 }
+      $entryPath = $lines[-1].Trim()
+      if (-not (Test-Path -LiteralPath $entryPath)) {
+        throw "Validated entry file not found: '$entryPath'"
+      }
+
+      $cliArgs = @('ActionView.Cli', '--yes', '--', 'add', '--file', $entryPath, '--wait', '--strict')
+      if (-not [string]::IsNullOrWhiteSpace($groupId)) {
+        $cliArgs += @('--group-id', $groupId)
+      }
+
+      $output = & dnx @cliArgs 2>&1 | Out-String
+      $exit = $LASTEXITCODE
+      Write-Output $output.TrimEnd()
+      if ($exit -ne 0) {
+        throw "ActionView add failed (exit $exit). Entry kept at $entryPath for inspection. Output: $($output.Trim())"
+      }
+      Remove-Item -LiteralPath $entryPath -Force -ErrorAction SilentlyContinue
     arguments:
-      - ActionView.Cli
-      - "--yes"
-      - "--"
-      - add
-      - "--file"
-      - "{{prepare-entry.files[0]}}"
+      - "{{validate-entry.output}}"
+      - "{{param.groupId}}"

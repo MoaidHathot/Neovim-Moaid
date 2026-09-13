@@ -1026,13 +1026,11 @@ steps:
       entryJson: "{{inject-content.output}}"
       template: daily-digest
       groupId: "{{vars.actionViewGroupId}}"
-    inputHandlerPrompt: |
-      Return ONLY a valid JSON object mapping actionview-submit
-      parameter names (entryJson, template, groupId) to string values.
-      The entryJson value is the canonical entry JSON serialized as a
-      string.
+    # No inputHandlerPrompt: the parameters are already the exact shape the
+    # child expects; an LLM re-serialising the entry only burned minutes of the
+    # child's timeout budget.
     mode: sync
-    timeoutSeconds: 600
+    timeoutSeconds: 360
 
   - name: build-focus-todo-payload
     type: Script

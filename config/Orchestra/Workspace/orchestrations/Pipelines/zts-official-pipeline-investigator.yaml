@@ -472,21 +472,33 @@ steps:
       Investigation payload:
       {{shape-investigation-record.output}}
 
+  - name: extract-actionview-entry
+    type: Script
+    dependsOn: [shape-investigation-record]
+    shell: pwsh
+    script: |
+      # Deterministic replacement for the former LLM inputHandlerPrompt on
+      # submit-actionview: pull the pre-built entry JSON out of the investigation
+      # record. The entry already carries its groupId, so nothing else is needed.
+      $ErrorActionPreference = 'Stop'
+      $record = $args[0] | ConvertFrom-Json -Depth 100
+      $entryJson = [string]$record.actionViewEntryJson
+      if ([string]::IsNullOrWhiteSpace($entryJson)) {
+        throw 'shape-investigation-record output has no actionViewEntryJson.'
+      }
+      Write-Output $entryJson
+    arguments:
+      - "{{shape-investigation-record.output}}"
+    timeoutSeconds: 60
+
   - name: submit-actionview
     type: Orchestration
-    dependsOn: [shape-investigation-record]
+    dependsOn: [extract-actionview-entry]
     orchestration: actionview-submit
     parameters:
-      entryJson: "{{shape-investigation-record.output}}"
-    inputHandlerPrompt: |
-      The input is a JSON object that includes properties named `actionViewEntryJson` and `groupId`.
-      Return a JSON object with exactly two properties:
-      {
-        "entryJson": "<the actionViewEntryJson string verbatim>",
-        "groupId": "<the groupId string verbatim, or empty string if absent>"
-      }
-
-      Do not include any other keys. Do not modify entryJson contents.
+      entryJson: "{{extract-actionview-entry.output}}"
+    mode: sync
+    timeoutSeconds: 360
 
   - name: final-summary
     type: Prompt

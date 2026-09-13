@@ -1222,15 +1222,12 @@ steps:
       entryJson: "{{build-actionview-entry.output}}"
       template: action-items-status
       groupId: "{{vars.actionViewGroupId}}"
-    inputHandlerPrompt: |
-      Return ONLY a valid JSON object mapping actionview-submit parameter
-      names (entryJson, template, groupId) to string values. The
-      entryJson value must be the canonical JSON object serialized as a
-      string. No sentinel handling needed - noteworthy-gate-prompt
-      already skipped this branch via orchestra_set_status('no_action')
-      on no-op runs.
+    # No inputHandlerPrompt: the parameters are already the exact shape the
+    # child expects; an LLM re-serialising the entry only burned minutes of the
+    # child's timeout budget. noteworthy-gate-prompt already skipped this branch
+    # via orchestra_set_status('no_action') on no-op runs.
     mode: sync
-    timeoutSeconds: 600
+    timeoutSeconds: 360
 
   - name: weekly-obsidian-aggregator
     type: Script

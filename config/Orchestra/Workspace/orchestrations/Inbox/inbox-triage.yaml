@@ -1977,14 +1977,16 @@ steps:
       entryJson: "{{build-actionview-entry.output}}"
       template: inbox-triage
       groupId: "{{vars.actionViewGroupId}}"
-    inputHandlerPrompt: |
-      Return ONLY a valid JSON object mapping actionview-submit parameter
-      names (entryJson, template, groupId) to string values. entryJson
-      is the canonical entry JSON serialized as a string. No sentinel
-      handling needed - noteworthy-gate-prompt already skipped this
-      branch via orchestra_set_status('no_action') on no-op runs.
+    # No inputHandlerPrompt: the parameters above are already the exact shape
+    # actionview-submit expects. The previous LLM handler re-emitted the whole
+    # ~30KB entry as a JSON string before the child could start, costing 3-5
+    # minutes of the child's timeout budget per attempt. No sentinel handling is
+    # needed either - noteworthy-gate-prompt already skipped this branch via
+    # orchestra_set_status('no_action') on no-op runs.
     mode: sync
-    timeoutSeconds: 600
+    # actionview-submit v2 is deterministic and completes in seconds; its own
+    # timeoutSeconds is 300, so this cap only acts as a backstop above it.
+    timeoutSeconds: 360
 
   - name: emit-daily-summary
     type: Script
