@@ -49,11 +49,12 @@ YAML modelines work in VS Code (Red Hat YAML extension), JetBrains IDEs, and any
 | `trigger` | TriggerConfig | No | Manual | How the orchestration is triggered |
 | `mcps` | Mcp[] | No | [] | Inline MCP server definitions |
 | `defaultModel` | string | No | null | Default model for all Prompt steps. Steps can override. |
-| `agentPool` | object | No | provider defaults | Provider worker-pool capacity request for prompt execution |
+| `defaultProvider` | string | No | null | Default agent provider for Prompt steps: `"copilot"` or `"opencode"`. Resolution per step: step `provider` -> `defaultProvider` -> host default. |
+| `agentPool` | object | No | provider defaults | Provider worker-pool capacity request (see Agent Pool) |
 | `defaultSystemPromptMode` | string | No | null | `"append"`, `"replace"`, or `"customize"` for all Prompt steps |
 | `defaultRetryPolicy` | RetryPolicy | No | null | Default retry for all steps |
 | `defaultStepTimeoutSeconds` | int | No | null | Default per-step timeout |
-| `timeoutSeconds` | int | No | 3600 | Orchestration-level timeout (0 to disable) |
+| `timeoutSeconds` | int | No | 0 (disabled) | Orchestration-level timeout. 0 or null means no timeout |
 | `variables` | object | No | {} | Key-value pairs accessed via `{{vars.name}}` |
 | `tags` | string[] | No | [] | Categorization tags |
 | `hooks` | Hook[] | No | [] | Lifecycle hooks that run after step or orchestration outcomes |
@@ -63,8 +64,45 @@ YAML modelines work in VS Code (Red Hat YAML extension), JetBrains IDEs, and any
 | `defaultSandboxPolicy` | SandboxPolicy | No | null | Default opt-in sandbox for every Prompt step that does not specify its own `sandbox` (see Sandbox). Null = no sandbox. |
 | `metadata` | object | No | {} | Free-form metadata (any JSON shape: string, number, bool, array, nested object). Not inspected by the runtime; for authors and managers only. Use for datetime, owners, ticket links, environment, SLA, etc. |
 
-## Typed Inputs (InputDefinition)
+## Agent Providers
 
+Every Prompt step runs on an agent provider. Resolution is **step `provider` -> orchestration `defaultProvider` -> host default** (`copilot` unless the host is configured otherwise).
+
+| Provider | Notes |
+|---|---|
+| `copilot` | GitHub Copilot CLI via the Copilot SDK. Supports the full feature surface. |
+| `opencode` | Spawns an `opencode serve` HTTP server. Requires OpenCode installed on PATH. |
+
+A single orchestration can mix providers per step:
+
+```yaml
+defaultProvider: opencode
+steps:
+  - name: draft
+    type: Prompt          # runs on opencode
+    userPrompt: "..."
+  - name: review
+    type: Prompt
+    provider: copilot     # this step overrides
+    userPrompt: "..."
+```
+
+The engine **fails a step fast** if it uses a feature the chosen provider does not support, rather than silently dropping it.
+
+**OpenCode model ids need a provider prefix.** A bare `claude-opus-4.8` fails on OpenCode unless a fallback provider is configured; use a qualified id such as `github-copilot/claude-opus-4.8`.
+
+## Agent Pool
+
+`agentPool` requests worker capacity for the run. All fields are optional; omit the block entirely unless you have a measured reason.
+
+| Property | Type | Description |
+|---|---|---|
+| `minInstances` | int | Workers to keep ready. `0` disables prewarming. |
+| `maxInstances` | int | Maximum workers created for this run. Must be > 0. |
+| `maxSessionsPerInstance` | int | Concurrent prompt sessions per worker. |
+| `idleTimeoutSeconds` | int | Seconds an idle worker above `minInstances` stays alive. `0` disables idle shrink. |
+
+## Typed Inputs (InputDefinition)
 Each key in `inputs` is the input name. Values:
 
 | Property | Type | Default | Description |
@@ -184,6 +222,7 @@ Calls an LLM.
 | `userPrompt` | string | Yes* | -- |
 | `userPromptFile` | string | Yes* | -- |
 | `model` | string | No | from `defaultModel` |
+| `provider` | string | No | from `defaultProvider` |
 | `inputHandlerPrompt` | string | No | null |
 | `inputHandlerPromptFile` | string | No | null |
 | `outputHandlerPrompt` | string | No | null |
@@ -207,6 +246,17 @@ Calls an LLM.
 | `enableTools` | string[] | No | null | Opt-in engine tool names this Prompt step grants the agent access to. Currently supports `"request_user_input"` (the LLM-decided human-in-the-loop tool). Falls back to the orchestration's `defaultEnableTools` when null. |
 
 *Mutual exclusion: use `systemPrompt` OR `systemPromptFile`, not both. Same for `userPrompt`/`userPromptFile`, `inputHandlerPrompt`/`inputHandlerPromptFile`, `outputHandlerPrompt`/`outputHandlerPromptFile`.
+
+**`skillDirectories` paths resolve against the orchestration FILE's directory, not the process working directory — and a missing directory is skipped SILENTLY.** There is no error, no warning; the step simply runs without the skill, and the only symptom is worse output. Count the `../` hops from the orchestration file, not from where you launch `orchestra`:
+
+```text
+repo/
+  skills/orchestration-authoring/     <- the skill
+  examples/my-orchestration.yaml      <- needs ../skills/orchestration-authoring
+  orchestrations/nested/x.yaml        <- needs ../../skills/orchestration-authoring
+```
+
+Prefer `{{orchestration.sourceDirectory}}`-anchored or absolute paths when the layout is not obvious. After authoring, verify the resolved path actually exists before assuming the skill loaded.
 
 ### System Prompt Modes
 
@@ -350,6 +400,7 @@ Do not use `Command` for shell snippets or wrappers such as `pwsh -Command`, `po
 | `environment` | object | No | {} |
 | `includeStdErr` | bool | No | false |
 | `stdin` | string | No | null |
+| `strictMode` | bool | No | null (auto) |
 
 ### Script Step (type: "Script")
 
@@ -365,8 +416,19 @@ Executes an inline or file-based script via a shell interpreter (e.g., `pwsh`, `
 | `environment` | object | No | {} |
 | `includeStdErr` | bool | No | false |
 | `stdin` | string | No | null |
+| `strictMode` | bool | No | null (auto) |
 
 *Mutual exclusion: use `script` OR `scriptFile`, not both. `scriptFile` paths resolve relative to the orchestration file's directory.
+
+**`strictMode` (PowerShell only).** Controls the error-handling prologue the executor injects for `shell: pwsh|powershell`:
+
+| Value | Behaviour |
+|---|---|
+| unset (default) | Injects `$ErrorActionPreference='Stop'` and a `trap { Write-Error -ErrorRecord $_; exit 1 }`, so a terminating error reports the step **Failed** instead of silently succeeding. |
+| `true` | Also injects `Set-StrictMode -Version Latest` — catches uninitialized variables, missing properties, and out-of-bounds indexing. |
+| `false` | No prologue; the script runs verbatim. The `Orchestra-Complete` / `Orchestra-SetStatus` helpers are still injected. |
+
+Non-PowerShell shells ignore this. Leave it unset unless you specifically want strict-mode discipline (`true`) or need a script that manages its own error handling (`false`).
 
 Pass values into scripts with `arguments` or `stdin` instead of interpolating large or heavily quoted values into the script body. In PowerShell, `arguments` are available as `$args[0]`, `$args[1]`, and so on.
 
@@ -385,6 +447,8 @@ A Script step normally only reports success (exit 0) / failure (non-zero). To le
 
 Read only on exit 0; malformed contents fail the step. `stdout` stays the step output, so a script can emit data **and** signal in the same run. Three ways to write it — pwsh helpers (auto-injected: `Orchestra-Complete -Status success -Reason '...'`, `Orchestra-SetStatus -Status no_action -Reason '...'`), the `orchestra step complete|set-status` CLI (any shell), or writing the JSON to `$ORCHESTRA_CONTROL_FILE` directly. Prefer this over an LLM gate step for deterministic checks (see Pattern 4).
 
+**Prefer the injected pwsh helpers over the `orchestra step ...` CLI form.** The CLI is only on `PATH` for a global-tool install; a user who launches Orchestra through `dnx` has no `orchestra` command, so a script that shells out to it fails with "command not found". The helpers and the `$ORCHESTRA_CONTROL_FILE` JSON work everywhere. If you must shell out to the CLI (e.g. `orchestra validate`), guard it: `if (Get-Command orchestra -EA SilentlyContinue) { & orchestra ... } elseif (Get-Command dnx -EA SilentlyContinue) { & dnx Orchestra --yes -- ... }`.
+
 ### Orchestration Step (type: "Orchestration")
 
 Invokes another registered orchestration. Use this when a flow should delegate to a reusable child orchestration instead of duplicating its steps.
@@ -396,12 +460,40 @@ Invokes another registered orchestration. Use this when a flow should delegate t
 | `mode` | string | No | `sync` |
 | `inputHandlerPrompt` | string | No | null |
 | `inputHandlerModel` | string | No | from `defaultModel` |
+| `forEach` | string | No | null |
+| `forEachPath` | string | No | null |
+| `itemParameter` | string | Only with `forEach` | -- |
+| `maxConcurrency` | int | No | unbounded |
+| `continueOnItemFailure` | bool | No | `true` |
 
 `mode` is `sync` or `async`. In `sync` mode, the parent waits for the child to finish and uses the child's final output as this step's output. In `async` mode, the parent continues after dispatch.
 
 `parameters` maps child input names to values. Values support template expressions and are passed as strings at runtime.
 
 `inputHandlerPrompt` can reshape child parameters before launch. It must return a JSON object mapping parameter names to string values. If handler parsing fails, runtime falls back to the original parameters, so use Script validation for hard guarantees.
+
+#### Fan-Out (`forEach`)
+
+`forEach` is the only fan-out primitive in Orchestra, and it exists **only on `Orchestration` steps**. Set it to a template that resolves to a JSON array, and the step launches one child run per element instead of a single child.
+
+- `itemParameter` is **required** whenever `forEach` is set. The element is serialized as compact JSON and assigned to that child parameter.
+- `forEachPath` extracts the array when the template resolves to an *object* rather than an array. If a prior step emits `{"meetingsToProcess":[...]}`, set `forEachPath: meetingsToProcess`.
+- `maxConcurrency` caps parallel children; it is honored in `sync` mode only. Default is unbounded.
+- `continueOnItemFailure` defaults to `true`: the step succeeds even when some children fail, and the rollup carries per-item status. Set it to `false` to fail the step on any failed child.
+
+```yaml
+  - name: process-each-meeting
+    type: Orchestration
+    dependsOn: [collect]
+    orchestration: summarize-meeting
+    forEach: "{{collect.output}}"
+    forEachPath: meetingsToProcess
+    itemParameter: meeting
+    maxConcurrency: 4
+    continueOnItemFailure: true
+```
+
+To fan out over something that is *not* a child orchestration, generate the array in an earlier step and wrap the per-item work in its own orchestration. There is no `forEach` on `Prompt`, `Command`, `Script`, `Http`, `Transform`, or `Approval` steps.
 
 **Drill-in template bindings.** For every step whose `type` is `Orchestration`, dependants can read the child run's per-step data via these template accessors. The data is populated on every terminal branch (success, failure, cancellation) and is in-process / untruncated — no MCP round-trip needed.
 
@@ -420,7 +512,7 @@ Invokes another registered orchestration. Use this when a flow should delegate t
 | `{{S.steps.<childStep>.status}}` | Lowercase status of one child step |
 | `{{S.steps.<childStep>.files}}` / `files[N]` | Saved file paths of one child step |
 
-Use these for self-healing repair patterns: a downstream Prompt step can inspect `{{attempt-1.steps.build.error}}` and `{{attempt-1.steps.codegen.output}}` to build a corrective prompt — works whether attempt-1 succeeded, failed, or was cancelled. See `examples/self-healing-with-child-bindings.yaml` for a complete pattern, or `docs/orchestration-step-deep-dive.md` for the full reference.
+Use these for self-healing repair patterns: a downstream Prompt step can inspect `{{attempt-1.steps.build.error}}` and `{{attempt-1.steps.codegen.output}}` to build a corrective prompt — works whether attempt-1 succeeded, failed, or was cancelled. For a complete worked pattern see `examples/self-healing-with-child-bindings.yaml` and `docs/orchestration-step-deep-dive.md` **in the Orchestra GitHub repository** (<https://github.com/MoaidHathot/Orchestra>) — neither ships with the installed tool.
 
 ### Approval Step (type: "Approval")
 
@@ -469,7 +561,7 @@ For LLM-decided "ask the human only when needed" pauses inside `Prompt` steps, o
     genuinely ambiguous and a clarifying decision would meaningfully improve the
     output. Otherwise, just write the article.
   userPrompt: "Write an article about {{param.topic}}."
-  model: claude-opus-4.6
+  model: claude-opus-4.8
   enableTools: [request_user_input]
 ```
 
@@ -495,6 +587,26 @@ A Prompt step with `loop` acts as a checker for iterative refinement.
 | `exitPattern` | string | Yes |
 
 The checker evaluates the target's output. If `exitPattern` is NOT found (case-insensitive), the target re-runs with checker feedback. Repeats up to `maxIterations`.
+
+**Three traps, all of which fail silently:**
+
+1. **`exitPattern` is a SUBSTRING match.** `"INVALID".Contains("VALID")` is true, so `exitPattern: VALID` treats every rejection as approval and the loop never iterates. Choose markers with no substring overlap — `APPROVED` / `NEEDS_WORK`, not `VALID` / `INVALID`.
+2. **The match runs on the checker's FINAL content**, i.e. after any `outputHandlerPrompt`. If the handler strips the marker (a common instinct when you want clean output), the loop can never see it. Keep the marker, or drop the handler on the checker step.
+3. **Exhausting `maxIterations` is not an error.** The step succeeds with the last output and only logs a warning, so an unapproved result flows downstream. If "never approved" must stop the run, follow the loop with a deterministic `Script` step that inspects the output and calls `orchestra_complete -Status failed`.
+
+```yaml
+  - name: review
+    type: Prompt
+    dependsOn: [draft]
+    systemPrompt: |
+      Reply with exactly "APPROVED" on the first line if the draft is correct,
+      otherwise "NEEDS_WORK" followed by specific fixes.
+    userPrompt: "{{draft.output}}"
+    loop:
+      target: draft
+      maxIterations: 3
+      exitPattern: "APPROVED"     # not a substring of NEEDS_WORK
+```
 
 ## Subagents
 
@@ -543,6 +655,9 @@ trigger:
 | `delaySeconds` | int | 0 |
 | `maxIterations` | int | null (unlimited) |
 | `continueOnFailure` | bool | false |
+| `autoResume` | bool | false |
+
+`autoResume: true` makes the host re-fire the loop on startup so the chain survives host restarts. The first auto-resume fire respects `delaySeconds`, measured from the most recent persisted run.
 
 ### Webhook
 | Property | Type | Default |
@@ -566,7 +681,7 @@ mcps:
     arguments:
       - "-y"
       - "@modelcontextprotocol/server-filesystem"
-      - "{{workingDirectory}}"
+      - "{{orchestration.sourceDirectory}}"
 ```
 
 ### Remote MCP (HTTP transport)
@@ -600,10 +715,11 @@ Syntax: `{{expression}}` -- supported in prompts, URLs, headers, bodies, templat
 | `{{orchestration.runId}}` | Run ID |
 | `{{orchestration.startedAt}}` | Start timestamp |
 | `{{orchestration.tempDir}}` | Temp directory for this run |
+| `{{orchestration.sourcePath}}` | Absolute path of the orchestration file |
+| `{{orchestration.sourceDirectory}}` | Directory containing the orchestration file -- anchor runtime file paths with this |
 | `{{step.name}}` | Current step name |
 | `{{step.type}}` | Current step type |
 | `{{server.url}}` | Orchestra server URL |
-| `{{workingDirectory}}` | Working directory |
 
 **Orchestration-step accessors** (only on steps whose `type` is `Orchestration`):
 
@@ -642,7 +758,7 @@ These tools must be explicitly enabled via `enableTools` on a Prompt step (or `d
 ### 1. Fan-Out / Fan-In
 Multiple root steps (no dependsOn) run in parallel; a downstream step depends on all of them to synthesize results.
 ```yaml
-defaultModel: claude-opus-4.6
+defaultModel: claude-opus-4.8
 steps:
   - name: research-a
     type: Prompt
@@ -676,22 +792,29 @@ A checker step loops a target step until quality is met.
 ```
 
 ### 3. Subagent Delegation
-Coordinator delegates to specialized subagents.
+Coordinator delegates to specialized subagents. A subagent can only reference an MCP that the orchestration defines at the top level, so `web-fetch` has to exist in `mcps:` before a subagent names it.
 ```yaml
-- name: coordinator
-  type: Prompt
-  systemPrompt: Delegate to your specialists.
-  userPrompt: "{{param.task}}"
-  subagents:
-    - name: researcher
-      description: Finds facts from the web.
-      prompt: You are a researcher.
-      mcps: [web-fetch]
-      infer: true
-    - name: writer
-      description: Writes polished content.
-      prompt: You are a writer.
-      infer: true
+mcps:
+  - name: web-fetch
+    type: local
+    command: uvx
+    arguments: ["mcp-server-fetch"]
+
+steps:
+  - name: coordinator
+    type: Prompt
+    systemPrompt: Delegate to your specialists.
+    userPrompt: "{{param.task}}"
+    subagents:
+      - name: researcher
+        description: Finds facts from the web.
+        prompt: You are a researcher.
+        mcps: [web-fetch]
+        infer: true
+      - name: writer
+        description: Writes polished content.
+        prompt: You are a writer.
+        infer: true
 ```
 
 ### 4. Gate / Early Exit
@@ -738,10 +861,10 @@ Pre-process dependency outputs or post-process LLM output.
   userPrompt: "{{fetch-data.output}}"
 ```
 
-### 6. Multi-Step Pipeline (all 5 step types)
+### 6. Multi-Step Pipeline (many step types)
 Command -> Script -> Prompt -> Transform -> Http -> Orchestration
 ```yaml
-defaultModel: claude-opus-4.6
+defaultModel: claude-opus-4.8
 steps:
   - name: build
     type: Command
@@ -863,7 +986,7 @@ Control context compaction thresholds per step.
 ### 14. Human-in-the-Loop Approval Gate (Declarative)
 A deploy that pauses for a human reviewer; the response feeds the next step.
 ```yaml
-defaultModel: claude-opus-4.6
+defaultModel: claude-opus-4.8
 inputs:
   service: { type: string, required: true }
   env: { type: string, enum: [staging, production], required: true }
@@ -900,7 +1023,7 @@ The agent only pauses if it needs clarification. Existing pipelines without `ena
     is genuinely ambiguous and a clarifying decision from the user would
     meaningfully improve the output. Otherwise just write the article.
   userPrompt: "Write a 200-word article about {{param.topic}}."
-  model: claude-opus-4.6
+  model: claude-opus-4.8
   enableTools: [request_user_input]
 ```
 
@@ -946,7 +1069,7 @@ and route any elicitation/plan-approval to a human. All controls are opt-in.
     You are a read-only reviewer. Do not run shell commands, fetch URLs, or modify
     files. Ask the operator if you need a decision.
   userPrompt: "{{param.question}}"
-  model: claude-opus-4.6
+  model: claude-opus-4.8
   workingDirectory: /work/repo
   humanInput: true
   permissionPolicy:
@@ -972,13 +1095,13 @@ Orchestrations can be registered in Orchestra via:
 
 ## Common Mistakes to Avoid
 
-1. **Do NOT invent properties.** Only use properties documented above. There is no `if`, `condition`, `forEach`, `parallel`, or `output` property.
+1. **Do NOT invent properties.** Only use properties documented above. There is no `if`, `condition`, `parallel`, or `output` property. (`forEach` *does* exist, but only on `Orchestration` steps — see "Fan-Out (`forEach`)" above. There is no `forEach` on any other step type.)
 2. **Do NOT use `systemPrompt` AND `systemPromptFile` together.** They are mutually exclusive. Same for all `*File` pairs (including `script`/`scriptFile`).
 3. **Loop target must be a dependency.** The checker step must have the target in its `dependsOn`.
 4. **Step names must be unique** within the orchestration.
 5. **No circular dependencies.** The DAG must be acyclic.
 6. **`parameters` is a string array of names**, not key-value pairs. Values come at runtime.
-7. **Model is required** for Prompt steps unless `defaultModel` is set at the orchestration level. Use `"claude-opus-4.6"` as default.
+7. **Model is required** for Prompt steps unless `defaultModel` is set at the orchestration level. Use `"claude-opus-4.8"` as default.
 8. **Template expressions are `{{...}}`**, not `${...}` or `{...}`.
 9. **Boolean/Number inputs**: values are always strings in JSON. `"true"`, `"false"`, `"42"`.
 10. **`dependsOn` references step names**, not types or indices.
@@ -987,7 +1110,7 @@ Orchestrations can be registered in Orchestra via:
 13. **Do NOT use `Command` with `pwsh -Command`, `powershell -Command`, or `bash -c` for script logic.** Use `type: Script`, `shell: pwsh`, and `script: |` instead.
 14. **Do NOT rely on the host process working directory for runtime file paths.** Use `{{orchestration.sourceDirectory}}` to build absolute paths relative to the orchestration file.
 15. **`systemPromptSections` requires `systemPromptMode: "customize"`**. Section overrides are ignored with `append` or `replace`.
-16. **Image attachments require a vision-capable model** (e.g., `claude-opus-4.6`, `gpt-4o`). Non-vision models will not understand the images.
+16. **Image attachments require a vision-capable model** (e.g., `claude-opus-4.8`, `gpt-4o`). Non-vision models will not understand the images.
 17. **`infiniteSessions` thresholds are ratios (0.0-1.0)**, not token counts. `0.80` means 80% of context used.
 18. **`hooks` is a top-level array**, not a step-level property.
 19. **Hook actions require exactly one of `script` or `scriptFile`.** Do not specify both.

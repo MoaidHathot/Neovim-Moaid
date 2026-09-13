@@ -1,6 +1,6 @@
 # Orchestra Orchestration Examples
 
-Real-world examples demonstrating common orchestration patterns. All examples use `claude-opus-4.6` as the default model.
+Real-world examples demonstrating common orchestration patterns. All examples use `claude-opus-4.8` as the default model.
 
 > **A note on `$schema` paths.** The examples below use repository-relative paths like `../schemas/orchestration.schema.json` because they live inside the Orchestra repo. If you are authoring orchestrations outside this repo, replace those paths with **either** the public URL (`https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json`) **or** a local copy produced by running `orchestra schemas` in your project (default location `./.orchestra/schemas/`). See [SKILL.md](../SKILL.md#format) for the full list of options.
 
@@ -38,7 +38,7 @@ A single Prompt step with no dependencies:
       "type": "Prompt",
       "systemPrompt": "You are a friendly assistant.",
       "userPrompt": "Say hello to the user.",
-      "model": "claude-opus-4.6"
+      "model": "claude-opus-4.8"
     }
   ]
 }
@@ -59,7 +59,7 @@ version: "1.0.0"
 steps:
   - name: analyze-code
     type: Prompt
-    model: claude-opus-4.6
+    model: claude-opus-4.8
     parameters:
       - code
     systemPrompt: |
@@ -79,7 +79,7 @@ steps:
 
   - name: summarize-review
     type: Prompt
-    model: claude-opus-4.6
+    model: claude-opus-4.8
     dependsOn:
       - analyze-code
     systemPrompt: |
@@ -133,7 +133,7 @@ The `metadata` top-level field accepts any JSON-compatible structure (string, nu
       "dependsOn": [],
       "systemPrompt": "You are a deployment assistant.",
       "userPrompt": "Deploy the service.",
-      "model": "claude-opus-4.6"
+      "model": "claude-opus-4.8"
     }
   ]
 }
@@ -163,7 +163,7 @@ steps:
   - name: deploy
     type: Prompt
     dependsOn: []
-    model: claude-opus-4.6
+    model: claude-opus-4.8
     systemPrompt: You are a deployment assistant.
     userPrompt: Deploy the service.
 ```
@@ -219,7 +219,7 @@ Demonstrates typed input schema with type validation, enum constraints, and defa
       "systemPrompt": "You are a deployment configuration validator. Check that the deployment parameters are sensible and flag any concerns.",
       "userPrompt": "Validate the following deployment configuration:\n- Service: {{param.serviceName}}\n- Environment: {{param.environment}}\n- Replicas: {{param.replicas}}\n- Dry Run: {{param.dryRun}}\n- Deploy Tag: {{vars.deployTag}}\n\nList any warnings or concerns. If everything looks good, respond with VALIDATED.",
       "parameters": ["serviceName", "environment", "replicas", "dryRun"],
-      "model": "claude-opus-4.6"
+      "model": "claude-opus-4.8"
     },
     {
       "name": "generate-manifest",
@@ -235,7 +235,7 @@ Demonstrates typed input schema with type validation, enum constraints, and defa
       "systemPrompt": "You are a deployment automation assistant. Generate the deployment commands based on the manifest. If dry run is true, prefix each command with '# DRY RUN: '.",
       "userPrompt": "Based on the following deployment manifest, generate the deployment commands:\n\n{{generate-manifest.output}}",
       "parameters": ["serviceName", "environment", "dryRun"],
-      "model": "claude-opus-4.6"
+      "model": "claude-opus-4.8"
     }
   ]
 }
@@ -285,7 +285,7 @@ steps:
     dependsOn: [build]
     systemPrompt: You summarize build output.
     userPrompt: Summarize the build output.
-    model: claude-opus-4.6
+    model: claude-opus-4.8
 ```
 
 This example demonstrates: top-level `hooks`, `step.failure` subscriptions, `when.steps` filtering, payload shaping with `detail` and `steps`, script-based hook actions, and `failurePolicy`.
@@ -324,7 +324,7 @@ steps:
   - name: analyze-info
     type: Prompt
     dependsOn: [gather-system-info]
-    model: claude-opus-4.6
+    model: claude-opus-4.8
     systemPrompt: |
       You are a systems analyst. Given system information in JSON format,
       provide a brief health assessment and note any concerns.
@@ -386,7 +386,7 @@ steps:
   - name: process
     type: Prompt
     dependsOn: [gate-empty]
-    model: claude-opus-4.6
+    model: claude-opus-4.8
     systemPrompt: Process each item.
     userPrompt: "{{gate-empty.output}}"
 
@@ -436,7 +436,7 @@ steps:
 
 ## Multi-Step DAG with All Step Types
 
-Demonstrates all five step types, dependencies, variables, and Http notification:
+Demonstrates several of the seven step types, dependencies, variables, and Http notification:
 
 ```json
 {
@@ -474,7 +474,7 @@ Demonstrates all five step types, dependencies, variables, and Http notification
       "dependsOn": ["build"],
       "systemPrompt": "You are a security analyst.",
       "userPrompt": "Review the build output for vulnerabilities:\n\n{{build.output}}",
-      "model": "claude-opus-4.6"
+      "model": "claude-opus-4.8"
     },
     {
       "name": "deploy-report",
@@ -511,7 +511,7 @@ An iterative review loop that re-runs the draft step until the checker approves:
       "type": "Prompt",
       "systemPrompt": "You are a professional writer.",
       "userPrompt": "Write an article about {{topic}}.",
-      "model": "claude-opus-4.6",
+      "model": "claude-opus-4.8",
       "parameters": ["topic"]
     },
     {
@@ -520,7 +520,7 @@ An iterative review loop that re-runs the draft step until the checker approves:
       "dependsOn": ["write-draft"],
       "systemPrompt": "You are an editor. If the draft is good, say PUBLISH. Otherwise say REVISE and explain why.",
       "userPrompt": "Review this draft:\n\n{{write-draft.output}}",
-      "model": "claude-opus-4.6",
+      "model": "claude-opus-4.8",
       "loop": {
         "target": "write-draft",
         "maxIterations": 3,
@@ -545,8 +545,8 @@ A coordinator step that delegates to specialized subagents:
     {
       "name": "web-fetch",
       "type": "local",
-      "command": "npx",
-      "arguments": ["-y", "@anthropic/mcp-fetch"]
+      "command": "uvx",
+      "arguments": ["mcp-server-fetch"]
     }
   ],
   "steps": [
@@ -555,7 +555,7 @@ A coordinator step that delegates to specialized subagents:
       "type": "Prompt",
       "systemPrompt": "You manage a team of specialists. Delegate tasks based on what is needed.",
       "userPrompt": "{{topic}}",
-      "model": "claude-opus-4.6",
+      "model": "claude-opus-4.8",
       "parameters": ["topic"],
       "subagents": [
         {
@@ -602,7 +602,7 @@ Processes webhook payloads with LLM-powered input normalization and returns resu
       "type": "Prompt",
       "systemPrompt": "You are an event processor.",
       "userPrompt": "Process this event: {{eventData}}",
-      "model": "claude-opus-4.6",
+      "model": "claude-opus-4.8",
       "parameters": ["eventData"]
     }
   ],
@@ -696,9 +696,9 @@ $ orchestra run hitl-approval-deploy --param service=foo --param env=staging --b
 Run started: hitl-approval-deploy / 2025-05-09T12-34-56_abcd
 
 > build      started
-\u2713 build      completed
+[ok] build      completed
 
-\u25cf review-deploy  awaiting input
+* review-deploy  awaiting input
 
   Approve deploy of foo to staging?
 
@@ -711,10 +711,10 @@ Run started: hitl-approval-deploy / 2025-05-09T12-34-56_abcd
 
   ? Add a comment? (optional, blank to skip): looks fine
 
-\u2192 review-deploy  response accepted by alice: choice=approve reply=looks fine
-\u2713 review-deploy  completed
+-> review-deploy  response accepted by alice: choice=approve reply=looks fine
+[ok] review-deploy  completed
 > announce   started
-\u2713 announce   completed
+[ok] announce   completed
 
 Run finished: Succeeded
 ```
@@ -722,9 +722,9 @@ Run finished: Succeeded
 **Non-interactive (CI / piped):** when stdin is redirected, `orchestra run` prints actionable instructions instead of prompting and exits with code 2 so the caller can detect the pause:
 
 ```text
-\u25cf review-deploy  awaiting input
+* review-deploy  awaiting input
 
-Awaiting input \u2014 stdin is not interactive.
+Awaiting input - stdin is not interactive.
 Run continues on the server. To respond:
 
   orchestra respond hitl-approval-deploy 2025-05-09T12-34-56_abcd review-deploy --choice <approve|reject>
@@ -769,7 +769,7 @@ steps:
       write the article. Keep clarifying questions short and focused on a single
       decision; do not chain multiple questions.
     userPrompt: "Write a 200-word article about {{param.topic}}."
-    model: claude-opus-4.6
+    model: claude-opus-4.8
     enableTools: [request_user_input]
 ```
 
@@ -779,7 +779,7 @@ Differences from the declarative `Approval` step:
 - During the wait the step status remains `Running` (the agent session is held in memory). It does **not** transition to `AwaitingInput`.
 - The engine-tool wait does **not** survive a host restart. If the host bounces during the wait, the run is marked `Failed` with cause `HostShutdownDuringWait`; the previous step's checkpoint stays intact for retry. For long-lived gates that must endure restarts, use the declarative `Approval` step.
 
-### CLI walkthrough \u2014 free-form reply
+### CLI walkthrough - free-form reply
 
 When the agent calls `orchestra_request_user_input` without a `choices` array, `orchestra run` shows the LLM-authored prompt and asks for a free-form reply:
 
@@ -790,15 +790,15 @@ Run started: hitl-engine-tool-clarify / 2025-05-09T12-40-00_efgh
 
 > writer  started
 
-\u25cf writer  awaiting input
+* writer  awaiting input
 
   Should I focus on the mathematical theory, real-world applications,
   or the artistic/visual side?
 
   ? Reply: focus on real-world applications, ~200 words
 
-\u2192 writer  response accepted: reply=focus on real-world applications, ~200 words
-\u2713 writer  completed
+-> writer  response accepted: reply=focus on real-world applications, ~200 words
+[ok] writer  completed
 
 Run finished: Succeeded
 ```
@@ -874,22 +874,22 @@ mcps:
     arguments:
       - "-y"
       - "@modelcontextprotocol/server-filesystem"
-      - "{{workingDirectory}}"
+      - "{{orchestration.sourceDirectory}}"
 
 steps:
   - name: generate
     type: Prompt
-    model: claude-opus-4.6
+    model: claude-opus-4.8
     parameters:
       - description
     mcps:
       - orchestra-control
     skillDirectories:
-      - ./skills/orchestration-authoring
+      - ../skills/orchestration-authoring
     systemPrompt: |
       You are an expert Orchestra orchestration author. Generate valid,
       production-quality Orchestra orchestration YAML files based on user
-      descriptions. Use 'claude-opus-4.6' as the default model.
+      descriptions. Use 'claude-opus-4.8' as the default model.
     userPrompt: |
       Generate an Orchestra orchestration based on this description:
 
@@ -926,9 +926,9 @@ steps:
     type: Prompt
     dependsOn:
       - generate
-    model: claude-opus-4.6
+    model: claude-opus-4.8
     skillDirectories:
-      - ./skills/orchestration-authoring
+      - ../skills/orchestration-authoring
     systemPrompt: |
       You are an Orchestra orchestration validator. Review the YAML for
       structural and semantic correctness. If valid, respond with VALID
@@ -949,7 +949,7 @@ steps:
     type: Prompt
     dependsOn:
       - validate
-    model: claude-opus-4.6
+    model: claude-opus-4.8
     parameters:
       - outputPath
     mcps:
@@ -968,7 +968,7 @@ steps:
     type: Prompt
     dependsOn:
       - save-orchestration
-    model: claude-opus-4.6
+    model: claude-opus-4.8
     parameters:
       - register
     mcps:
@@ -1017,7 +1017,7 @@ name: ui-accessibility-audit
 description: >
   Analyzes UI mockups for accessibility issues using vision capabilities,
   generates accessible React components, and reviews them in read-only mode.
-defaultModel: claude-opus-4.6
+defaultModel: claude-opus-4.8
 
 steps:
   - name: analyze-ui

@@ -46,7 +46,7 @@ steps:
     type: Prompt
     systemPrompt: You are a helpful assistant.
     userPrompt: Say hello.
-    model: claude-opus-4.6
+    model: claude-opus-4.8
 ```
 
 ---
@@ -67,7 +67,7 @@ steps:
 | `defaultSystemPromptMode` | `string` | No | `null` | Default system prompt mode for all Prompt steps. Values: `"append"`, `"replace"`, or `"customize"`. |
 | `defaultRetryPolicy` | `RetryPolicy` | No | `null` | Default retry policy applied to all steps unless overridden at the step level. |
 | `defaultStepTimeoutSeconds` | `int` | No | `null` | Default per-step timeout in seconds. Individual steps can override this. |
-| `timeoutSeconds` | `int` | No | `3600` | Maximum time in seconds for the entire orchestration run. Set to `0` or `null` to disable. |
+| `timeoutSeconds` | `int` | No | `0` (disabled) | Maximum time in seconds for the entire orchestration run. `0` or `null` means no orchestration-level timeout. |
 | `variables` | `object` | No | `{}` | Key-value pairs of user-defined variables. Values can contain template expressions. Accessed via `{{vars.name}}`. |
 | `tags` | `string[]` | No | `[]` | Tags for categorizing and filtering orchestrations. |
 | `hooks` | `Hook[]` | No | `[]` | Lifecycle hooks that run after step or orchestration outcomes. Hooks receive structured JSON payloads on stdin and can execute follow-up scripts. |
@@ -81,7 +81,15 @@ steps:
 
 ## Editor Schema Validation
 
-The `schemas/orchestration.schema.json` JSON Schema works for both JSON and YAML files in any editor that supports JSON Schema. Once bound, you get autocomplete, hover documentation, type validation, and unknown-field errors.
+The orchestration JSON Schema works for both JSON and YAML files in any editor that supports JSON Schema. Once bound, you get autocomplete, hover documentation, type validation, and unknown-field errors.
+
+**Pick the right `$schema` value for how you obtained Orchestra.** The examples throughout this document use the repository-relative form `../schemas/orchestration.schema.json`, which resolves **only** for files inside the Orchestra repository's own `examples/` folder. If you installed Orchestra from NuGet, use one of the other two forms instead:
+
+| How you got Orchestra | `$schema` value |
+|---|---|
+| Installed the tool (NuGet / `dnx`) | Run `orchestra init` or `orchestra schemas` once, then reference `./.orchestra/schemas/orchestration.schema.json` (adjust the relative depth to your file) |
+| Anywhere, no local copy | `https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json` (replace `main` with a release tag to pin) |
+| Inside the Orchestra repo's `examples/` | `../schemas/orchestration.schema.json` |
 
 **JSON files** -- editors auto-detect via the `$schema` property:
 
@@ -292,7 +300,7 @@ Sends a prompt to an LLM and captures the response as output. Supports input/out
 | `systemPromptFile` | `string` | **Yes*** | -- | Path to a file containing the system prompt. Mutually exclusive with `systemPrompt`. |
 | `userPrompt` | `string` | **Yes*** | -- | User prompt text provided inline. |
 | `userPromptFile` | `string` | **Yes*** | -- | Path to a file containing the user prompt. Mutually exclusive with `userPrompt`. |
-| `model` | `string` | **Yes** | -- | LLM model identifier (e.g., `"claude-opus-4.6"`, `"gpt-4o"`). Falls back to `defaultModel` if set. |
+| `model` | `string` | No | from `defaultModel` | LLM model identifier (e.g., `"claude-opus-4.8"`, `"gpt-4o"`). Required only when the orchestration sets no `defaultModel` -- a Prompt step with neither fails at execution. |
 | `inputHandlerPrompt` | `string` | No | `null` | An LLM prompt that pre-processes dependency outputs before the main prompt sees them. |
 | `inputHandlerPromptFile` | `string` | No | `null` | Path to file containing the input handler prompt. Mutually exclusive with `inputHandlerPrompt`. |
 | `outputHandlerPrompt` | `string` | No | `null` | An LLM prompt that post-processes the main LLM output. |
@@ -426,7 +434,7 @@ These per-step Copilot controls are all opt-in; omit a field to inherit the host
 {
   "name": "analyze",
   "type": "Prompt",
-  "model": "claude-opus-4.6",
+  "model": "claude-opus-4.8",
   "reasoningSummary": "concise",
   "contextTier": "longContext",
   "workingDirectory": "{{env.PROJECT_DIR}}",
@@ -667,7 +675,7 @@ For LLM-decided "ask the human only when needed" pauses inside `Prompt` steps, o
     genuinely ambiguous and a clarifying decision would meaningfully improve
     the output. Otherwise just write the article.
   userPrompt: "Write an article about {{param.topic}}."
-  model: claude-opus-4.6
+  model: claude-opus-4.8
   enableTools: [request_user_input]
 ```
 
@@ -838,7 +846,6 @@ Template expressions use `{{expression}}` syntax and are supported in prompts, U
 | `{{step.name}}` | The current step's name. |
 | `{{step.type}}` | The current step's type. |
 | `{{server.url}}` | Orchestra server URL. |
-| `{{workingDirectory}}` | The working directory context. |
 
 ### Orchestration-step accessors
 
