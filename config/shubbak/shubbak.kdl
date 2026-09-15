@@ -21,6 +21,14 @@ general {
     // New windows start tiled.
     initial-window-state "tiling"
 
+    // The layout a workspace starts in. The spiral: each new window halves the
+    // last, so a fourth terminal needs no thought about direction. `fibonacci`
+    // divides left/right first, so two windows sit side by side; `fibonacci-v`
+    // divides top/bottom first. Applied when a workspace is created, so a change
+    // here reaches the existing ones on the next start; `layout --set` changes one
+    // now, and a `layout=` on a workspace below pins that one regardless.
+    default-layout "fibonacci"
+
     // How windows on inactive workspaces are concealed.
     //
     // "cloak" (default) asks the shell to cloak the window. A cloaked window still
@@ -63,8 +71,11 @@ general {
     // Taj reads the `bar` section at the bottom of this same file, so there is
     // one config to maintain rather than two.
     //
-    // Launched detached, so this shell exits immediately instead of lingering.
-    startup-command "shell-exec W:\\Github\\Shubbak\\dist\\taj.exe"
+    // Bare names, not paths: a bare name is looked for beside shubbak-wm.exe first
+    // and on PATH second, so this file works on a machine running from `dist\` and
+    // on one that ran `winget install shubbak` without a line changing. An
+    // absolute path here is what stopped it being portable.
+    startup-command "taj"
 
     // Dalil, the palette. Resident so that opening it is a ShowWindow rather
     // than a process start - it reads the `dalil` section of this same file, and
@@ -73,14 +84,14 @@ general {
     // Shubbak has no idea what this program is. It subscribes to the signal the
     // keybindings below raise, which is what keeps the palette from being tied
     // to the bar.
-    startup-command "shell-exec W:\\Github\\Shubbak\\dist\\dalil.exe"
+    startup-command "dalil"
 
     // Ayn, the eye. Watches the camera and the microphone and holds the `camera`
     // and `microphone` contexts declared below while a program has either open -
     // with a lease, so they drop the moment it stops or the moment ayn does. It
     // reads the `ayn` section if there is one and runs on its defaults if not.
     // `ayn --report` says what Windows thinks is using each device right now.
-    startup-command "shell-exec W:\\Github\\Shubbak\\dist\\ayn.exe"
+    startup-command "ayn"
 }
 
 // ---------------------------------------------------------------------------
