@@ -27,9 +27,10 @@
     nuget.org account whose packages should be mirrored.
 
 .PARAMETER Source
-    NuGet source used for version resolution and download. Must be a source
-    reachable from this machine; nuget.org itself is often blocked on corporate
-    networks, where an internal proxy feed is used instead.
+    NuGet source used for version resolution and download: a source name from
+    `dotnet nuget list source`, a feed URL, or a folder path. Must be reachable
+    from this machine; nuget.org itself is often blocked on corporate networks,
+    where an internal proxy feed is used instead.
 
 .PARAMETER StableOnly
     Ignore prerelease versions. By default the newest version wins even when it
@@ -72,6 +73,35 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     throw "dotnet CLI not found on PATH."
 }
 
+function Resolve-NuGetSourceLocation {
+    <#
+    .SYNOPSIS
+        Turns a configured NuGet source name into its URL or folder path.
+        `dotnet package search --source` accepts names, but `dotnet restore
+        --source` does not - it treats anything that is not a URL as a relative
+        folder and fails with NU1301. URLs and existing paths pass through as-is.
+    #>
+    param([Parameter(Mandatory)] [string] $Source)
+
+    if ($Source -match '^[a-zA-Z][a-zA-Z0-9+.-]*://' -or (Test-Path -LiteralPath $Source)) {
+        return $Source
+    }
+
+    # Detailed listing prints each source as two lines:
+    #   2.  azure-default [Enabled]
+    #       https://packagefeedproxy.microsoft.io/nuget/v3/index.json
+    # Names may contain spaces and the [state] token may be localised.
+    $listing = @(& dotnet nuget list source --format Detailed 2>$null)
+    for ($i = 0; $i -lt $listing.Count - 1; $i++) {
+        if ($listing[$i] -match '^\s*\d+\.\s+(.+?)\s+\[[^\]]*\]\s*$' -and $Matches[1] -eq $Source) {
+            return $listing[$i + 1].Trim()
+        }
+    }
+    throw "NuGet source '$Source' is neither a URL, an existing folder, nor a configured source name (see 'dotnet nuget list source')."
+}
+
+$sourceLocation = Resolve-NuGetSourceLocation -Source $Source
+
 if (-not (Test-Path -LiteralPath $FeedPath)) {
     if ($PSCmdlet.ShouldProcess($FeedPath, 'Create feed directory')) {
         New-Item -ItemType Directory -Path $FeedPath -Force | Out-Null
@@ -79,7 +109,8 @@ if (-not (Test-Path -LiteralPath $FeedPath)) {
 }
 
 Write-Host "Feed   : $FeedPath"
-Write-Host "Source : $Source"
+if ($sourceLocation -ne $Source) { Write-Host "Source : $Source ($sourceLocation)" }
+else { Write-Host "Source : $Source" }
 
 # --- normalise stray flat packages -----------------------------------------
 # `dotnet nuget push <pkg> -s <feed>` writes into the feed ROOT using the old v2
@@ -220,6 +251,13 @@ Write-Host "Up to date : $($upToDate.Count)"
 Write-Host "Missing    : $($missing.Count)"
 
 # --- download missing versions ---------------------------------------------
+# The SDK has no `dotnet package download` (only search/add/list/remove/update;
+# asking for it prints the `dotnet package` help and exits 1), so downloading is
+# delegated to a throwaway project restore. PackageDownload items make NuGet
+# fetch exact versions without walking their dependency graph, and --packages
+# makes it extract them in the <id>/<version>/ layout a hierarchical folder feed
+# needs, .nupkg.sha512 included. Going through restore rather than raw HTTP keeps
+# credential providers and source mapping in play for feeds that require auth.
 $downloaded = [System.Collections.Generic.List[string]]::new()
 
 if ($missing.Count -gt 0) {
@@ -227,24 +265,57 @@ if ($missing.Count -gt 0) {
 
     if ($PSCmdlet.ShouldProcess("$($missing.Count) package(s)", "Download into $FeedPath")) {
         $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("nugetsync-" + [guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory -Path $staging -Force | Out-Null
+        $projectDir = Join-Path $staging 'project'
+        $packagesDir = Join-Path $staging 'packages'
+        New-Item -ItemType Directory -Path $projectDir, $packagesDir -Force | Out-Null
         try {
-            # @(...) is load-bearing: with a single missing package ForEach-Object
-            # returns a scalar string, and splatting a scalar yields malformed
-            # arguments that make dotnet exit 1.
-            $specs = @($missing | ForEach-Object { "$($_.Id)@$($_.Version)" })
-            $downloadArgs = $specs + @('--prerelease', '-s', $Source, '-o', $staging)
-            $output = & dotnet package download $downloadArgs 2>&1 | Out-String
+            $items = foreach ($entry in $missing) {
+                $id = [System.Security.SecurityElement]::Escape($entry.Id)
+                $version = [System.Security.SecurityElement]::Escape($entry.Version)
+                # Brackets pin the exact version; a bare version is read as a minimum.
+                "    <PackageDownload Include=`"$id`" Version=`"[$version]`" />"
+            }
+            $project = @"
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <!-- Fetch nothing beyond the listed packages: no implicit NETStandard.Library, no audit round-trip. -->
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <DisableImplicitNuGetFallbackFolder>true</DisableImplicitNuGetFallbackFolder>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <ItemGroup>
+$($items -join "`n")
+  </ItemGroup>
+</Project>
+"@
+            $projectPath = Join-Path $projectDir 'download.csproj'
+            $project | Set-Content -LiteralPath $projectPath -Encoding utf8
+
+            $restoreArgs = @(
+                'restore', $projectPath
+                '--packages', $packagesDir
+                '--source', $sourceLocation
+                '--nologo'
+                # The project lives under %TEMP%; keep any Directory.Build.props /
+                # Directory.Packages.props further up that tree out of the restore.
+                '-p:ImportDirectoryBuildProps=false'
+                '-p:ImportDirectoryBuildTargets=false'
+                '-p:ImportDirectoryPackagesProps=false'
+            )
+            $output = & dotnet @restoreArgs 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) {
                 # Never swallow this. A silent download failure is indistinguishable
                 # from an up-to-date feed, which is exactly how a broken feed hides.
-                Write-Warning "dotnet package download exited $LASTEXITCODE"
+                # Restore still extracts every package it did find, so the loop
+                # below reports precisely which ones were lost.
+                Write-Warning "dotnet restore exited $LASTEXITCODE"
                 @($output -split "`r?`n" | Where-Object { $_ } | Select-Object -Last 8) |
                     ForEach-Object { Write-Warning "  $_" }
             }
 
             foreach ($entry in $missing) {
-                $sourceDir = Join-Path $staging (Join-Path $entry.Id.ToLowerInvariant() $entry.Version)
+                $sourceDir = Join-Path $packagesDir (Join-Path $entry.Id.ToLowerInvariant() $entry.Version)
                 if (-not (Test-Path -LiteralPath $sourceDir)) {
                     $failed.Add("$($entry.Id) $($entry.Version): download produced no output")
                     continue
