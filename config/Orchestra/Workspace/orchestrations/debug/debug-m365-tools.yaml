@@ -5,7 +5,7 @@ description: |
   its tools with descriptions and parameters (both required and optional).
 version: 1.0.0
 tags: ["debug", "diagnostics", "m365", "mcp"]
-defaultModel: claude-opus-4.8
+defaultModel: gpt-5.6-sol
 defaultStepTimeoutSeconds: 120
 
 steps:

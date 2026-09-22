@@ -33,7 +33,7 @@ description: |
 
 version: 1.0.0
 tags: ["ZTS", "MSFT", "meetings", "action-items", "auto", "track", "followup"]
-defaultModel: claude-opus-4.8
+defaultModel: gpt-5.6-sol
 
 metadata:
   owner: Moaid Hathot

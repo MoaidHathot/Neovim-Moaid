@@ -47,7 +47,7 @@ version: 1.0.0
 # to working-hours windows, and this is a maintenance sweep that should run in
 # the quiet hours regardless.
 tags: ["cleanup", "system", "PowerReview"]
-defaultModel: claude-opus-4.8
+defaultModel: gpt-5.6-sol
 
 inputs:
   dryRun:

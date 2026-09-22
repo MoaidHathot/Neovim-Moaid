@@ -21,7 +21,7 @@ description: |
 
 version: 1.1.0
 tags: ["ZTS", "triage", "mail", "teams", "auto", "track", "inbox"]
-defaultModel: claude-opus-4.8
+defaultModel: gpt-5.6-sol
 
 metadata:
   owner: Moaid Hathot

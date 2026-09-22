@@ -28,7 +28,7 @@ description: |
 
 version: 1.0.0
 tags: ["ZTS", "daily", "digest", "auto", "track"]
-defaultModel: claude-opus-4.8
+defaultModel: gpt-5.6-sol
 
 metadata:
   owner: Moaid Hathot

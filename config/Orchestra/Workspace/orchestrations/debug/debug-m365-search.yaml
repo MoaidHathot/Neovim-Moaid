@@ -5,7 +5,7 @@ description: |
   the outputs can be compared side by side.
 version: 1.0.0
 tags: ["debug", "diagnostics", "m365", "search"]
-defaultModel: claude-opus-4.8
+defaultModel: gpt-5.6-sol
 defaultStepTimeoutSeconds: 300
 
 mcps:

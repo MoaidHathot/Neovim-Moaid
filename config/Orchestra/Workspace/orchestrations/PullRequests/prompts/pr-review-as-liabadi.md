@@ -2,7 +2,7 @@
 name: pr-review-as-liabadi
 description: Review a single PR through the liabadi persona by loading the matching skill and emitting only substantive, in-scope review comments.
 skill: pr-review-as-liabadi
-model: claude-opus-4.8
+model: gpt-5.6-sol
 reasoningLevel: high
 ---
 

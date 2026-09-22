@@ -40,7 +40,7 @@ description: |
   REST API directly.
 version: 1.2.0
 tags: ["personal", "raindrop", "auto", "watcher"]
-defaultModel: claude-opus-4.8
+defaultModel: gpt-5.6-sol
 
 variables:
   # ---- USER-FACING CONFIG -------------------------------------------------

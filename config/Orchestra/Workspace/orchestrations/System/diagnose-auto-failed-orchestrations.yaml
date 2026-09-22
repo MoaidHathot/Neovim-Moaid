@@ -29,7 +29,7 @@ description: |
 
 version: 1.1.0
 tags: ["system", "diagnostics", "self-healing", "scheduled", "orchestra"]
-defaultModel: claude-opus-4.8
+defaultModel: gpt-5.6-sol
 
 variables:
   # Real on-disk run artifacts live under OrchestraHost/executions (NOT
