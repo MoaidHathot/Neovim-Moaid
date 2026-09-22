@@ -543,7 +543,7 @@ steps:
       IMPORTANT: When calling ReplyToThread, CreateComment, or any PowerReview tool that accepts agentName, always pass agentName: "PR Author Assistant".
       IMPORTANT: Do not update remote thread status or reactions directly. Use PowerReview draft operations (DraftThreadStatusChange or DraftCommentReaction) so the user can approve them before submit.
     mcps: [powerreview]
-    reasoningLevel: High
+    reasoningLevel: Max
     timeoutSeconds: 1800
     skillDirectories:
       - "{{vars.skillsDirPowerReview}}"

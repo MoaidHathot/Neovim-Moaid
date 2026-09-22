@@ -52,7 +52,7 @@ mcps:
 steps:
   - name: validate-and-scope
     type: Prompt
-    reasoningLevel: High
+    reasoningLevel: Max
     systemPrompt: |
       You are a research intake analyst.
       Convert the user's request into a precise, research-ready brief that maximizes grounding and correctness.
@@ -201,7 +201,7 @@ steps:
     type: Prompt
     dependsOn:
       - validate-and-scope
-    reasoningLevel: High
+    reasoningLevel: Max
     mcps:
       - recall
     retry:
@@ -263,7 +263,7 @@ steps:
     type: Prompt
     dependsOn:
       - validate-and-scope
-    reasoningLevel: High
+    reasoningLevel: Max
     mcps:
       - recall
     retry:
@@ -324,7 +324,7 @@ steps:
     type: Prompt
     dependsOn:
       - validate-and-scope
-    reasoningLevel: High
+    reasoningLevel: Max
     mcps:
       - context7
     systemPrompt: |
@@ -377,7 +377,7 @@ steps:
     type: Prompt
     dependsOn:
       - validate-and-scope
-    reasoningLevel: High
+    reasoningLevel: Max
     mcps:
       - microsoft-learn
     systemPrompt: |
@@ -434,7 +434,7 @@ steps:
       - search-broad-coverage
       - search-library-docs
       - search-microsoft-learn-docs
-    reasoningLevel: High
+    reasoningLevel: Max
     mcps:
       - recall
       - context7
@@ -537,7 +537,7 @@ steps:
     dependsOn:
       - validate-and-scope
       - build-source-manifest
-    reasoningLevel: High
+    reasoningLevel: Max
     mcps:
       - context7
       - microsoft-learn
@@ -644,7 +644,7 @@ steps:
       - validate-and-scope
       - build-source-manifest
       - fetch-key-pages
-    reasoningLevel: High
+    reasoningLevel: Max
     mcps:
       - context7
       - microsoft-learn
@@ -743,7 +743,7 @@ steps:
       - build-source-manifest
       - fetch-key-pages
       - search-counterevidence
-    reasoningLevel: High
+    reasoningLevel: Max
     mcps:
       - context7
       - microsoft-learn
@@ -862,7 +862,7 @@ steps:
       - fetch-key-pages
       - search-counterevidence
       - targeted-deep-dive
-    reasoningLevel: High
+    reasoningLevel: Max
     systemPrompt: |
       You are a research coverage mapper.
       Build an explicit coverage matrix that shows whether every important sub-question
@@ -969,7 +969,7 @@ steps:
       - search-counterevidence
       - targeted-deep-dive
       - build-coverage-matrix
-    reasoningLevel: High
+    reasoningLevel: Max
     systemPrompt: |
       You are a claim ledger auditor.
       Build a strict ledger of the material claims that could appear in the final answer.
@@ -1061,7 +1061,7 @@ steps:
     dependsOn:
       - load-prior-research-memory
       - build-claim-ledger
-    reasoningLevel: High
+    reasoningLevel: Max
     systemPrompt: |
       You are a research continuity analyst.
       Compare prior saved research memory with the current claim ledger.
@@ -1179,7 +1179,7 @@ steps:
       - build-coverage-matrix
       - build-claim-ledger
       - compare-prior-and-current-claims
-    reasoningLevel: High
+    reasoningLevel: Max
     systemPrompt: |
       You are the evidence-readiness gate for a deep research pipeline.
       Review the scoped brief, prior research memory, source manifest, coverage matrix,
@@ -1256,7 +1256,7 @@ steps:
       - build-claim-ledger
       - compare-prior-and-current-claims
       - evidence-readiness-review
-    reasoningLevel: High
+    reasoningLevel: Max
     mcps:
       - context7
       - microsoft-learn
@@ -1369,7 +1369,7 @@ steps:
       - build-claim-ledger
       - compare-prior-and-current-claims
       - research-dossier
-    reasoningLevel: High
+    reasoningLevel: Max
     systemPrompt: |
       You are the final quality gate for a deep research pipeline.
       Review the dossier against the original request, scoped brief, prior research memory,

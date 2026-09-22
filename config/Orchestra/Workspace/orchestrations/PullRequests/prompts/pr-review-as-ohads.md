@@ -3,7 +3,7 @@ name: pr-review-as-ohads
 description: Review a single PR using the ohads persona by loading the matching skill and emitting structured review comments.
 skill: pr-review-as-ohads
 model: gpt-6-astra
-reasoningLevel: high
+reasoningLevel: max
 ---
 
 # System prompt

@@ -461,7 +461,7 @@ steps:
         "status": "approved|approved-with-suggestions|needs-work"
       }
     mcps: [powerreview]
-    reasoningLevel: High
+    reasoningLevel: Max
     skillDirectories:
       - "{{vars.skillsDirPowerReview}}"
     subagents:
@@ -551,7 +551,7 @@ steps:
         "status": "approved|approved-with-suggestions|needs-work"
       }
     mcps: [powerreview]
-    reasoningLevel: High
+    reasoningLevel: Max
     skillDirectories:
       - "{{vars.skillsDirPowerReview}}"
     subagents:
@@ -641,7 +641,7 @@ steps:
         "status": "approved|approved-with-suggestions|needs-work"
       }
     mcps: [powerreview]
-    reasoningLevel: High
+    reasoningLevel: Max
     skillDirectories:
       - "{{vars.skillsDirPowerReview}}"
     subagents:
@@ -744,7 +744,7 @@ steps:
         "status": "approved|approved-with-suggestions|needs-work"
       }
     mcps: [powerreview]
-    reasoningLevel: High
+    reasoningLevel: Max
     skillDirectories:
       - "{{vars.skillsDirPowerReview}}"
     subagents:
@@ -813,7 +813,7 @@ steps:
     userPromptFile: "{{vars.liabadiDir}}/pr.persona.liabadi.userPrompt.md"
     model: gpt-6-astra
     mcps: [powerreview]
-    reasoningLevel: High
+    reasoningLevel: Max
     skillDirectories:
       - "{{vars.liabadiSkillsDir}}"
       - "{{vars.skillsDirPowerReview}}"
@@ -825,7 +825,7 @@ steps:
     userPromptFile: "{{vars.ohadsDir}}/pr.persona.ohads.userPrompt.md"
     model: gpt-6-astra
     mcps: [powerreview]
-    reasoningLevel: High
+    reasoningLevel: Max
     skillDirectories:
       - "{{vars.ohadsSkillsDir}}"
       - "{{vars.skillsDirPowerReview}}"

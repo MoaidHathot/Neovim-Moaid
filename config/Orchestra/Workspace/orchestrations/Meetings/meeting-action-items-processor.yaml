@@ -687,8 +687,7 @@ steps:
       Extract the extraction result as one valid JSON object only with
       the fields specified in the system prompt. Strip markdown fences,
       prose, logs, and trailing whitespace. Output only the JSON object.
-    reasoningLevel: High
-
+    reasoningLevel: Max
   - name: generate-markdown-report
     type: Prompt
     dependsOn: [extract-action-items]

@@ -3,6 +3,7 @@
 	"urls": "http://127.0.0.1:5100",
 	"hostBaseUrl": "http://localhost:5100",
 	"defaultModel": "gpt-6-astra",
+	"defaultReasoningLevel": "max",
 	"agentPool": {
 		"minInstances": 1,
 		"maxInstances": 100,
