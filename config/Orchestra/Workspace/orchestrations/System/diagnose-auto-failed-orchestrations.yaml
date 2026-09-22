@@ -36,7 +36,7 @@ variables:
   # Orchestra/runs, which does not exist on disk). The grandchild self-corrects
   # too, but keep this pointing at the correct location.
   runsRoot: "{{env.LOCALAPPDATA}}/OrchestraHost/executions"
-  sourceRoot: "P:/github/Orchestra"
+  sourceRoot: "W:/Github/Orchestra"
   # Root of orchestration YAMLs in the WATCHED DOTFILES workspace. Pinned to
   # XDG_CONFIG_HOME (never {{orchestration.sourceDirectory}}, which could point
   # at Orchestra's compiled internal copy) so any fix edits the dotfile source

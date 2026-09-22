@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 # Integration test: parse the promoted orchestration with Orchestra's own engine,
 # not a third-party YAML reader. Catches anything the schema check cannot.
 
-$binDir  = 'P:\Github\Orchestra\src\Orchestra.Cli\bin\Release\net10.0'
+$binDir  = 'W:\Github\Orchestra\src\Orchestra.Cli\bin\Release\net10.0'
 $yaml    = 'P:\Github\Neovim-Moaid\config\Orchestra\workspace\orchestrations\Personal\Connect\connect-evidence-pack.yaml'
 $catalog = 'P:\Github\Neovim-Moaid\config\Orchestra\orchestra.mcp.json'
 
