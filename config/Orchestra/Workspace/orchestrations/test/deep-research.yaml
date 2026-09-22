@@ -4,7 +4,7 @@ version: "2.1.0"
 tags: ["research", "utils", "manual", "grounded"]
 trigger:
   type: manual
-defaultModel: gpt-5.6-sol
+defaultModel: gpt-6-astra
 timeoutSeconds: 43200
 defaultRetryPolicy:
   maxRetries: 2

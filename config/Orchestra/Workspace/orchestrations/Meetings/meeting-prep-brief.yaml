@@ -12,7 +12,7 @@ description: |
   and emits a deterministic markdown summary.
 version: 2.0.0
 tags: ["productivity", "meetings", "WorkIQ", "MSFT", "auto", "ZTS"]
-defaultModel: gpt-5.6-sol
+defaultModel: gpt-6-astra
 
 metadata:
   owner: Moaid Hathot

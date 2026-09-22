@@ -36,7 +36,7 @@ foreach ($k in 'name','description','steps','defaultModel') {
     if (-not $doc.Contains($k)) { Fail "Missing top-level key: $k" }
 }
 if ($doc.name -ne 'connect-evidence-pack') { Fail "Unexpected name: $($doc.name)" }
-if ($doc.defaultModel -ne 'gpt-5.6-sol') { Fail "defaultModel must be gpt-5.6-sol (workspace default), got: $($doc.defaultModel)" }
+if ($doc.defaultModel -ne 'gpt-6-astra') { Fail "defaultModel must be gpt-6-astra (workspace default), got: $($doc.defaultModel)" }
 Write-Output "PASS  Top-level keys (name=$($doc.name), model=$($doc.defaultModel))"
 
 # ------------------------------------------------- 4. no ephemeral remnants

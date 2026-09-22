@@ -29,7 +29,7 @@ description: |
 
 version: 1.1.0
 tags: ["system", "diagnostics", "self-healing", "scheduled", "orchestra"]
-defaultModel: gpt-5.6-sol
+defaultModel: gpt-6-astra
 
 variables:
   # Real on-disk run artifacts live under OrchestraHost/executions (NOT

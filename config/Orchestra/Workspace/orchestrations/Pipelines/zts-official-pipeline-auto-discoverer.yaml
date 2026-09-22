@@ -23,7 +23,7 @@ description: |
   transition (success) or by the investigator (failure).
 version: 2.1.0
 tags: ["ZTS", "pipelines", "MSFT", "Azure-DevOps", "Pipeline", "auto-discovery", "auto"]
-defaultModel: gpt-5.6-sol
+defaultModel: gpt-6-astra
 timeoutSeconds: 7200
 trigger:
   type: scheduler

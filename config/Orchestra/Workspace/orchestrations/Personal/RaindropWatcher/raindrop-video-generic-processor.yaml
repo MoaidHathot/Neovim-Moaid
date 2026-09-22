@@ -11,7 +11,7 @@ description: |
   without doing a full vision pass.
 version: 1.1.0
 tags: ["personal", "raindrop", "auto", "video", "generic"]
-defaultModel: gpt-5.6-sol
+defaultModel: gpt-6-astra
 
 inputs:
   raindropId: { type: string, required: true }

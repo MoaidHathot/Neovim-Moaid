@@ -7,7 +7,7 @@ description: >-
   into topics, extracurricular work, domains, impact patterns and a month-by-month
   timeline, renders a markdown evidence pack, and writes it to disk.
 version: 1.0.0
-defaultModel: gpt-5.6-sol
+defaultModel: gpt-6-astra
 timeoutSeconds: 21600
 tags: [connect, evidence, personal, azdo, workiq, m365]
 metadata:
