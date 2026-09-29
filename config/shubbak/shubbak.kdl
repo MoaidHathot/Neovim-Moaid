@@ -881,7 +881,7 @@ bar {
     // source "weather" kind="command" command="pwsh -NoProfile -File P:\\Github\\Neovim-Moaid\\scripts\\weather.ps1"
 
     profile "default" {
-        height 34
+        height 23
 
         // Translucent: the alpha is what lets the backdrop through. 60% of the old
         // opaque colour keeps the text readable over a blurred desktop; raise it
@@ -906,8 +906,8 @@ bar {
 
         foreground "#cdd6f4"
         font "Segoe UI Variable Text"
-        font-size 18
-        padding 10
+        font-size 12
+        padding 7
 
         // Zones are flex containers. Three is a convention, not a limit - add as
         // many as you like, each with its own alignment and growth.
