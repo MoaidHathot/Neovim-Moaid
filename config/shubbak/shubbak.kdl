@@ -1052,24 +1052,36 @@ bar {
 
             text id="seattle" template="{{ seattle }}" colour="#ffffff73"
 
-            // `icon` turns the layout name into a glyph that looks like the
-            // arrangement - two bars for a horizontal split, three stacked lines for
-            // a vertical one. Bold and a shade larger so it reads at a glance.
+            // The layout as a picture of itself: the workspace drawn sixteen pixels
+            // across, with a pane for each window the layout would place. The big
+            // pane on the left and the rest dwindling into a corner is the spiral, a
+            // column of equal strips beside a tall one is master-left, four squares
+            // the grid, one solid square monocle. Nothing to learn, which is what the
+            // old `{{ layout | icon }}` glyph could never manage - `┤` for a spiral
+            // means nothing until it has been.
+            //
+            // The arithmetic is the window manager's own: the bar arranges placeholder
+            // windows with the same code the desktop is arranged by, so the picture is
+            // right by construction. `panes="windows"` draws as many panes as the
+            // workspace holds windows - but never fewer than four, since below four
+            // the layouts cannot be told apart, and the panes the workspace does not
+            // have yet are drawn faint. So one window in a spiral is the big pane
+            // solid and the three it would dwindle into ghosts: the layout and the
+            // count in one glance. Open a window and a ghost lights; close one and it
+            // fades. `min-panes=1` would draw the literal count, and `panes=4` the
+            // same four solid panes whatever the workspace holds.
             //
             // Dim like the clock and the language while the layout is the ordinary
             // horizontal split, and the focus green the moment it is anything else -
             // so an unusual layout announces itself rather than having to be noticed.
-            //
-            // Matched on the layout's name rather than the glyph: `of` tests the
-            // source before the filter transformed it, which avoids writing
-            // box-drawing characters here and keeping them in step with the icon.
+            // The `when` tests the layout's name directly; there is no glyph to match.
             //
             // Clickable: each click steps the focused workspace to the next layout,
-            // the same `layout --cycle` a keybinding would send. `layout --cycle-back`
-            // goes the other way, and `layout --set <name>` jumps to one.
-            text id="layout"  template="{{ layout | icon }}" colour="#ffffff73" \
-                 bold=#true font-size=17 on-click="layout --cycle" {
-                when of="layout" not="splith" colour="#1dfb8d"
+            // the same `layout --cycle` a keybinding would send; the right button goes
+            // the other way. `layout --set <name>` jumps to one.
+            layout id="layout" colour="#ffffff73" panes="windows" \
+                   on-click="layout --cycle" on-right-click="layout --cycle-back" {
+                when not="splith" colour="#1dfb8d"
             }
 
             // `accent` is the colour Windows is set to, so the clock follows the
@@ -1098,7 +1110,7 @@ bar {
     }
 
     // No rules, so the default profile applies everywhere and the bar keeps the
-    // seattle clock, the binding mode and the layout icon on every workspace.
+    // seattle clock, the binding mode and the layout picture on every workspace.
     //
     // The profile above is left defined as a working example: add a rule such as
     //   rule use="presentation" workspace="\\"
