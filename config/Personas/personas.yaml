@@ -9,12 +9,13 @@ dataDirectory: C:\temp\personas
  
 llm:
   provider: github-copilot-sdk
-  # Exact Copilot model id (from `personas models`). "opus-4.8 fast" isn't a separate model in the catalog;
-  # the Opus 4.8 model is claude-opus-4.8.
-  defaultModel: claude-opus-5
+  # Exact Copilot model id (from `personas models`).
+  defaultModel: claude-opus-5.5
   reasoning:
-    # claude-opus-4.8 supports low|medium|high|xhigh|max. "max" is its highest effort.
-    review: max
+    personaBuild: xhigh
+    ask: xhigh
+    review: xhigh
+    verify: xhigh
   # Opt into the model's large context window; also auto-scales how much evidence goes into the prompt.
   maxContextWindowTokens: 1000000
  
