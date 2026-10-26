@@ -1,0 +1,182 @@
+// Written by OverShell from the built-in defaults. Every value here equals the default, so this
+// file changes nothing until you edit it; delete a line to fall back. Saved changes apply live.
+// OverShell default settings.
+//
+// Copy only what you want to change into %APPDATA%\OverShell\settings.jsonc. Objects merge
+// key by key; arrays replace as a whole; setting a key to null removes it. Sinks are named
+// so that enabling one is a one-liner:
+//
+//   { "notifications": { "sinks": { "palantir": { "enabled": true } } } }
+{
+  // The view shown at start: terminal | herd | dashboard | zen.
+  "view": "terminal",
+
+  // A view is a layout (a preset name or a file under %APPDATA%\OverShell\layouts\) plus
+  // what the middle shows: "terminal" (the live tab) or "dashboard" (one card per tab).
+  // Ctrl+Shift+1..4 switch; Ctrl+Shift+` toggles between the last two.
+  "views": {
+    "terminal":  { "layout": "top",       "content": "terminal",  "title": "Terminal" },
+    "herd":      { "layout": "herd",      "content": "terminal",  "title": "Herd" },
+    "dashboard": { "layout": "dashboard", "content": "dashboard", "title": "Dashboard" },
+    "zen":       { "layout": "zen",       "content": "terminal",  "title": "Zen" }
+  },
+
+  // injectShellIntegration makes a plain PowerShell profile announce its directory (OSC 9;9)
+  // by running a small script after the profile - the command line gets `-NoExit -Command`,
+  // no profile file is touched; a profile that runs its own command or file is left alone.
+  // cwdFromProcess reads the shell's current directory from the process itself when the
+  // shell does not announce it, so `cd` is followed in cmd, bash and wrapped shells too.
+  "detection": {
+    "snapshotDebounceMs": 300,
+    "snapshotMinIntervalMs": 300,
+    "processProbeIntervalMs": 2500,
+    "treatUnknownAsAgent": false,
+    "injectShellIntegration": true,
+    "cwdFromProcess": true
+  },
+
+  // Branch comes from .git/HEAD (free). The dirty marker runs `git status` per repository
+  // every statusIntervalMs and is off by default because it spawns a process.
+  "git": {
+    "branch": true,
+    "dirty": false,
+    "statusIntervalMs": 10000
+  },
+
+  // What comes back after a restart - and after a crash or a power cut, since the file is
+  // written every two seconds: the tabs (profile, directory, label, group), the view, the
+  // windows' placement. A tab whose agent was running gets the agent back: by session id
+  // when one is known (`opencode --session <id>`, from the integration), else the tool's
+  // "most recent session" form (`opencode --continue`) when resumeWithoutId allows it. A
+  // profile whose program is the agent is relaunched with those arguments; a shell gets
+  // them typed once it is quiet. restartWithWindows asks Windows to start OverShell again
+  // after a restart or sign-out (never after a crash); it is off because starting by
+  // itself is a choice. confirmCloseWithAgents asks before closing the window while agents
+  // are working or waiting (never on sign-out). showPreviousScreen paints what each tab
+  // showed when the last run ended, dimmed, above the new prompt: interrupted | always | never.
+  "session": {
+    "restore": true,
+    "resumeAgents": true,
+    "resumeWithoutId": true,
+    "restoreWindows": true,
+    "showPreviousScreen": "interrupted",
+    "confirmCloseWithAgents": true,
+    "restartWithWindows": false
+  },
+
+  // Matched to Windows Terminal, under its names. reloadEnvironmentVariables builds every
+  // tab's environment from the registry, as a fresh logon would, so a tool installed after
+  // OverShell (or after whatever launched it) is on PATH in the next tab; false inherits
+  // OverShell's own environment instead - for a start from a shell with variables of its own.
+  "compatibility": {
+    "reloadEnvironmentVariables": true
+  },
+
+  // Which waiting tab a jump goes to: "age" (waited longest first) or "strip" (the next in tab order).
+  "attention": {
+    "order": "age"
+  },
+
+  // Key sequences (ctrl+shift+k j): how long the next chord may take, and whether a hint bar
+  // lists the possible continuations while a sequence is pending.
+  "keys": {
+    "sequenceTimeoutMs": 3000,
+    "hints": true
+  },
+
+  // Extensions: features built on top of the shell. Each has a section under its id with
+  // "enabled" and its own settings; see the guide for the built-in ones.
+  "extensions": {
+  },
+
+  // Registers overshell:// for this user at start (HKCU, no elevation), so a clicked
+  // toast (--launch overshell://focus/<tab>) lands on its tab in the running window.
+  "protocol": {
+    "register": true
+  },
+
+  // The window's look beyond the theme colours. "backdrop": the Windows 11 material behind the
+  // chrome - acrylic | mica | micaalt | none (OVERSHELL_BACKDROP in the environment overrides it for
+  // a run). "terminalOpacity": the backdrop shows through the terminal's default background like
+  // Windows Terminal's own "opacity" (text and coloured cells stay opaque); 1 is an opaque body.
+  // Windows paints acrylic for the active window only, so an inactive window shows an opaque
+  // fallback behind the text. Crossing 1 in either direction takes a restart (a terminal's window
+  // is created once, in one rendering mode); the value itself follows live.
+  "window": {
+    "backdrop": "acrylic",
+    "terminalOpacity": 0.5
+  },
+
+  // The loopback endpoint. "control": false keeps it to the integrations' reports and polls:
+  // no reading screens, sending text, replying or opening tabs over HTTP, and no endpoint.json
+  // for `OverShell mcp`.
+  "endpoint": {
+    "control": true
+  },
+
+  // A ResourceDictionary under %APPDATA%\OverShell\skins\<name>.xaml overriding theme keys
+  // (Surface.Chrome, Accent.Base, State.Blocked, Font.Ui, Metrics.TabHeight, ...). Brush
+  // colours update live when the file is saved; fonts and metrics apply at the next start.
+  "skin": null,
+
+  // Colours: theme is "system" (follow the Windows app theme), "dark" or "light"; accent is
+  // "system" (the Windows accent, in the variant that reads on the theme), "palette" (the
+  // theme's own blue) or a "#RRGGBB" colour. Both change live, with Windows and on save; a
+  // skin's colours still win over them.
+  "theme": "system",
+  "accent": "system",
+
+  "notifications": {
+    // Every enabled sink runs for every event its "when" allows. Kinds: blocked, done,
+    // error, exited. Harnesses: opencode, copilot, claude, codex, generic, shell.
+    "sinks": {
+      // In-window toast over the terminal. Never for the tab you are looking at.
+      "overlay": { "type": "overlay", "durationMs": 6000, "when": { "notActiveTab": true } },
+
+      // Taskbar overlay badge with the number of tabs needing attention, plus a flash
+      // when the window is not in the foreground.
+      "taskbar": { "type": "taskbar" },
+
+      // System sounds only while you are away from the window.
+      "sound": {
+        "type": "sound",
+        "when": { "windowUnfocused": true },
+        "sounds": { "blocked": "exclamation", "error": "hand", "done": "asterisk" }
+      },
+
+      // Windows toasts without an external program (Action Center, click focuses the tab).
+      // Silent: the sound sink decides about sound. Off by default in favour of Palantir,
+      // which does richer toasts; turn one or the other on, not both.
+      "toast": { "type": "toast", "enabled": false, "when": { "notActiveTab": true } },
+
+      // Windows toast through Palantir (https://github.com/MoaidHathot/Palantir).
+      // {…} placeholders are filled from the event: kind, title, message, detail, time,
+      // tab.id, tab.label, tab.harness, tab.harnessName, tab.project, tab.cwd.
+      // Flags verified against palantir 2.0.1 --help. Clicking the toast opens
+      // overshell://focus/<tab>, which the running window answers (protocol.register).
+      "palantir": {
+        "type": "command",
+        "enabled": false,
+        "exe": "palantir",
+        "args": [
+          "-t", "{title}",
+          "-m", "{message}",
+          "-b", "{tab.cwd}",
+          "--tag", "overshell-{tab.id}",
+          "--replace",
+          "--launch", "overshell://focus/{tab.id}",
+          "-q"
+        ],
+        "stdinJson": false,
+        "when": { "notActiveTab": true }
+      }
+    }
+  },
+
+  // Tab items: twoLine shows the state · project line under the label (strip and list);
+  // showHarnessGlyph shows the harness icon (OpenCode, Copilot, ...) on agent tabs.
+  "tabs": {
+    "twoLine": true,
+    "showHarnessGlyph": true
+  }
+}
