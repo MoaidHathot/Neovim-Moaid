@@ -1,27 +1,29 @@
-import type { Hooks, PluginInput } from "@opencode-ai/plugin"
-import type { Model } from "@opencode-ai/sdk/v2"
-
+// OpenCode 2 server plugin (ported from the V1 `provider.models` + `chat.headers` hooks).
+//
 // GitHub Copilot's `/models` endpoint returns a different (larger) set of models
-// depending on the `Copilot-Integration-Id` header. opencode's built-in copilot
-// plugin does NOT send this header, so models that are only exposed to the
-// official GitHub Copilot CLI (integration id `copilot-developer-cli`) never show
-// up in opencode's model picker — e.g. `claude-opus-4.6-1m`, `mai-code-1-flash`.
+// depending on the `Copilot-Integration-Id` header. OpenCode's built-in Copilot plugin
+// (`opencode.provider.github.copilot`) does NOT send this header, so models that are
+// only exposed to the official GitHub Copilot CLI (integration id
+// `copilot-developer-cli`) never show up in the model picker — e.g.
+// `claude-opus-4.6-1m`, `mai-code-1-flash`.
 //
-// This plugin re-fetches `/models` with the CLI integration id and returns the
-// full picker-enabled set, then injects the same header on chat requests so the
-// extra models actually work. It runs after the built-in plugin (config/user
-// plugins load last), so its `provider.models` result is authoritative.
+// This plugin re-fetches `/models` with the CLI integration id and publishes the full
+// picker-enabled set for the `github-copilot` provider, then injects the same header
+// on every model request to that provider so the extra models actually work. User
+// plugins register after the built-in ones, so this provider transform runs last and
+// its inventory is authoritative; if the fetch fails the built-in inventory stands.
 //
-// It also drops stale catalog entries that the live API no longer surfaces
-// (detected via `limit.context === 0` after rebuild) — e.g. `claude-opus-4.7-1m`
-// from models.dev whose live successor is `claude-opus-4.7-1m-internal`.
-//
-// The fetch/build logic below is a plain-TypeScript port of opencode's own
-// `packages/opencode/src/plugin/github-copilot/models.ts` so the produced Model
-// objects are shaped identically to the built-in ones.
+// The model-building logic is a plain-TypeScript port of OpenCode's own
+// `packages/core/src/github-copilot/models.ts` so the produced Model.Info objects are
+// shaped identically to the built-in ones (V2 shape: `modelID`, `package`, `settings`,
+// `capabilities.input[]`, `cost[]` tiers, `variants[]`).
+import { Model, Plugin, Provider } from "@opencode/plugin"
 
+type ConnectionInfo = NonNullable<Awaited<ReturnType<Plugin.Context["integration"]["connection"]["active"]>>>
+
+const PROVIDER_ID = "github-copilot"
 const INTEGRATION_ID = "copilot-developer-cli"
-const API_VERSION = "2026-06-01"
+const API_VERSION = "2026-08-01"
 const USER_AGENT = "GitHubCopilotCLI/opencode-plugin"
 
 type RawItem = {
@@ -34,7 +36,13 @@ type RawItem = {
   billing?: {
     token_prices?: {
       batch_size: number
-      default: { cache_price: number; input_price: number; output_price: number }
+      default: {
+        // API version 2026-08-01 renamed cache_price to cache_read_price.
+        cache_price?: number
+        cache_read_price?: number
+        input_price: number
+        output_price: number
+      }
     }
   }
   capabilities: {
@@ -68,12 +76,26 @@ type SelectableItem = RawItem & {
   }
 }
 
+type Snapshot = ReadonlyMap<string, SelectableItem>
+type Usd = Model.Info["cost"][number]["input"]
+
+const usd = (value: number) => value as Usd
+
 function normalizeDomain(url: string) {
   return url.replace(/^https?:\/\//, "").replace(/\/$/, "")
 }
 
-function base(enterpriseUrl?: string) {
-  return enterpriseUrl ? `https://copilot-api.${normalizeDomain(enterpriseUrl)}` : "https://api.githubcopilot.com"
+function defaultBaseURL(enterprise?: string) {
+  return enterprise ? `https://copilot-api.${normalizeDomain(enterprise)}` : "https://api.githubcopilot.com"
+}
+
+// Mirrors `copilotBaseURL` in core's github-copilot plugin: an explicit API endpoint
+// discovered at login wins, then an enterprise domain, then the public endpoint.
+function baseURL(metadata?: Readonly<Record<string, unknown>>) {
+  const endpoint = metadata?.apiEndpoint
+  if (typeof endpoint === "string" && endpoint) return endpoint.replace(/\/+$/, "")
+  const enterprise = metadata?.enterpriseUrl
+  return defaultBaseURL(typeof enterprise === "string" ? enterprise : undefined)
 }
 
 function usable(item: RawItem): item is SelectableItem {
@@ -85,106 +107,132 @@ function usable(item: RawItem): item is SelectableItem {
   )
 }
 
-// Matches Anthropic Opus 4.7 and any later version (4.8, 5.x, ...). Mirrors
-// `anthropicOpus47OrLater` in opencode's provider/transform.ts so we don't have
-// to revisit this when new Opus versions ship. Used to force the
-// `display: "summarized"` thinking flag — Opus 4.7+ flipped the API default to
-// "omitted", which returns empty thinking blocks unless we override it.
-function isAnthropicOpus47OrLater(apiId: string) {
-  const m = /opus-(\d+)[.-](\d+)(?:[.@-]|$)|claude-(\d+)[.-](\d+)-opus(?:[.@-]|$)/i.exec(apiId)
-  if (!m) return false
-  const major = Number(m[1] ?? m[3])
-  const minor = Number(m[2] ?? m[4])
-  return major > 4 || (major === 4 && minor >= 7)
+function variants(remote: SelectableItem, messages: boolean): Model.Info["variants"] {
+  const efforts = remote.capabilities.supports.reasoning_effort ?? []
+  if (!messages && efforts.length) {
+    return efforts.map((effort) => ({
+      id: Model.VariantID.make(effort),
+      settings: {
+        reasoningEffort: effort,
+        reasoningSummary: "auto",
+        include: ["reasoning.encrypted_content"],
+      },
+    }))
+  }
+  if (efforts.length && remote.capabilities.supports.adaptive_thinking) {
+    return efforts.map((effort) => ({
+      id: Model.VariantID.make(effort),
+      settings: {
+        thinking: { type: "adaptive", display: "summarized" },
+        effort,
+      },
+    }))
+  }
+  const max = remote.capabilities.supports.max_thinking_budget
+  if (max === undefined) return []
+  return [
+    { id: Model.VariantID.make("max"), settings: { thinking: { type: "enabled", budgetTokens: max - 1 } } },
+    { id: Model.VariantID.make("high"), settings: { thinking: { type: "enabled", budgetTokens: Math.floor(max / 2) } } },
+  ]
 }
 
-function build(key: string, remote: SelectableItem, url: string, prev?: Model): Model {
-  const reasoning =
-    !!remote.capabilities.supports.adaptive_thinking ||
-    !!remote.capabilities.supports.reasoning_effort?.length ||
-    remote.capabilities.supports.max_thinking_budget !== undefined ||
-    remote.capabilities.supports.min_thinking_budget !== undefined
+function build(key: string, remote: SelectableItem, url: string, previous?: Model.Info): Model.Info {
+  const providerID = Provider.ID.make(PROVIDER_ID)
+  const id = Model.ID.make(key)
+  const messages = remote.supported_endpoints?.includes("/v1/messages") ?? false
+  const endpoint = messages
+    ? "messages"
+    : remote.supported_endpoints?.includes("/responses")
+      ? "responses"
+      : remote.supported_endpoints?.includes("/chat/completions")
+        ? "chat"
+        : undefined
   const image =
     (remote.capabilities.supports.vision ?? false) ||
     (remote.capabilities.limits.vision?.supported_media_types ?? []).some((item) => item.startsWith("image/"))
-
-  const isMsgApi = remote.supported_endpoints?.includes("/v1/messages")
+  const pdf =
+    (remote.capabilities.supports.vision ?? false) &&
+    (remote.capabilities.limits.vision?.supported_media_types.includes("application/pdf") ?? false)
+  const input = ["text"]
+  if (image) input.push("image")
+  if (pdf) input.push("pdf")
   const prices = remote.billing?.token_prices
-  // Copilot prices are AIC per billing batch; opencode stores USD per million tokens.
-  const usdPerMillion = prices ? 10_000 / prices.batch_size : 0
+  // Copilot reports AIC per billing batch; OpenCode stores USD per million tokens.
+  const usdPerMillion = prices && prices.batch_size > 0 ? 10_000 / prices.batch_size : 0
+  const version = remote.version.startsWith(`${remote.id}-`)
+    ? remote.version.slice(remote.id.length + 1)
+    : remote.version
+  const released = previous?.time.released || Date.parse(version)
 
-  const model: Model = {
-    id: key,
-    providerID: "github-copilot",
-    api: {
-      id: remote.id,
-      url: isMsgApi ? `${url}/v1` : url,
-      npm: isMsgApi ? "@ai-sdk/anthropic" : "@ai-sdk/github-copilot",
+  return {
+    ...Model.Info.default(providerID, id),
+    id,
+    modelID: Model.ID.make(remote.id),
+    providerID,
+    family: previous?.family ?? Model.Family.make(remote.capabilities.family),
+    name: previous?.name ?? remote.name,
+    package: messages ? "@opencode/ai/providers/anthropic" : "aisdk:@ai-sdk/github-copilot",
+    settings: {
+      ...previous?.settings,
+      baseURL: messages ? `${url}/v1` : url,
+      ...(endpoint ? { endpoint } : {}),
     },
+    headers: previous?.headers,
+    body: previous?.body,
+    capabilities: {
+      tools: remote.capabilities.supports.tool_calls,
+      input,
+      output: ["text"],
+    },
+    variants: variants(remote, messages),
+    time: { released: Number.isFinite(released) ? released : 0 },
+    cost: [
+      {
+        input: usd((prices?.default.input_price ?? 0) * usdPerMillion),
+        output: usd((prices?.default.output_price ?? 0) * usdPerMillion),
+        cache: {
+          read: usd((prices?.default.cache_read_price ?? prices?.default.cache_price ?? 0) * usdPerMillion),
+          write: usd(0),
+        },
+      },
+    ],
     status: "active",
+    enabled: remote.model_picker_enabled,
     limit: {
       context: remote.capabilities.limits.max_context_window_tokens ?? remote.capabilities.limits.max_prompt_tokens,
       input: remote.capabilities.limits.max_prompt_tokens,
       output: remote.capabilities.limits.max_output_tokens,
     },
-    capabilities: {
-      temperature: prev?.capabilities.temperature ?? true,
-      reasoning: prev?.capabilities.reasoning ?? reasoning,
-      attachment: prev?.capabilities.attachment ?? true,
-      toolcall: remote.capabilities.supports.tool_calls,
-      input: { text: true, audio: false, image, video: false, pdf: false },
-      output: { text: true, audio: false, image: false, video: false, pdf: false },
-      interleaved: false,
-    },
-    family: prev?.family ?? remote.capabilities.family,
-    name: prev?.name ?? remote.name,
-    cost: {
-      input: (prices?.default.input_price ?? 0) * usdPerMillion,
-      output: (prices?.default.output_price ?? 0) * usdPerMillion,
-      cache: {
-        read: (prices?.default.cache_price ?? 0) * usdPerMillion,
-        write: 0,
-      },
-    },
-    options: prev?.options ?? {},
-    headers: prev?.headers ?? {},
-    release_date:
-      prev?.release_date ??
-      (remote.version.startsWith(`${remote.id}-`) ? remote.version.slice(remote.id.length + 1) : remote.version),
   }
-
-  const efforts = remote.capabilities.supports.reasoning_effort
-  const variants: NonNullable<Model["variants"]> = {}
-  if (!isMsgApi && efforts?.length) {
-    efforts.forEach((effort) => {
-      variants[effort] = {
-        reasoningEffort: effort,
-        reasoningSummary: "auto",
-        include: ["reasoning.encrypted_content"],
-      }
-    })
-  } else if (efforts?.length && remote.capabilities.supports.adaptive_thinking) {
-    efforts.forEach((effort) => {
-      variants[effort] = {
-        thinking: {
-          type: "adaptive",
-          ...(isAnthropicOpus47OrLater(model.api.id) ? { display: "summarized" } : {}),
-        },
-        effort,
-      }
-    })
-  } else if (remote.capabilities.supports.max_thinking_budget) {
-    const max = remote.capabilities.supports.max_thinking_budget
-    variants["max"] = { thinking: { type: "enabled", budgetTokens: max - 1 } }
-    variants["high"] = { thinking: { type: "enabled", budgetTokens: Math.floor(max / 2) } }
-  }
-  if (Object.keys(variants).length > 0) model.variants = variants
-
-  return model
 }
 
-async function fetchModels(baseURL: string, token: string, existing: Record<string, Model>) {
-  const res = await fetch(`${baseURL}/models`, {
+/** Combine remote facts with the existing source definitions (aliases, local metadata). */
+function derive(url: string, remote: Snapshot, existing: readonly Model.Info[]) {
+  const result = new Map(existing.map((model) => [model.id as string, model]))
+  // Keep aliases and local metadata, but only when their advertised API model still
+  // exists. Drops stale catalog entries (e.g. models.dev ids the live API retired).
+  for (const [id, model] of result) {
+    const current = remote.get(model.modelID)
+    if (!current) {
+      result.delete(id)
+      continue
+    }
+    result.set(id, build(id, current, url, model))
+  }
+  // Add endpoint models the built-in plugin never saw (the CLI-only ones).
+  for (const [id, item] of remote) {
+    if (result.has(id)) continue
+    result.set(id, build(id, item, url))
+  }
+  // Defensive: never publish a model without a real context window.
+  for (const [id, model] of result) {
+    if (!model.limit.context) result.delete(id)
+  }
+  return Array.from(result.values())
+}
+
+async function fetchSnapshot(url: string, token: string): Promise<Snapshot> {
+  const res = await fetch(`${url}/models`, {
     headers: {
       Authorization: `Bearer ${token}`,
       "User-Agent": USER_AGENT,
@@ -193,61 +241,107 @@ async function fetchModels(baseURL: string, token: string, existing: Record<stri
     },
     signal: AbortSignal.timeout(5_000),
   })
-  if (!res.ok) throw new Error(`Failed to fetch copilot models: ${res.status}`)
-  const body = (await res.json()) as { data: RawItem[] }
-
+  if (!res.ok) throw new Error(`Failed to fetch Copilot models: ${res.status}`)
+  const body = (await res.json()) as { data?: RawItem[] }
   const remote = new Map<string, SelectableItem>()
   for (const raw of body.data ?? []) {
     if (raw && typeof raw.id === "string" && usable(raw)) remote.set(raw.id, raw)
   }
+  return remote
+}
 
-  const result: Record<string, Model> = { ...existing }
-  // prune existing entries no longer advertised by the endpoint
-  for (const [key, model] of Object.entries(result)) {
-    const m = remote.get(model.api.id)
-    if (!m) {
-      delete result[key]
-      continue
+export default Plugin.define({
+  id: "moaid.copilot-cli-models",
+  async setup(ctx) {
+    const loaded: { url?: string; snapshot?: Snapshot; connection?: ConnectionInfo } = {}
+    let loading: Promise<void> | undefined
+
+    const load = async () => {
+      const connection = await ctx.integration.connection.active(PROVIDER_ID)
+      const credential = connection
+        ? await ctx.integration.connection.resolve(connection).catch(() => undefined)
+        : undefined
+      if (credential?.type !== "oauth") {
+        loaded.url = undefined
+        loaded.snapshot = undefined
+        loaded.connection = undefined
+        return
+      }
+      const url = baseURL(credential.metadata)
+      try {
+        // The GitHub OAuth token is the `refresh` field; Copilot exchanges it per request.
+        const snapshot = await fetchSnapshot(url, credential.refresh)
+        loaded.url = url
+        loaded.snapshot = snapshot
+        loaded.connection = connection
+      } catch (error) {
+        // Fall back to whatever the built-in plugin already produced.
+        console.error("[copilot-cli-models] failed to fetch CLI models:", error)
+        loaded.snapshot = undefined
+      }
     }
-    result[key] = build(key, m, baseURL, model)
-  }
-  // add new endpoint models (the CLI-only ones the built-in plugin misses)
-  for (const [id, m] of remote) {
-    if (id in result) continue
-    result[id] = build(id, m, baseURL)
-  }
 
-  // Drop any entry without a real context window. Catches stale models.dev
-  // catalog entries (e.g. `claude-opus-4.7-1m`, ctx=0) that the live API no
-  // longer surfaces — the prune loop above already removed them, but
-  // downstream config-defined models can re-add them, so this is defensive.
-  for (const [key, model] of Object.entries(result)) {
-    if (!model.limit?.context) delete result[key]
-  }
+    const refresh = () => {
+      if (!loading) {
+        loading = load()
+          .then(() => ctx.provider.reload())
+          .catch((error) => console.error("[copilot-cli-models] refresh failed:", error))
+          .finally(() => {
+            loading = undefined
+          })
+      }
+      return loading
+    }
 
-  const pickerEnabled = new Set([...remote].filter(([, item]) => item.model_picker_enabled).map(([id]) => id))
-  return Object.fromEntries(Object.entries(result).filter(([, model]) => pickerEnabled.has(model.api.id)))
-}
+    await load()
 
-export default async function CopilotCliModelsPlugin(_input: PluginInput): Promise<Hooks> {
-  return {
-    provider: {
-      id: "github-copilot",
-      async models(provider, ctx) {
-        if (ctx.auth?.type !== "oauth") return provider.models
-        const auth = ctx.auth
-        try {
-          return await fetchModels(base(auth.enterpriseUrl), auth.refresh, provider.models)
-        } catch (error) {
-          // Fall back to whatever the built-in plugin already produced.
-          console.error("[copilot-cli-models] failed to fetch CLI models:", error)
-          return provider.models
-        }
+    await ctx.provider.transform((editor) => {
+      const item = editor.get(PROVIDER_ID)
+      if (!item) return
+      const info = {
+        ...item.provider,
+        headers: { ...item.provider.headers, "Copilot-Integration-Id": INTEGRATION_ID },
+      }
+      if (!loaded.snapshot || !loaded.url) {
+        // Still advertise the CLI integration so the built-in plugin's next `/models`
+        // sync (it merges provider headers) sees the same catalog we would.
+        editor.update(PROVIDER_ID, (provider) => {
+          provider.headers = info.headers
+        })
+        return
+      }
+      editor.add({
+        info,
+        models: derive(loaded.url, loaded.snapshot, Array.from(item.models.values())),
+        sourceConnection: loaded.connection,
+      })
+    })
+
+    // Make the CLI-only models actually work: every request to the provider carries
+    // the same integration id the catalog was fetched with (V1 `chat.headers`).
+    await ctx.session.hook(
+      "model.request",
+      (event) => {
+        if (!event.model.providerID.includes(PROVIDER_ID)) return
+        event.headers["Copilot-Integration-Id"] = INTEGRATION_ID
       },
-    },
-    "chat.headers": async (incoming, output) => {
-      if (!incoming.model.providerID.includes("github-copilot")) return
-      output.headers["Copilot-Integration-Id"] = INTEGRATION_ID
-    },
-  }
-}
+      { providerID: PROVIDER_ID },
+    )
+
+    // Re-sync when the Copilot login changes (new account, logout, first login).
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          if (event.type === "credential.switched" && event.data.integrationID !== PROVIDER_ID) continue
+          if (event.type !== "credential.switched" && event.type !== "credential.updated") continue
+          await refresh()
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) console.error("[copilot-cli-models] event stream ended:", error)
+      }
+    })()
+
+    return () => controller.abort()
+  },
+})
