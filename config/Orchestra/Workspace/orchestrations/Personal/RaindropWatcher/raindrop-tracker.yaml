@@ -350,12 +350,12 @@ steps:
         return [int]::MaxValue
       }
 
-      $selected   = New-Object System.Collections.Generic.List[object]
-      $skipped    = New-Object System.Collections.Generic.List[object]
-      $deferred   = New-Object System.Collections.Generic.List[object]
-      $deadLetter = New-Object System.Collections.Generic.List[object]
-      $stuck      = New-Object System.Collections.Generic.List[object]
-      $dispatch   = New-Object System.Collections.Generic.List[object]   # candidates, capped later
+      $selected   = [System.Collections.Generic.List[object]]::new()
+      $skipped    = [System.Collections.Generic.List[object]]::new()
+      $deferred   = [System.Collections.Generic.List[object]]::new()
+      $deadLetter = [System.Collections.Generic.List[object]]::new()
+      $stuck      = [System.Collections.Generic.List[object]]::new()
+      $dispatch   = [System.Collections.Generic.List[object]]::new()   # candidates, capped later
 
       function New-Dispatch($id, $url, $title, $note, $noteHash, $tags, $addedAt, $reason, [int]$priorAttempts) {
         [pscustomobject][ordered]@{
@@ -441,12 +441,17 @@ steps:
         }
       }
 
+      # Scalar counts alongside the arrays: when: conditions can only read scalar JSON
+      # fields, and the three LLM steps below are gated on them.
       [pscustomobject][ordered]@{
-        selected          = @($selected.ToArray())
-        skipped           = @($skipped.ToArray())
-        deferred          = @($deferred.ToArray())
-        deadLetter        = @($deadLetter.ToArray())
-        stuckReclassified = @($stuck.ToArray())
+        selected               = @($selected.ToArray())
+        skipped                = @($skipped.ToArray())
+        deferred               = @($deferred.ToArray())
+        deadLetter             = @($deadLetter.ToArray())
+        stuckReclassified      = @($stuck.ToArray())
+        selectedCount          = $selected.Count
+        deadLetterCount        = $deadLetter.Count
+        stuckReclassifiedCount = $stuck.Count
       } | ConvertTo-Json -Depth 100 -Compress
     arguments:
       - "{{gate-empty.output}}"
@@ -460,6 +465,9 @@ steps:
     type: Prompt
     workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [select-dispatchable]
+    # Nothing selected this tick (inbox non-empty but everything in flight, deferred or
+    # dead-lettered) - skip the LLM call instead of asking it to write zero records.
+    when: "{{select-dispatchable.output.selectedCount}} > 0"
     systemPrompt: |
       You are a state-persistence assistant. You have Zakira.Exchange MCP tools.
       For each item in `selected`, write a memory record with status="queued",
@@ -549,6 +557,9 @@ steps:
     type: Prompt
     workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [bootstrap-config, select-dispatchable, mark-queued, dead-letter-move, strip-workflow-tags]
+    # Same gate as mark-queued: no selected items, no invoke_orchestration calls to make.
+    # publish-rolling-status tolerates the empty dispatch output this leaves behind.
+    when: "{{select-dispatchable.output.selectedCount}} > 0"
     systemPrompt: |
       You are a fan-out dispatcher. You have the Orchestra control-plane MCP
       and you launch child orchestrations asynchronously. For every selected
@@ -594,6 +605,9 @@ steps:
     type: Prompt
     workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [bootstrap-config, select-dispatchable, dispatch, dead-letter-move]
+    # Only worth an LLM summary when the tick did something: dispatched, dead-lettered or
+    # reclassified a stuck item.
+    when: "{{select-dispatchable.output.selectedCount}} > 0 || {{select-dispatchable.output.deadLetterCount}} > 0 || {{select-dispatchable.output.stuckReclassifiedCount}} > 0"
     systemPrompt: |
       You are a reporting assistant. Produce a concise scheduler-log-friendly
       summary of this tick. One short paragraph plus a bullet list.

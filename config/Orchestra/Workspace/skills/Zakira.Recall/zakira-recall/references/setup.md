@@ -16,25 +16,34 @@ recall --help
 
 Requires .NET 10 SDK or runtime in `PATH`. Update with `dotnet tool update --global Zakira.Recall`.
 
-## 2. Install the Playwright browser runtime
+## 2. Browser runtime
 
-Playwright providers (`duckduckgo-browser`, `bing`) and `recall fetch` require chromium to be installed.
+Every fetch and the Playwright providers (`duckduckgo-browser`, `bing`) run a real browser. The default profile channel is `msedge`,
+so on a machine with Microsoft Edge installed nothing else is needed.
 
-If running from a build output:
+Without Edge, switch the profile to Playwright's bundled Chromium and install it once:
 
 ```powershell
-pwsh "$env:LOCALAPPDATA\Temp\Zakira.Recall\bin\Debug\net10.0\playwright.ps1" install chromium
+recall profile init default --channel chromium --provider duckduckgo --headless true
+pwsh "<install-dir>/playwright.ps1" install chromium
 ```
 
-If you installed the global tool, run the `playwright.ps1` shipped next to the tool's installed files (usually under `~/.dotnet/tools/.store/zakira.recall/<version>/zakira.recall/<version>/tools/net10.0/any/`).
+Where `playwright.ps1` lives:
 
-You can confirm the install with:
+- Global tool: next to the tool's installed files, usually `~/.dotnet/tools/.store/zakira.recall/<version>/zakira.recall/<version>/tools/net10.0/any/playwright.ps1`.
+- Build output: `%TEMP%\Zakira.Recall\bin\Debug\net10.0\playwright.ps1` (all projects share that output root).
+
+Headless fetches run in a throw-away copy of the profile (caches excluded, about 2 MB) under `%TEMP%\Zakira.Recall\browser-sessions\`;
+the copy is removed after the fetch.
+
+You can confirm the runtime with:
 
 ```powershell
 recall providers test ddg
+recall fetch "https://example.com" --output json
 ```
 
-A successful test response means the provider can run end-to-end.
+A successful test response means the provider can run end-to-end; a successful fetch means the browser channel launches.
 
 ## 3. Generate a config file
 
@@ -176,6 +185,11 @@ Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project):
 
 Any stdio-compatible MCP client takes the same shape: command `recall`, args `["mcp"]`. Optionally pass `--config <path>` or `--default-profile <name>` after `mcp` to bind a specific config or profile.
 
+Without a global install, `dnx` runs the package straight from NuGet: command `dnx`, args `["Zakira.Recall", "--yes", "--", "mcp"]`.
+
+The server exposes `web_search`, `web_fetch`, `web_research`, `web_batch_fetch`, `web_search_then_fetch`, `web_list_providers`,
+`web_get_provider_health`, `web_show_config` and `web_show_profile` (see `references/mcp-tools.md`).
+
 ## 7. Verify the install end-to-end
 
 ```powershell
@@ -204,4 +218,8 @@ These can be passed to any `recall` subcommand:
 --default-profile <name>
 --profiles-root <path>
 --log-level <Trace|Debug|Information|Warning|Error|Critical|None>
+--verbose          (Debug logging)
+--quiet            (errors only)
 ```
+
+Logs go to stderr, so `--output json` on stdout stays parseable.

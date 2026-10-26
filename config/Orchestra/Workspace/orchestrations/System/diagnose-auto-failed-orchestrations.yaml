@@ -54,9 +54,14 @@ defaultRetryPolicy:
 defaultStepTimeoutSeconds: 900
 timeoutSeconds: 17200
 
+# RETIRED 2026-09-27 (Orchestra 0.10 watchers): the orchestra-failed-runs watcher
+# (orchestra.watchers.json -> Shared/watchers/fetch-failed-runs.ps1) now reads the failure
+# history with a cursor every 15 minutes and launches diagnose-orchestration-failures once
+# per orchestration with new failures - no more 70-minute overlap window and no LLM gate
+# call on empty ticks. Kept disabled for manual runs (it still works when fired by hand).
 trigger:
   type: scheduler
-  enabled: true
+  enabled: false
   intervalSeconds: 3600
 
 steps:

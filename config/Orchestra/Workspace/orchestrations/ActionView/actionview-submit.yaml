@@ -22,18 +22,18 @@ tags: ["utility", "actionview", "reusable", "auto"]
 
 inputs:
   entryJson:
-    type: String
+    type: string
     description: |
       The full ActionView entry JSON string to submit. Must conform to the ActionView entry schema (requires at minimum: type, source, title).
     required: true
   template:
-    type: String
+    type: string
     description: |
       Optional ActionView template (entry type) name. When provided it selects the template used for validation (`validate --type`), so a mismatch between the entry's `type` and the caller's intent is caught before submission.
     required: false
     default: ""
   groupId:
-    type: String
+    type: string
     description: |
       Optional group ID to assign to the entry. When set, overrides any groupId in the entry JSON (`add --group-id`). Useful for callers that want to group entries from the same orchestration run.
     required: false

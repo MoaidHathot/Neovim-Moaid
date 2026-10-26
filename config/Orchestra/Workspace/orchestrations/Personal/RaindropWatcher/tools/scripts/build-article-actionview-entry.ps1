@@ -80,7 +80,7 @@ $origTagsDisplay = if ($userTags.Count -gt 0) { $userTags -join ', ' } else { 'N
 $entryTags = @($userTags + @('raindrop', 'article') | Select-Object -Unique)
 
 # --- Visual-evidence images extracted from the analysis markdown -------------
-$images = New-Object System.Collections.Generic.List[object]
+$images = [System.Collections.Generic.List[object]]::new()
 $seen = New-Object System.Collections.Generic.HashSet[string]
 foreach ($m in [regex]::Matches($analysis, '!\[(?<alt>[^\]]*)\]\((?<url>[^)\s]+)\)')) {
     $u = $m.Groups['url'].Value
@@ -93,7 +93,7 @@ foreach ($m in [regex]::Matches($analysis, '!\[(?<alt>[^\]]*)\]\((?<url>[^)\s]+)
 $noteDisplay = if ([string]::IsNullOrWhiteSpace($Note)) { 'None' } else { $Note }
 $addedDisplay = if ([string]::IsNullOrWhiteSpace($AddedAt)) { 'Unknown' } else { $AddedAt }
 
-$content = New-Object System.Collections.Generic.List[object]
+$content = [System.Collections.Generic.List[object]]::new()
 $content.Add([ordered]@{
     type  = 'keyValue'
     label = 'Source'

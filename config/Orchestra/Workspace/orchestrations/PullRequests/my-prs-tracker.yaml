@@ -193,7 +193,7 @@ steps:
       $now = (Get-Date).ToUniversalTime()
       $myUpnLower = $myUniqueName.ToLowerInvariant()
 
-      $mine = New-Object System.Collections.Generic.List[object]
+      $mine = [System.Collections.Generic.List[object]]::new()
       $totalActive = 0
       $cacheDirty = $false
 
@@ -376,7 +376,7 @@ steps:
         'healthy-in-progress'  = 0
       }
 
-      $classified = New-Object System.Collections.Generic.List[object]
+      $classified = [System.Collections.Generic.List[object]]::new()
       foreach ($pr in @($discovery.mine)) {
         if ($null -eq $pr) { continue }
 
@@ -494,7 +494,7 @@ steps:
         return ($span -replace '^\s*Data:\s*', '').Trim()
       }
 
-      $diffed = New-Object System.Collections.Generic.List[object]
+      $diffed = [System.Collections.Generic.List[object]]::new()
       $changeCounts = [ordered]@{
         new           = 0
         stateChanged  = 0
@@ -553,18 +553,13 @@ steps:
     shell: pwsh
     script: |
       # Deterministically decides whether this run is worth surfacing to
-      # ActionView. The decision is consumed by noteworthy-gate-prompt
-      # (downstream) which is the only thing that can flip a step's
-      # status via orchestra_set_status. We keep the actual computation
-      # in this Script so the daily-summary writer can read it directly
-      # without going through an LLM.
+      # ActionView. The 'noteworthy' flag is read by build-actionview-entry's
+      # 'when:' condition (the ActionView branch is condition-skipped when it is
+      # false) and by the daily-summary writer, with no LLM in between.
       #
-      # dryRun=true forces noteworthy=false so the entire ActionView
-      # submit branch is skipped under dry runs (build-actionview-entry
-      # and submit-actionview-entry both depend on noteworthy-gate-prompt
-      # and get skipped via orchestra_set_status('no_action')). This
-      # honours the documented dryRun contract: "skip Zakira writes, To
-      # Do upserts, and ActionView submission."
+      # dryRun=true forces noteworthy=false so the entire ActionView submit
+      # branch is skipped under dry runs. This honours the documented dryRun
+      # contract: "skip Zakira writes, To Do upserts, and ActionView submission."
       $ErrorActionPreference = 'Stop'
 
       $diffJson = $args[0]
@@ -604,34 +599,10 @@ steps:
       - "{{param.dryRun}}"
     timeoutSeconds: 30
 
-  - name: noteworthy-gate-prompt
-    type: Prompt
-    dependsOn: [gate-noteworthy-activity]
-    systemPrompt: |
-      You read a JSON object that contains a `noteworthy` boolean. Your
-      ONLY job is to gate downstream ActionView submission.
-
-      Rules:
-      1. If `noteworthy` is exactly `true`, output the JSON object
-         verbatim with no prose, fences, or alterations.
-      2. If `noteworthy` is `false`, call the engine tool
-         `orchestra_set_status` with status `no_action` and a reason
-         string that includes the supplied `reason` field. After
-         calling the tool, output the JSON object verbatim so the
-         downstream emitters still receive it for reference (no_action
-         skips downstream consumers regardless).
-      3. Do not call any other tools.
-      4. Do not add prose, markdown fences, or commentary in any branch.
-    userPrompt: |
-      Gate decision input:
-      {{gate-noteworthy-activity.output}}
-    outputHandlerPrompt: |
-      Output exactly one JSON object - the gate decision verbatim.
-      Strip any markdown fences, prose, or trailing whitespace.
-
   - name: update-zakira-records
     type: Script
     dependsOn: [diff-against-prior]
+    when: "{{param.dryRun}} != true"
     shell: pwsh
     script: |
       # Bulk Zakira writes via the CLI. We deliberately do NOT route this
@@ -710,6 +681,7 @@ steps:
   - name: build-todo-payloads
     type: Script
     dependsOn: [diff-against-prior]
+    when: "{{param.pushToTodo}} == true && {{param.dryRun}} != true"
     shell: pwsh
     script: |
       # Produces the list of PRs that warrant a Microsoft To Do task plus
@@ -735,7 +707,7 @@ steps:
       $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
 
       $hotStates = @('failing-build','merge-conflict','needs-my-response','blocked-on-reviewers')
-      $items = New-Object System.Collections.Generic.List[object]
+      $items = [System.Collections.Generic.List[object]]::new()
       foreach ($pr in @($diff.prs)) {
         if ($null -eq $pr) { continue }
         if (-not ($hotStates -contains [string]$pr.state)) { continue }
@@ -781,6 +753,7 @@ steps:
   - name: push-to-todo
     type: Orchestration
     dependsOn: [build-todo-payloads]
+    when: "{{param.pushToTodo}} == true && {{param.dryRun}} != true"
     orchestration: todo-upsert
     forEach: "{{build-todo-payloads.output}}"
     forEachPath: items
@@ -805,14 +778,18 @@ steps:
 
   - name: build-actionview-entry
     type: Script
-    dependsOn: [diff-against-prior, noteworthy-gate-prompt, update-zakira-records, push-to-todo]
+    # Replaces the former noteworthy-gate-prompt (an LLM call whose only job was to call
+    # orchestra_set_status). A no-op or dry run now skips the ActionView branch by condition;
+    # emit-daily-summary is not downstream of this step and keeps running on every non-dry run.
+    when: "{{gate-noteworthy-activity.output.noteworthy}} == true"
+    dependsOn: [diff-against-prior, gate-noteworthy-activity, update-zakira-records, push-to-todo]
     shell: pwsh
     script: |
       # Deterministic ActionView entry builder. No LLM: the structure is
       # stable, and avoiding the model removes drift and saves tokens.
-      # Only invoked when noteworthy-gate-prompt did NOT call
-      # orchestra_set_status('no_action'), so this step is guaranteed
-      # to be on the publish path - no skip-sentinel handling required.
+      # Only runs when the when: condition above holds (noteworthy), so this
+      # step is guaranteed to be on the publish path - no skip-sentinel handling
+      # required.
       $ErrorActionPreference = 'Stop'
 
       $diffJson  = $args[0]
@@ -866,7 +843,7 @@ steps:
         )
       }
 
-      $content = New-Object System.Collections.Generic.List[object]
+      $content = [System.Collections.Generic.List[object]]::new()
 
       if ($hot.Count -gt 0) {
         $alertBody = "**$($hot.Count) PR(s) need your attention:**`n`n"
@@ -914,7 +891,7 @@ steps:
       )) {
         $list = @($pair.list)
         if ($list.Count -eq 0) { continue }
-        $sectionContent = New-Object System.Collections.Generic.List[object]
+        $sectionContent = [System.Collections.Generic.List[object]]::new()
         foreach ($pr in $list) {
           $sectionContent.Add([ordered]@{
             type  = 'keyValue'
@@ -970,6 +947,7 @@ steps:
   - name: submit-actionview-entry
     type: Orchestration
     dependsOn: [build-actionview-entry]
+    when: "!empty({{build-actionview-entry.output}})"
     orchestration: actionview-submit
     parameters:
       entryJson: "{{build-actionview-entry.output}}"
@@ -977,14 +955,15 @@ steps:
       groupId: "{{vars.actionViewGroupId}}"
     # No inputHandlerPrompt: the parameters are already the exact shape the
     # child expects; an LLM re-serialising the entry only burned minutes of the
-    # child's timeout budget. noteworthy-gate-prompt already skipped this branch
-    # via orchestra_set_status('no_action') on no-op runs.
+    # child's timeout budget. The 'when:' above skips this step whenever
+    # build-actionview-entry was condition-skipped on a no-op or dry run.
     mode: sync
     timeoutSeconds: 360
 
   - name: emit-daily-summary
     type: Script
     dependsOn: [diff-against-prior, gate-noteworthy-activity, update-zakira-records, push-to-todo]
+    when: "{{param.dryRun}} != true"
     shell: pwsh
     script: |
       # Writes the daily summary record consumed by the future daily-
@@ -992,8 +971,8 @@ steps:
       # (YYYY-MM-DD) and the rolling pointer "latest" - the latter so the
       # digest can read freshness without computing dates.
       #
-      # ALWAYS runs - even on no-op runs where noteworthy-gate-prompt
-      # skipped the ActionView submission. This keeps the digest reader
+      # ALWAYS runs (except dry runs) - even on no-op runs where the
+      # ActionView submission was condition-skipped. This keeps the digest reader
       # able to distinguish "tracker ran clean" (record present, hot=0)
       # from "tracker did not run" (record absent).
       $ErrorActionPreference = 'Stop'
@@ -1050,17 +1029,29 @@ steps:
 
       function Write-SummaryKey {
         param([string]$Key)
-        $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
+        $edit = { & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
           --data $payload `
           --author "my-prs-tracker:$runId" `
-          --reason "daily summary" 2>&1
+          --reason "daily summary" 2>&1 }
+        $out = & $edit
+        # zakira.db is shared by every orchestration; a concurrent writer surfaces as a transient
+        # 'database is locked' failure. Retry those briefly before treating edit as failed.
+        $attempt = 1
+        while ($LASTEXITCODE -ne 0 -and $attempt -lt 4 -and (($out -join ' ') -match 'locked|busy|SQLITE_BUSY')) {
+          Start-Sleep -Seconds (2 * $attempt)
+          $attempt++
+          $out = & $edit
+        }
         if ($LASTEXITCODE -ne 0) {
+          # Keep the edit failure: when the entry already exists the create below fails with a UNIQUE
+          # violation, and reporting only that hid the real reason edit failed (seen 2026-09-29).
+          $editOut = $out
           $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $Key `
             --data $payload `
             --author "my-prs-tracker:$runId" `
             --reason "daily summary" 2>&1
           if ($LASTEXITCODE -ne 0) {
-            throw "Zakira write failed for $category/${Key}: $($out -join ' ')"
+            throw "Zakira write failed for $category/${Key}. edit: $($editOut -join ' ') | create: $($out -join ' ')"
           }
         }
       }

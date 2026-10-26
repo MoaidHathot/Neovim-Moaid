@@ -20,7 +20,7 @@ description: |
   selected images via markdown image blocks (file:// URIs).
 
   Saves a self-contained recipe markdown file to the configured recipes dir.
-version: 1.1.0
+version: 1.1.1
 tags: ["personal", "raindrop", "auto", "video", "recipe"]
 defaultModel: gpt-6-astra
 
@@ -176,12 +176,29 @@ steps:
     type: Prompt
     workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [read-artifacts]
+    # Reasoning-only step. Since the Copilot SDK 1.0.14 / CLI 1.0.85 upgrade
+    # (2026-09-22) Prompt sessions carry the CLI's full built-in tool catalog;
+    # the sibling raindrop-video-generic-processor's copy of this step started
+    # viewing frames and spawning ffmpeg until the step timed out. Deny those
+    # tool kinds at the permission layer and tell the model not to try.
+    permissionPolicy:
+      mode: denyList
+      deny: [shell, write, read, url, mcp, memory]
     systemPrompt: |
       You are a visual evidence curator for a cooking-video recipe
       extraction pipeline. Your job is to scan the transcript and pick
       timestamps for ADDITIONAL frames (the baseline scene-detection set
       is already in `baselineFrames`). The output drives a downstream
       Script that calls Zakira.Replay's `frames` CLI.
+
+      TOOL POLICY (strict): this is a reasoning-only step. Do NOT call any
+      tool - do not open or view the frame images, do not list or read
+      files or directories, do not run shell or PowerShell commands, and
+      do not invoke ffmpeg / yt-dlp or try to extract frames yourself. The
+      NEXT step (targeted-frame-capture) captures the frames you pick.
+      Decide purely from the transcript text and the baselineFrames file
+      names already in the input. Tool calls are denied by policy and only
+      burn this step's time budget.
 
       Be GENEROUS, not conservative -- recipes are intensely visual, and
       a cook reading the saved recipe later WILL want photos of the
@@ -208,7 +225,8 @@ steps:
           timestamp (the file names typically encode the timestamp).
         - Every pick MUST include a one-sentence `reason`.
 
-      Output a SINGLE JSON object on stdout (no commentary, no fences):
+      Return a SINGLE JSON object as your entire response (no commentary,
+      no markdown fences):
 
         {
           "ok": true,
@@ -229,7 +247,8 @@ steps:
       avoid near-duplicates):
       {{read-artifacts.output}}
 
-      Output ONLY the JSON object described in the system prompt.
+      Output ONLY the JSON object described in the system prompt. Do not
+      call any tools.
     timeoutSeconds: 600
 
   - name: targeted-frame-capture

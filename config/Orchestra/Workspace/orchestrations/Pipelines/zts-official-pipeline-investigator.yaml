@@ -380,7 +380,7 @@ steps:
         $detailsPairs["RolloutLink"] = [string]$rollout.rolloutLink
       }
 
-      $contentBlocks = New-Object System.Collections.Generic.List[object]
+      $contentBlocks = [System.Collections.Generic.List[object]]::new()
       [void]$contentBlocks.Add([ordered]@{
         type  = "keyValue"
         label = "Run"

@@ -5,6 +5,26 @@ version: 1.0.0
 tags: ["ZTS", "MSFT", "PR", "Comment-Response", "dispatcher"]
 defaultModel: gpt-6-astra
 
+# Event-driven since Orchestra 0.10: the `ado-my-active-prs` watcher (declared in
+# ../../orchestra.watchers.json, fetcher Shared/watchers/fetch-active-prs.ps1 in `authored`
+# mode) lists my active PRs every 15 minutes and launches one dispatcher run per PR whose
+# change token moved - a reviewer commented, a new iteration was pushed, or the PR left
+# draft (dedup key = `<url>@<lastMergeSourceCommitId>|<isDraft>|<latest non-self comment>`).
+# This replaced the hourly pr-comment-tracker fan-out that re-dispatched every PR each tick.
+# The Zakira / PowerReview state checks below are unchanged and still decide whether work is
+# actually needed; manual entrypoints keep invoking this orchestration explicitly.
+trigger:
+  type: watcher
+  watcher: ado-my-active-prs
+  enabled: true
+  maxConcurrent: 3
+  catchup: from-now
+  parameters:
+    prData: "{{item}}"
+    prUrl: "{{item.url}}"
+    mode: auto
+    forceProcess: "false"
+
 inputs:
   prUrl:
     type: string

@@ -15,7 +15,7 @@ description: |
   Synthesizes a session summary using the user's note as the analysis prompt
   (default ask when note is empty) and publishes a rich ActionView entry
   with chapters, key quotes, and inline targeted frames.
-version: 1.1.0
+version: 1.1.1
 tags: ["personal", "raindrop", "auto", "video", "session"]
 defaultModel: gpt-6-astra
 
@@ -192,6 +192,14 @@ steps:
     type: Prompt
     workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [read-artifacts]
+    # Reasoning-only step. Since the Copilot SDK 1.0.14 / CLI 1.0.85 upgrade
+    # (2026-09-22) Prompt sessions carry the CLI's full built-in tool catalog;
+    # the sibling raindrop-video-generic-processor's copy of this step started
+    # viewing frames and spawning ffmpeg until the step timed out. Deny those
+    # tool kinds at the permission layer and tell the model not to try.
+    permissionPolicy:
+      mode: denyList
+      deny: [shell, write, read, url, mcp, memory]
     systemPrompt: |
       You are a visual evidence curator for a conference/session summary
       pipeline. Your job is to scan the transcript and chapter list for
@@ -199,6 +207,15 @@ steps:
       recall WHAT was on screen (the baseline slide-detection set is
       already in `baselineFrames`). A downstream Script captures the
       picks via Zakira.Replay's `frames` CLI.
+
+      TOOL POLICY (strict): this is a reasoning-only step. Do NOT call any
+      tool - do not open or view the frame images, do not list or read
+      files or directories, do not run shell or PowerShell commands, and
+      do not invoke ffmpeg / yt-dlp or try to extract frames yourself. The
+      NEXT step (targeted-frame-capture) captures the frames you pick.
+      Decide purely from the transcript / chapter text and the
+      baselineFrames file names already in the input. Tool calls are
+      denied by policy and only burn this step's time budget.
 
       Be GENEROUS, not conservative. Almost every session has demo
       moments, slide references, or visual punchlines worth picking.
@@ -223,7 +240,8 @@ steps:
           timestamp.
         - Every pick MUST include a one-sentence `reason`.
 
-      Output a SINGLE JSON object on stdout (no commentary, no fences):
+      Return a SINGLE JSON object as your entire response (no commentary,
+      no markdown fences):
 
         {
           "ok": true,
@@ -241,7 +259,7 @@ steps:
       Zakira.Replay artifact pack:
       {{read-artifacts.output}}
 
-      Output ONLY the JSON.
+      Output ONLY the JSON. Do not call any tools.
     timeoutSeconds: 900
 
   - name: targeted-frame-capture

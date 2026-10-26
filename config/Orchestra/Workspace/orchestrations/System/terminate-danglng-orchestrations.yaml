@@ -131,7 +131,7 @@ steps:
         $byPid[[int]$p.ProcessId] = $p
         $parentId = [int]$p.ParentProcessId
         if (-not $childrenByPid.ContainsKey($parentId)) {
-          $childrenByPid[$parentId] = New-Object System.Collections.Generic.List[object]
+          $childrenByPid[$parentId] = [System.Collections.Generic.List[object]]::new()
         }
         [void]$childrenByPid[$parentId].Add($p)
       }
@@ -195,7 +195,7 @@ steps:
 
         # Classified DANGLING. Collect the whole descendant tree from the
         # snapshot (bottom-up order — children before parent).
-        $tree = New-Object System.Collections.Generic.List[object]
+        $tree = [System.Collections.Generic.List[object]]::new()
         $stack = New-Object System.Collections.Generic.Stack[int]
         $stack.Push($cPid)
         $visited = @{}

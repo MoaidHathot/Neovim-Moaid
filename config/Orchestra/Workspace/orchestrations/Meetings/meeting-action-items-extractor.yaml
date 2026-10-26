@@ -319,10 +319,10 @@ steps:
 
       # A successfully-parsed array - including an empty one - is a real
       # result: an empty $list simply yields an empty enriched array and
-      # the pipeline's existing no-op path (filter -> 0/0 dispatch ->
-      # gate-noteworthy-activity completes with no ActionView entry) runs.
+      # the pipeline's existing no-op path (filter -> 0/0 dispatch -> the
+      # ActionView chain is condition-skipped by create-actionview-entry's when:) runs.
 
-      $enriched = New-Object System.Collections.Generic.List[object]
+      $enriched = [System.Collections.Generic.List[object]]::new()
       foreach ($m in @($list)) {
         if ($null -eq $m) { continue }
 
@@ -418,11 +418,10 @@ steps:
       #     meetingsToProcess so the dispatcher has the complete payload.
       #
       # Early-completion (the prior "All recent meetings already processed."
-      # short-circuit) is deferred to the downstream gate-noteworthy-activity
-      # step: an empty meetingsToProcess yields a 0/0 dispatch rollup, and
-      # gate-noteworthy-activity's existing "not noteworthy" branch calls
-      # orchestra_complete with no ActionView entry created. The user-visible
-      # behavior (no notification on a no-op run) is identical.
+      # short-circuit) is deferred downstream: an empty meetingsToProcess yields a
+      # 0/0 dispatch rollup, and create-actionview-entry's when: condition then
+      # skips the whole ActionView chain. The user-visible behavior (no
+      # notification on a no-op run) is identical.
       $ErrorActionPreference = 'Stop'
 
       $normalizedRaw     = $args[0]
@@ -444,8 +443,8 @@ steps:
 
       $meetings = ConvertFrom-Json -InputObject $normalizedRaw -NoEnumerate -ErrorAction Stop
 
-      $toProcess = New-Object System.Collections.Generic.List[object]
-      $skipped   = New-Object System.Collections.Generic.List[object]
+      $toProcess = [System.Collections.Generic.List[object]]::new()
+      $skipped   = [System.Collections.Generic.List[object]]::new()
 
       foreach ($m in @($meetings)) {
         if ($null -eq $m) { continue }
@@ -781,63 +780,15 @@ steps:
       - "{{dispatch-processor.output}}"
     timeoutSeconds: 120
 
-  - name: gate-noteworthy-activity
-    type: Prompt
-    dependsOn: [aggregate-dispatch]
-    systemPrompt: |
-      You are a noise filter for the meeting-action-items run. Decide
-      whether this scheduler tick produced anything worth surfacing to
-      ActionView.
-
-      Inputs:
-        - dryRun: a string, "true" or "false"
-        - Dispatcher summary JSON (with totalDispatched / succeeded / failed)
-
-      Decision order (apply in this exact sequence):
-
-      1. If `dryRun` is exactly the string "true", call
-         orchestra_set_status with status 'no_action' and a reason
-         like 'dry-run: ActionView submission suppressed (dispatched=<N>,
-         succeeded=<S>, failed=<F>)'. This is the dryRun contract — the
-         orchestration runs discovery + dispatch but never writes to
-         ActionView / Zakira side-effects. Steps that depend on this
-         gate (create-actionview-entry → … → submit-actionview-entry)
-         are then auto-skipped by the engine.
-
-      2. Otherwise, if the run is NOT noteworthy (every dispatched
-         processor was a no-op AND nothing failed — i.e. succeeded == 0
-         AND failed == 0), call orchestra_set_status with status
-         'no_action' and a reason like 'no-op: all <N> dispatched
-         processors reported zero activity'.
-
-      3. Otherwise (noteworthy: succeeded > 0 OR failed > 0), output
-         the dispatcher summary JSON verbatim (no prose, no markdown
-         fences) so the downstream entry generator can consume it. Do
-         NOT call any tools in this branch.
-
-      Use orchestra_set_status (NOT orchestra_complete) for the
-      no-action branches: we want downstream-dependent steps to be
-      skipped via dependency propagation, while sibling chains like
-      generate-summary still get a chance to assemble a run summary.
-
-      Do not call any other tools.
-    userPrompt: |
-      Decide whether this meeting-action-items run is noteworthy enough
-      to surface in ActionView.
-
-      dryRun: {{param.dryRun}}
-
-      Dispatcher summary:
-      {{aggregate-dispatch.output}}
-    outputHandlerPrompt: |
-      When continuing (branch 3), output the dispatcher summary JSON
-      object verbatim with no prose or fences. Otherwise (branches 1
-      and 2 — orchestra_set_status('no_action') was called), preserve
-      the reason text. Output only the relevant content.
-
   - name: create-actionview-entry
     type: Prompt
-    dependsOn: [gate-noteworthy-activity, filter-already-processed, discover-recent-meetings]
+    dependsOn: [aggregate-dispatch, filter-already-processed, discover-recent-meetings]
+    # Replaces the former gate-noteworthy-activity LLM step. The ActionView branch runs only
+    # when this tick actually did something (a processor succeeded or failed) and the run is
+    # not a dry run; otherwise this step and the chain below are condition-skipped while
+    # generate-summary still renders (it was cascade-skipped by the old gate, contrary to its
+    # stated intent).
+    when: "{{param.dryRun}} != true && ({{aggregate-dispatch.output.succeeded}} > 0 || {{aggregate-dispatch.output.failed}} > 0)"
     systemPrompt: |
       You generate ActionView entries for the meeting-action-items
       orchestration. The actionview skill (`skills/actionview`) has been
@@ -925,8 +876,8 @@ steps:
          URLs. If a report file path is empty (dry-run), omit the
          'Open Report' link for that meeting.
     userPrompt: |
-      Dispatcher summary (post-gate, includes rollup and transcripts):
-      {{gate-noteworthy-activity.output}}
+      Dispatcher summary (includes rollup and transcripts):
+      {{aggregate-dispatch.output}}
 
       Filter summary (for skipped counts):
       {{filter-already-processed.output}}
@@ -951,6 +902,7 @@ steps:
   - name: read-actionview-entry-file
     type: Script
     dependsOn: [create-actionview-entry]
+    when: "!empty({{create-actionview-entry.output}})"
     shell: pwsh
     script: |
       Get-Content -LiteralPath '{{create-actionview-entry.files[0]}}' -Raw
@@ -959,6 +911,7 @@ steps:
   - name: inject-full-markdown
     type: Script
     dependsOn: [read-actionview-entry-file, extract-full-markdown]
+    when: "!empty({{read-actionview-entry-file.output}})"
     shell: pwsh
     script: |
       # Substitute `<<FULL_MARKDOWN:<executionId>>>` placeholders in the
@@ -1054,6 +1007,7 @@ steps:
   - name: submit-actionview-entry
     type: Orchestration
     dependsOn: [inject-full-markdown]
+    when: "!empty({{inject-full-markdown.output}})"
     orchestration: actionview-submit
     parameters:
       entryJson: "{{inject-full-markdown.output}}"

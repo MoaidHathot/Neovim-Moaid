@@ -577,7 +577,7 @@ function New-DiagnosisActionViewEntry {
     $visible = Get-DiagnosisVisibleFailures -Ledger $Ledger
     $anyRegression = (@($visible | Where-Object { [bool]$_.regression }).Count -gt 0)
 
-    $content = New-Object System.Collections.Generic.List[object]
+    $content = [System.Collections.Generic.List[object]]::new()
 
     # Header summary.
     $content.Add([ordered]@{
@@ -604,7 +604,7 @@ function New-DiagnosisActionViewEntry {
         if ([int]$f.occurrences -gt 1) { $badge = "$state x$([int]$f.occurrences)" }
         if ([bool]$f.regression) { $badge = "REGRESSION x$([int]$f.regressionCount)" }
 
-        $sec = New-Object System.Collections.Generic.List[object]
+        $sec = [System.Collections.Generic.List[object]]::new()
 
         $expl = [string]$f.explanation
         if ($expl.Length -gt 1500) { $expl = $expl.Substring(0, 1500) + ' [more in ledger]' }
@@ -665,7 +665,7 @@ function New-DiagnosisActionViewEntry {
         }
 
         # Section-scoped actions vary by lifecycle state.
-        $secActions = New-Object System.Collections.Generic.List[object]
+        $secActions = [System.Collections.Generic.List[object]]::new()
         if ($state -eq 'fix-applied') {
             [void]$secActions.Add((New-MarkAction -Label "Re-run '$name'" -Style 'primary' -Action 'rerun' -Signature $sig -Confirm "Re-run '$name' now to verify the applied fix?" -WithNotes $false))
             [void]$secActions.Add((New-MarkAction -Label 'Revert' -Style 'danger' -Action 'revert' -Signature $sig -Confirm "Restore '$name' from the pre-fix backup?" -WithNotes $false))

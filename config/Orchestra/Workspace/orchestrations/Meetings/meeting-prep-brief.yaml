@@ -160,10 +160,11 @@ steps:
          - `recurrence`     : recurrence object if present, else null.
       5. Apply the meetingFilter (case-insensitive substring match on
          title) when non-empty. Otherwise keep every meeting.
-      6. If zero meetings remain after filtering, call orchestra_complete
-         with status 'success' and reason 'No meetings in the next
-         {{param.lookAheadHours}} hours' (substitute the filter clause
-         when relevant).
+      6. If zero meetings remain after filtering, output an empty JSON
+         array: []   Do NOT call orchestra_complete or
+         orchestra_set_status for this case - the pipeline treats an
+         empty array as a clean no-op (same contract as
+         meeting-action-items-extractor).
       7. Output a single JSON array of meeting objects. No prose, no
          fences.
     userPrompt: |
@@ -262,7 +263,7 @@ steps:
       $candidate = Get-JsonCandidate -Text $raw
       $list = ConvertFrom-Json -InputObject $candidate -NoEnumerate -ErrorAction Stop
 
-      $enriched = New-Object System.Collections.Generic.List[object]
+      $enriched = [System.Collections.Generic.List[object]]::new()
       foreach ($m in @($list)) {
         if ($null -eq $m) { continue }
 
@@ -353,10 +354,9 @@ steps:
       #     meetingsToBrief so the dispatcher has the complete payload.
       #
       # Early-completion (the prior "All upcoming meetings already have a recent
-      # brief." short-circuit) is deferred to the downstream
-      # gate-noteworthy-activity step: an empty meetingsToBrief yields a 0/0
-      # dispatch rollup, and gate-noteworthy-activity's existing "not noteworthy"
-      # branch calls orchestra_complete with no ActionView entry created. The
+      # brief." short-circuit) is deferred downstream: an empty meetingsToBrief
+      # yields a 0/0 dispatch rollup, and create-actionview-entry's when: condition
+      # then skips the whole ActionView chain with no entry created. The
       # user-visible behavior (no notification on a no-op run) is identical.
       $ErrorActionPreference = 'Stop'
 
@@ -381,8 +381,8 @@ steps:
 
       $meetings = ConvertFrom-Json -InputObject $normalizedRaw -NoEnumerate -ErrorAction Stop
 
-      $toBrief = New-Object System.Collections.Generic.List[object]
-      $skipped = New-Object System.Collections.Generic.List[object]
+      $toBrief = [System.Collections.Generic.List[object]]::new()
+      $skipped = [System.Collections.Generic.List[object]]::new()
 
       foreach ($m in @($meetings)) {
         if ($null -eq $m) { continue }
@@ -662,43 +662,14 @@ steps:
       - "{{dispatch-briefer.output}}"
     timeoutSeconds: 120
 
-  - name: gate-noteworthy-activity
-    type: Prompt
-    dependsOn: [aggregate-dispatch]
-    systemPrompt: |
-      You are a noise filter for the meeting-prep run. Decide whether
-      this scheduler tick produced anything worth surfacing to ActionView.
-
-      Read the dispatcher summary JSON. The run is "noteworthy" only if
-      at least one child briefer succeeded (`succeeded > 0`) OR at least
-      one child briefer failed (`failed > 0`). Both signal real activity
-      that warrants a notification.
-
-      If the run is NOT noteworthy (every dispatched briefer was a no-op
-      or the dispatcher itself early-completed), call orchestra_complete
-      with status 'success' and a reason like 'All <N> dispatched
-      briefers reported no actionable activity; skipping ActionView entry.'
-
-      If the run IS noteworthy, output the dispatcher summary JSON
-      verbatim (no prose, no markdown fences) so the downstream entry
-      generator can consume it.
-
-      Do not call any other tools.
-    userPrompt: |
-      Decide whether this meeting-prep run is noteworthy enough to surface
-      in ActionView.
-
-      Dispatcher summary:
-      {{aggregate-dispatch.output}}
-    outputHandlerPrompt: |
-      When continuing, output the dispatcher summary JSON object verbatim
-      with no prose or fences. Otherwise (early-completion path),
-      preserve the orchestra_complete reason text. Output only the
-      relevant content.
-
   - name: create-actionview-entry
     type: Prompt
-    dependsOn: [gate-noteworthy-activity, filter-already-briefed, discover-meetings]
+    dependsOn: [aggregate-dispatch, filter-already-briefed, discover-meetings]
+    # Replaces the former gate-noteworthy-activity LLM step, and adds the dryRun rule that gate
+    # never enforced (dry runs used to create and submit an ActionView entry). The ActionView
+    # branch runs only when a briefer actually succeeded or failed; otherwise this step and
+    # the chain below are condition-skipped while generate-summary still renders.
+    when: "{{param.dryRun}} != true && ({{aggregate-dispatch.output.succeeded}} > 0 || {{aggregate-dispatch.output.failed}} > 0)"
     systemPrompt: |
       You generate ActionView entries for the meeting-prep orchestration.
       The actionview skill (`skills/actionview`) has been loaded — consult
@@ -773,8 +744,8 @@ steps:
          URLs. If a brief file path is empty (dry-run), omit the
          'Open Brief' link for that meeting.
     userPrompt: |
-      Dispatcher summary (post-gate):
-      {{gate-noteworthy-activity.output}}
+      Dispatcher summary:
+      {{aggregate-dispatch.output}}
 
       Filter summary (for skipped counts):
       {{filter-already-briefed.output}}
@@ -799,6 +770,7 @@ steps:
   - name: read-actionview-entry-file
     type: Script
     dependsOn: [create-actionview-entry]
+    when: "!empty({{create-actionview-entry.output}})"
     shell: pwsh
     script: |
       Get-Content -LiteralPath '{{create-actionview-entry.files[0]}}' -Raw
@@ -807,6 +779,7 @@ steps:
   - name: inject-full-markdown
     type: Script
     dependsOn: [read-actionview-entry-file, extract-full-markdown]
+    when: "!empty({{read-actionview-entry-file.output}})"
     shell: pwsh
     script: |
       # Substitute `<<FULL_MARKDOWN:<executionId>>>` placeholders in the
@@ -902,6 +875,7 @@ steps:
   - name: submit-actionview-entry
     type: Orchestration
     dependsOn: [inject-full-markdown]
+    when: "!empty({{inject-full-markdown.output}})"
     orchestration: actionview-submit
     parameters:
       entryJson: "{{inject-full-markdown.output}}"

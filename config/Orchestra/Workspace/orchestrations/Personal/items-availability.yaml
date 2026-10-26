@@ -26,6 +26,8 @@ steps:
   - name: check-availability
     type: Prompt
     dependsOn: [load-watchlist]
+    # No point opening a 10-minute Playwright session when the watchlist holds no links.
+    when: "contains({{load-watchlist.output}}, 'http')"
     systemPrompt: |
       You are a product availability checker. You have access to the Playwright MCP tools which give you a real browser. Your job is to navigate to each product link and determine whether the item is currently in stock or available for purchase.
 
@@ -87,24 +89,14 @@ steps:
     mcps: [playwright]
     timeoutSeconds: 600
 
-  - name: check-if-any-available
-    type: Prompt
-    dependsOn: [check-availability]
-    systemPrompt: |
-      You are a gate-check assistant. You determine whether any items are available and decide if the orchestration should continue to create an ActionView notification or stop early. You have access to the orchestra_complete tool.
-    userPrompt: |
-      Review the availability results:
-
-      {{check-availability.output}}
-
-      If NO items are available (availableCount is 0), call orchestra_complete with status 'success' and reason 'No items are currently available. Will check again next cycle.'
-
-      If at least one item IS available, output ONLY the word 'CONTINUE'. Nothing else.
-    mcps: []
-    timeoutSeconds: 60
-
   - name: fetch-action-view-schema
     type: Command
+    # Replaces the former check-if-any-available LLM gate: the schema lookup and the two
+    # ActionView steps below now run only when the availability JSON reports at least one
+    # available item. matches() is used (not a JSON path) so a fenced or lightly formatted
+    # LLM output still gates correctly.
+    dependsOn: [check-availability]
+    when: 'matches({{check-availability.output}}, "availableCount\D*[1-9]")'
     command: dnx
     arguments:
       - ActionView.Cli
@@ -115,7 +107,8 @@ steps:
 
   - name: create-action-view-entry
     type: Prompt
-    dependsOn: [check-if-any-available, check-availability, fetch-action-view-schema]
+    dependsOn: [check-availability, fetch-action-view-schema]
+    when: 'matches({{check-availability.output}}, "availableCount\D*[1-9]")'
     systemPrompt: |
       You are an ActionView entry generator for product availability alerts. You create structured JSON entries conforming to the ActionView schema. The entry type must be 'item-available' and source must be 'items-availability'.
 
@@ -153,6 +146,7 @@ steps:
   - name: submit-action-view-entry
     type: Command
     dependsOn: [create-action-view-entry]
+    when: "!empty({{create-action-view-entry.files[0]}})"
     command: dnx
     arguments:
       - ActionView.Cli

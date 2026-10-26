@@ -74,18 +74,60 @@ if ([string]::IsNullOrWhiteSpace($RunId)) {
 # Parse picks. Best-effort: if the upstream Prompt step returned junk, emit
 # empty captured array and let synth/ActionView gracefully render without
 # images. We never want this step to be the cause of an orchestration failure.
-$picks = @()
-try {
-    $parsed = $PicksJson | ConvertFrom-Json
-    if ($parsed -and $parsed.picks) {
-        foreach ($p in @($parsed.picks)) {
-            if ($p.timestamp -and $p.reason) {
-                $picks += [pscustomobject]@{ timestamp = "$($p.timestamp)"; reason = "$($p.reason)" }
+#
+# The upstream step is an LLM; between 2026-08-26 and 2026-10-05 it mostly
+# answered with a prose summary ("Emitted the requested JSON on stdout ...")
+# or a fenced block instead of the bare object, and a strict ConvertFrom-Json
+# on that silently produced ZERO targeted frames on otherwise-successful runs.
+# So: accept the bare object, a ```json fence, or the first balanced {...}
+# that carries a `picks` array anywhere in the text.
+function Get-PicksPayload {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    $candidates.Add($Text.Trim())
+    foreach ($m in [regex]::Matches($Text, '(?s)```(?:json)?\s*(\{.*?\})\s*```')) { $candidates.Add($m.Groups[1].Value) }
+
+    # Balanced-brace scan (string- and escape-aware) for every top-level object.
+    $depth = 0; $start = -1; $inString = $false; $escape = $false
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        $ch = $Text[$i]
+        if ($inString) {
+            if ($escape) { $escape = $false }
+            elseif ($ch -eq '\') { $escape = $true }
+            elseif ($ch -eq '"') { $inString = $false }
+            continue
+        }
+        switch ($ch) {
+            '"' { $inString = $true }
+            '{' { if ($depth -eq 0) { $start = $i }; $depth++ }
+            '}' {
+                if ($depth -gt 0) {
+                    $depth--
+                    if ($depth -eq 0 -and $start -ge 0) { $candidates.Add($Text.Substring($start, $i - $start + 1)); $start = -1 }
+                }
             }
         }
     }
-} catch {
-    # Treat as no picks.
+
+    foreach ($c in $candidates) {
+        try {
+            $obj = $c | ConvertFrom-Json -ErrorAction Stop
+            if ($obj -and $obj.PSObject.Properties['picks']) { return $obj }
+        } catch { }
+    }
+    return $null
+}
+
+$picks = @()
+$parsed = Get-PicksPayload -Text $PicksJson
+if ($parsed -and $parsed.picks) {
+    foreach ($p in @($parsed.picks)) {
+        if ($p.timestamp -and $p.reason) {
+            $picks += [pscustomobject]@{ timestamp = "$($p.timestamp)"; reason = "$($p.reason)" }
+        }
+    }
 }
 
 if ($picks.Count -eq 0) {
@@ -110,8 +152,18 @@ if ($picks.Count -gt $MaxCap) {
 
 # Batch into a single Zakira.Replay frames call (faster than N separate
 # yt-dlp probes + browser launches). `--at` takes comma-separated values.
+#
+# Invoke through `dotnet dnx ...` (the real dotnet.exe) and NOT the `dnx`
+# launcher: dnx.cmd is a cmd.exe batch shim (`dotnet.exe dnx %*`), so cmd.exe
+# re-parses the argument line and treats an unquoted `&` in the video URL
+# (e.g. `...watch?v=ID&t=1s`) as a command separator. That truncated the URL,
+# dropped --at/--run-id/--output-format, made Zakira.Replay run a full default
+# extraction into a fresh run directory, and then failed with
+# "'t' is not recognized as an internal or external command" (run b431f0c6a0f5,
+# and every other `&` URL before it). The analyze step in the processors has
+# used the same workaround since run c7289a4871dd.
 $timestamps = ($capped | ForEach-Object { $_.timestamp }) -join ','
-$cliOutLines = & dnx Zakira.Replay --yes -- frames $Source `
+$cliOutLines = & dotnet dnx Zakira.Replay --yes -- frames $Source `
     --at $timestamps `
     --run-id $RunId `
     --output-format json `

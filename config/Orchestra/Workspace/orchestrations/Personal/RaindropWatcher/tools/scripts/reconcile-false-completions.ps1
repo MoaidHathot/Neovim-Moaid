@@ -106,7 +106,7 @@ if ($LASTEXITCODE -ne 0) { throw "reconcile: list failed: $($listOut -join ' ')"
 $keys = @($listOut) | Where-Object { $_ -match "^\s*\[$([regex]::Escape($Category))\]\s+(\S+)\s" } |
     ForEach-Object { ($_ -replace "^\s*\[$([regex]::Escape($Category))\]\s+(\S+).*", '$1') }
 
-$mislabeled = New-Object System.Collections.Generic.List[object]
+$mislabeled = [System.Collections.Generic.List[object]]::new()
 $skippedNoData = 0; $genuineCompleted = 0; $otherStatus = 0
 foreach ($key in $keys) {
     $o = & $dotnet dnx Zakira.Exchange --yes -- --db $Database get $Category $key 2>&1

@@ -1,6 +1,6 @@
 {
   "name": "icm-auto-acknowledge",
-  "description": "Periodically checks for active IcM incidents that have not been acknowledged, acknowledges each one via the IcM MCP server, creates an ActionView entry summarizing what was done, and produces a final markdown summary. Runs every 15 seconds. Uses a gate step to complete early if no unacknowledged incidents are found.",
+  "description": "Periodically checks for active IcM incidents that have not been acknowledged, acknowledges each one via the IcM MCP server, creates an ActionView entry summarizing what was done, and produces a final markdown summary. Runs every 15 seconds. A deterministic Script gate completes the run early when no unacknowledged incidents are found (no LLM call on empty ticks), and the ActionView / summary steps only run when at least one incident was actually acknowledged.",
   "tags": ["ZTS", "MSFT", "OCE", "ICM", "auto"],
   "mcps": [
     {
@@ -21,12 +21,11 @@
     },
     {
       "name": "check-incidents",
-      "type": "Prompt",
+      "type": "Script",
       "dependsOn": ["fetch-active-incidents"],
-      "systemPrompt": "You are a gate-check assistant. Your ONLY job is to determine whether there are any unacknowledged incidents in the provided data. You have access to the orchestra_complete tool. If there are NO unacknowledged incidents, call orchestra_complete with status 'success' and a reason explaining that no action is needed. If there ARE unacknowledged incidents, output the text 'Proceeding with acknowledgment' and do nothing else.",
-      "userPrompt": "Review the following incident data and determine if any incidents are NOT yet acknowledged:\n\n{{fetch-active-incidents.output}}\n\nIf ALL incidents are already acknowledged (or there are no incidents at all), use the orchestra_complete tool to stop the orchestration early with status 'success'. Otherwise, output 'Proceeding with acknowledgment'.",
-      "mcps": [],
-      "model": "gpt-6-astra",
+      "shell": "pwsh",
+      "script": "$ErrorActionPreference = 'Stop'\n$raw = [string]$args[0]\n$text = if ($null -eq $raw) { '' } else { $raw.Trim() }\n$count = -1\nif ([string]::IsNullOrWhiteSpace($text)) { $count = 0 }\nelse {\n  try {\n    $parsed = ConvertFrom-Json -InputObject $text -Depth 50 -ErrorAction Stop\n    if ($parsed -is [System.Array]) { $count = @($parsed).Count }\n    elseif ($null -ne $parsed) {\n      foreach ($name in 'incidents','items','value','results') {\n        if ($parsed.PSObject.Properties[$name]) { $count = @($parsed.$name).Count; break }\n      }\n      if ($count -lt 0) { $count = 1 }\n    }\n  } catch {\n    if ($text -match '(?i)^\\s*(no|0)\\s+(unacknowledged\\s+)?incidents' -or $text -match '(?i)no incidents (found|match)') { $count = 0 } else { $count = 1 }\n  }\n}\nif ($count -eq 0) {\n  Orchestra-Complete -Status success -Reason 'No unacknowledged ACTIVE Sev3 incidents; no action needed.'\n  return\n}\n'Proceeding with acknowledgment'",
+      "arguments": ["{{fetch-active-incidents.output}}"],
       "timeoutSeconds": 40
     },
     {
@@ -43,7 +42,8 @@
     {
       "name": "fetch-action-view-schema",
       "type": "Command",
-      "dependsOn": [],
+      "dependsOn": ["acknowledge-incidents"],
+      "when": "matches({{acknowledge-incidents.output}}, '\\[\\s*[^\\s\\]]')",
       "command": "dnx",
       "arguments": ["ActionView.Cli", "--source", "https://pkgs.dev.azure.com/msazure/One/_packaging/ZTS/nuget/v3/index.json", "--yes", "--", "schema"],
       "timeoutSeconds": 120
@@ -52,18 +52,9 @@
       "name": "create-action-view-entry",
       "type": "Prompt",
       "dependsOn": ["fetch-active-incidents", "acknowledge-incidents", "fetch-action-view-schema"],
-      "systemPrompt": "You are an ActionView entry generator. Your job is to create a structured JSON entry for ActionView that documents actions taken on IcM incidents. You are given the ActionView entry schema and must generate an entry that strictly conforms to it. Output ONLY the raw JSON content of the entry — no markdown fences, no explanation, no surrounding text.",
+      "when": "matches({{acknowledge-incidents.output}}, '\\[\\s*[^\\s\\]]')",
+      "systemPrompt": "You are an ActionView entry generator. Your job is to create a structured JSON entry for ActionView that documents actions taken on IcM incidents. You are given the ActionView entry schema and must generate an entry that strictly conforms to it. Save the complete entry JSON with the orchestra_save_file tool (extension json) - the downstream submit step reads that saved file. Then output ONLY the raw JSON content of the entry — no markdown fences, no explanation, no surrounding text.",
       "userPrompt": "You have the ActionView entry schema, the list of active incidents, and the IDs of incidents that were acknowledged. Create a single ActionView entry that:\n\n1. Has a clear title like \"IcM Incidents Acknowledged\" with a timestamp.\n2. Starts with a summary table at the beginning containing columns: Incident ID, Title, Environment/Region, and Action (\"Acknowledged\").\n3. Contains sub-entries for each acknowledged incident showing the important details: title, environment, region, severity, and the action taken (\"Acknowledged\"). Do not include the entire raw incident data — only the key fields that matter.\n\nActionView entry schema:\n{{fetch-action-view-schema.output}}\n\nActive incidents data:\n{{fetch-active-incidents.output}}\n\nAcknowledged incident IDs:\n{{acknowledge-incidents.output}}\n\nOutput ONLY the valid JSON content of the generated ActionView entry, conforming to the schema above. No markdown, no explanation",
-      "mcps": [],
-      "model": "gpt-6-astra",
-      "timeoutSeconds": 120
-    },
-    {
-      "name": "save-action-view-entry",
-      "type": "Prompt",
-      "dependsOn": ["create-action-view-entry"],
-      "systemPrompt": "You are an ActionView entry Handler. You get the json schema from the previous step, you need to save it using orchestra_save-file then return the generated path. Only return the generated path (response rom call tooling), nothing else",
-      "userPrompt": "{{create-action-view-entry.output}}\n\nSave this content to a file using the orchestra_save-file tool. Return ONLY the file path returned by the tool, with no additional text.",
       "mcps": [],
       "model": "gpt-6-astra",
       "timeoutSeconds": 120
@@ -71,16 +62,17 @@
     {
       "name": "submit-action-view-entry",
       "type": "Command",
-      "dependsOn": ["save-action-view-entry"],
+      "dependsOn": ["create-action-view-entry"],
+      "when": "!empty({{create-action-view-entry.files[0]}})",
       "command": "dnx",
-      "arguments": ["ActionView.Cli", "--source", "https://pkgs.dev.azure.com/msazure/One/_packaging/ZTS/nuget/v3/index.json", "--yes", "--", "add", "--file", "{{create-action-view-entry.output}}"],
-      "stdin": "{{create-action-view-entry.output}}",
+      "arguments": ["ActionView.Cli", "--source", "https://pkgs.dev.azure.com/msazure/One/_packaging/ZTS/nuget/v3/index.json", "--yes", "--", "add", "--file", "{{create-action-view-entry.files[0]}}"],
       "timeoutSeconds": 120
     },
     {
       "name": "generate-summary",
       "type": "Prompt",
       "dependsOn": ["fetch-active-incidents", "acknowledge-incidents", "create-action-view-entry", "submit-action-view-entry"],
+      "when": "matches({{acknowledge-incidents.output}}, '\\[\\s*[^\\s\\]]')",
       "systemPrompt": "You are a reporting assistant. You produce clear, elegant markdown summaries of automated actions taken on IcM incidents. Use tables, headers, and formatting to make the output easy to scan and professional.",
       "userPrompt": "Create a final markdown summary of the IcM Acknowledge orchestration run. You have the following data:\n\n**Active incidents fetched:**\n{{fetch-active-incidents.output}}\n\n**Acknowledged incident IDs:**\n{{acknowledge-incidents.output}}\n\n**ActionView entry created:**\n{{create-action-view-entry.output}}\n\n**ActionView submission result:**\n{{submit-action-view-entry.output}}\n\nProduce a polished markdown report that includes:\n1. A header with the orchestration name and timestamp.\n2. A summary line (e.g., \"X incidents acknowledged\").\n3. A table of all incidents with columns: Incident ID, Title, Environment/Region, Severity, Status (Acknowledged).\n4. A section confirming the ActionView entry was submitted successfully.\n5. Any errors or issues encountered (or confirm none).\n\nUse clean markdown with tables, horizontal rules, and headers for easy readability.",
       "mcps": [],

@@ -48,7 +48,8 @@ YAML modelines work in VS Code (Red Hat YAML extension), JetBrains IDEs, and any
 | `inputs` | object | No | null | Typed input schema (keys = names, values = InputDefinition) |
 | `trigger` | TriggerConfig | No | Manual | How the orchestration is triggered |
 | `mcps` | Mcp[] | No | [] | Inline MCP server definitions |
-| `defaultModel` | string | No | null | Default model for all Prompt steps. Steps can override. |
+| `defaultModel` | string | No | null | Default model for all Prompt steps. Steps can override. Resolution per step: step `model` -> `defaultModel` -> host `defaultModel` (`orchestra.json`). |
+| `defaultReasoningLevel` | string | No | null | Default reasoning effort for Prompt steps that set no `reasoningLevel`: `low` / `medium` / `high` / `xhigh` / `max`. Resolution per step: step `reasoningLevel` -> `defaultReasoningLevel` -> host `defaultReasoningLevel` -> provider default. |
 | `defaultProvider` | string | No | null | Default agent provider for Prompt steps: `"copilot"` or `"opencode"`. Resolution per step: step `provider` -> `defaultProvider` -> host default. |
 | `agentPool` | object | No | provider defaults | Provider worker-pool capacity request (see Agent Pool) |
 | `defaultSystemPromptMode` | string | No | null | `"append"`, `"replace"`, or `"customize"` for all Prompt steps |
@@ -227,7 +228,7 @@ Calls an LLM.
 | `inputHandlerPromptFile` | string | No | null |
 | `outputHandlerPrompt` | string | No | null |
 | `outputHandlerPromptFile` | string | No | null |
-| `reasoningLevel` | string | No | null |
+| `reasoningLevel` | string | No | from `defaultReasoningLevel` |
 | `reasoningSummary` | string | No | null |
 | `contextTier` | string | No | null |
 | `workingDirectory` | string | No | null |
@@ -322,6 +323,7 @@ Each attachment has a `type`:
 
 Per-step Copilot controls, all opt-in (omit to inherit the host/provider default):
 
+- `reasoningLevel` — `low` / `medium` / `high` / `xhigh` / `max` (case-insensitive). Reasoning *effort* forwarded to the model. `xhigh`/`max` are only honoured by models that advertise them (GPT-5.x/6, Claude Opus 4.7+). Omit to inherit the orchestration's `defaultReasoningLevel`, then the host's (`orchestra.json`), then the provider default — set it on a step only when that step needs a different effort than the rest of the orchestration (e.g. `low` for a cheap gate check).
 - `reasoningSummary` — `none` / `concise` / `detailed`. Verbosity of the model's reasoning summary (distinct from `reasoningLevel`, the reasoning *effort*).
 - `contextTier` — `default` / `longContext`. Opts into the model's extended context window where supported.
 - `workingDirectory` — the agent's working directory for shell/file tools and config discovery (custom instructions, `.github/agents`, `.github/mcp.json`). Template-resolved (`{{param.*}}`/`{{env.*}}`/`{{vars.*}}`) and validated to exist at run time.
@@ -1101,7 +1103,7 @@ Orchestrations can be registered in Orchestra via:
 4. **Step names must be unique** within the orchestration.
 5. **No circular dependencies.** The DAG must be acyclic.
 6. **`parameters` is a string array of names**, not key-value pairs. Values come at runtime.
-7. **Model is required** for Prompt steps unless `defaultModel` is set at the orchestration level. Use `"claude-opus-4.8"` as default.
+7. **Model is required** for Prompt steps unless `defaultModel` is set at the orchestration level (or the host's `orchestra.json` defines one). Use `"claude-opus-4.8"` as default.
 8. **Template expressions are `{{...}}`**, not `${...}` or `{...}`.
 9. **Boolean/Number inputs**: values are always strings in JSON. `"true"`, `"false"`, `"42"`.
 10. **`dependsOn` references step names**, not types or indices.

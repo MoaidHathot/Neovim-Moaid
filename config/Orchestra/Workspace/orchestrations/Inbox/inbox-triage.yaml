@@ -304,7 +304,7 @@ steps:
 
       # Emit a compact, easy-to-index map keyed by channel/folder id. The
       # effective floor for any channel is max(windowStart, its cursor).
-      $entries = New-Object System.Collections.Generic.List[object]
+      $entries = [System.Collections.Generic.List[object]]::new()
       foreach ($k in $cursors.Keys) {
         $entries.Add([pscustomobject]@{
           channelId          = $k
@@ -497,7 +497,7 @@ steps:
       } catch { $paths = @() }
 
       $seen   = New-Object System.Collections.Generic.HashSet[string]
-      $out    = New-Object System.Collections.Generic.List[object]
+      $out    = [System.Collections.Generic.List[object]]::new()
       $notes  = New-Object System.Collections.Generic.List[string]
       $rawSeen = 0
 
@@ -777,7 +777,7 @@ steps:
       } catch { $paths = @() }
 
       $seen  = New-Object System.Collections.Generic.HashSet[string]
-      $out   = New-Object System.Collections.Generic.List[object]
+      $out   = [System.Collections.Generic.List[object]]::new()
       $notes = New-Object System.Collections.Generic.List[string]
       $rawSeen = 0
 
@@ -925,7 +925,7 @@ steps:
         return $hex.Substring(0, 16)
       }
 
-      $merged = New-Object System.Collections.Generic.List[object]
+      $merged = [System.Collections.Generic.List[object]]::new()
       $seen   = New-Object System.Collections.Generic.HashSet[string]
       $errors = New-Object System.Collections.Generic.List[string]
 
@@ -976,6 +976,7 @@ steps:
   - name: advance-scan-cursor
     type: Script
     dependsOn: [reduce-mail, reduce-teams]
+    when: "{{param.dryRun}} != true"
     shell: pwsh
     script: |
       # Advances the per-channel / per-folder scan high-water marks based on
@@ -1108,6 +1109,9 @@ steps:
   - name: classify
     type: Prompt
     dependsOn: [merge-and-dedupe, resolve-me]
+    # Nothing to classify on an empty tick: skip the LLM call. diff-and-plan-upserts treats an
+    # empty classify output as "no classifications" (see its empty-guard).
+    when: "{{merge-and-dedupe.output.messageCount}} > 0"
     systemPrompt: |
       You are a triage classifier. You receive a JSON array of recent
       mail + Teams messages. For EACH message you assign exactly one
@@ -1243,7 +1247,7 @@ steps:
       }
 
       # Emit a JSON object that's easy to consume from the next script.
-      $entries = New-Object System.Collections.Generic.List[object]
+      $entries = [System.Collections.Generic.List[object]]::new()
       foreach ($k in $prior.Keys) {
         $entries.Add([pscustomobject]@{
           zakiraKey = $k
@@ -1288,7 +1292,9 @@ steps:
       $runId         = $args[3]
 
       $merged   = ConvertFrom-Json -InputObject $mergedJson  -Depth 50 -ErrorAction Stop
-      $classify = ConvertFrom-Json -InputObject $classifyJson -Depth 50 -ErrorAction Stop
+      # classify is condition-skipped (when: messageCount > 0) on empty ticks and then resolves to
+      # an empty string here; treat that as "no classifications" instead of failing the parse.
+      $classify = if ([string]::IsNullOrWhiteSpace($classifyJson)) { [pscustomobject]@{ items = @(); counts = $null } } else { ConvertFrom-Json -InputObject $classifyJson -Depth 50 -ErrorAction Stop }
       $prior    = ConvertFrom-Json -InputObject $priorJson    -Depth 50 -ErrorAction Stop
 
       $now = (Get-Date).ToUniversalTime()
@@ -1306,7 +1312,7 @@ steps:
         $priorMap[[string]$p.zakiraKey] = $p.data
       }
 
-      $upserts = New-Object System.Collections.Generic.List[object]
+      $upserts = [System.Collections.Generic.List[object]]::new()
       $rollup = [ordered]@{
         new = 0; escalated = 0; reclassified = 0; unchanged = 0;
         manualClosed = 0
@@ -1491,32 +1497,10 @@ steps:
       - "{{param.dryRun}}"
     timeoutSeconds: 30
 
-  - name: noteworthy-gate-prompt
-    type: Prompt
-    dependsOn: [gate-noteworthy-activity]
-    systemPrompt: |
-      You read a JSON object that contains a `noteworthy` boolean. Your
-      ONLY job is to gate downstream ActionView submission.
-
-      Rules:
-      1. If `noteworthy` is exactly `true`, output the JSON object
-         verbatim with no prose, fences, or alterations.
-      2. If `noteworthy` is `false`, call the engine tool
-         `orchestra_set_status` with status `no_action` and a reason
-         that includes the supplied `reason` field. After calling the
-         tool, output the JSON object verbatim.
-      3. Do not call any other tools.
-      4. Do not add prose, markdown fences, or commentary.
-    userPrompt: |
-      Gate decision input:
-      {{gate-noteworthy-activity.output}}
-    outputHandlerPrompt: |
-      Output exactly one JSON object - the gate decision verbatim.
-      Strip any markdown fences, prose, or trailing whitespace.
-
   - name: update-zakira
     type: Script
     dependsOn: [diff-and-plan-upserts]
+    when: "{{param.dryRun}} != true"
     shell: pwsh
     script: |
       # Bulk persist the upsert plan to Zakira. Also stamps a new
@@ -1603,6 +1587,7 @@ steps:
   - name: build-todo-payloads
     type: Script
     dependsOn: [diff-and-plan-upserts]
+    when: "{{param.pushToTodo}} == true && {{param.dryRun}} != true"
     shell: pwsh
     script: |
       # Push to To Do only items that:
@@ -1632,7 +1617,7 @@ steps:
       $now = (Get-Date).ToUniversalTime()
       $cutoff = $now.AddHours(-$staleHoursForTodo)
 
-      $items = New-Object System.Collections.Generic.List[object]
+      $items = [System.Collections.Generic.List[object]]::new()
       foreach ($u in @($diff.upserts)) {
         if ($null -eq $u) { continue }
         $d = $u.data
@@ -1701,6 +1686,7 @@ steps:
   - name: push-to-todo
     type: Orchestration
     dependsOn: [build-todo-payloads]
+    when: "{{param.pushToTodo}} == true && {{param.dryRun}} != true"
     orchestration: todo-upsert
     forEach: "{{build-todo-payloads.output}}"
     forEachPath: items
@@ -1727,7 +1713,11 @@ steps:
 
   - name: build-actionview-entry
     type: Script
-    dependsOn: [diff-and-plan-upserts, noteworthy-gate-prompt, update-zakira, push-to-todo]
+    dependsOn: [diff-and-plan-upserts, gate-noteworthy-activity, update-zakira, push-to-todo]
+    # Replaces the former noteworthy-gate-prompt (an LLM call whose only job was to call
+    # orchestra_set_status). A no-op tick now skips this branch by condition; emit-daily-summary
+    # is NOT downstream of this step, so it keeps running on every non-dry run.
+    when: "{{gate-noteworthy-activity.output.noteworthy}} == true"
     shell: pwsh
     script: |
       # Deterministic ActionView entry. Uses a stable entry id so each
@@ -1887,7 +1877,7 @@ steps:
         }
       }
 
-      $content = New-Object System.Collections.Generic.List[object]
+      $content = [System.Collections.Generic.List[object]]::new()
 
       if ($byCat['needs-action'].Count -gt 0) {
         $alertBody = "**$($byCat['needs-action'].Count) item(s) need your attention:**`n`n"
@@ -1972,6 +1962,7 @@ steps:
   - name: submit-actionview-entry
     type: Orchestration
     dependsOn: [build-actionview-entry]
+    when: "!empty({{build-actionview-entry.output}})"
     orchestration: actionview-submit
     parameters:
       entryJson: "{{build-actionview-entry.output}}"
@@ -1981,8 +1972,8 @@ steps:
     # actionview-submit expects. The previous LLM handler re-emitted the whole
     # ~30KB entry as a JSON string before the child could start, costing 3-5
     # minutes of the child's timeout budget per attempt. No sentinel handling is
-    # needed either - noteworthy-gate-prompt already skipped this branch via
-    # orchestra_set_status('no_action') on no-op runs.
+    # needed either - the 'when:' above skips this step whenever build-actionview-entry
+    # was condition-skipped on a no-op run.
     mode: sync
     # actionview-submit v2 is deterministic and completes in seconds; its own
     # timeoutSeconds is 300, so this cap only acts as a backstop above it.
@@ -1991,6 +1982,7 @@ steps:
   - name: emit-daily-summary
     type: Script
     dependsOn: [diff-and-plan-upserts, update-zakira, push-to-todo, gate-noteworthy-activity]
+    when: "{{param.dryRun}} != true"
     shell: pwsh
     script: |
       # Always-on summary writer. Writes the daily snapshot under
@@ -2044,13 +2036,25 @@ steps:
 
       function Write-SummaryKey {
         param([string]$Key)
-        $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
-          --data $payload --author "inbox-triage:$runId" --reason 'daily summary' 2>&1
+        $edit = { & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
+          --data $payload --author "inbox-triage:$runId" --reason 'daily summary' 2>&1 }
+        $out = & $edit
+        # zakira.db is shared by every orchestration; a concurrent writer surfaces as a transient
+        # 'database is locked' failure. Retry those briefly before treating edit as failed.
+        $attempt = 1
+        while ($LASTEXITCODE -ne 0 -and $attempt -lt 4 -and (($out -join ' ') -match 'locked|busy|SQLITE_BUSY')) {
+          Start-Sleep -Seconds (2 * $attempt)
+          $attempt++
+          $out = & $edit
+        }
         if ($LASTEXITCODE -ne 0) {
+          # Keep the edit failure: when the entry already exists the create below fails with a UNIQUE
+          # violation, and reporting only that hid the real reason edit failed (seen 2026-09-29).
+          $editOut = $out
           $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $Key `
             --data $payload --author "inbox-triage:$runId" --reason 'daily summary' 2>&1
           if ($LASTEXITCODE -ne 0) {
-            throw "Zakira write failed for $category/${Key}: $($out -join ' ')"
+            throw "Zakira write failed for $category/${Key}. edit: $($editOut -join ' ') | create: $($out -join ' ')"
           }
         }
       }

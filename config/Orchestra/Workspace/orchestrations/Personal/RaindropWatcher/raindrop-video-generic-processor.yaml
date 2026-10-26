@@ -9,7 +9,7 @@ description: |
   step driven by Zakira.Replay's MCP, so genuinely visual moments
   ("look at this graph", a screenshot, a meme) can still be surfaced
   without doing a full vision pass.
-version: 1.1.0
+version: 1.1.1
 tags: ["personal", "raindrop", "auto", "video", "generic"]
 defaultModel: gpt-6-astra
 
@@ -163,6 +163,19 @@ steps:
     type: Prompt
     workingDirectory: "{{orchestration.tempDir}}"
     dependsOn: [read-artifacts]
+    # Reasoning-only step: it must answer from the artifact pack text alone.
+    # Since the Copilot SDK 1.0.14 / CLI 1.0.85 upgrade (2026-09-22) every
+    # Prompt session carries the CLI's full built-in tool catalog, and this
+    # step started viewing frame images and then spawning parallel ffmpeg
+    # extractions against the YouTube stream (runs 6f6ea90a8f58, e22e1614aab2,
+    # fcd1582528d5, ...) until the 300s budget expired with no JSON - which
+    # failed the parent raindrop-processor and dead-lettered the raindrop.
+    # The deny-list below rejects every such tool call at the permission layer
+    # (the model sees the rejection and falls back to answering); the prompt
+    # tells it not to try in the first place.
+    permissionPolicy:
+      mode: denyList
+      deny: [shell, write, read, url, mcp, memory]
     systemPrompt: |
       You are a visual evidence curator. The video has a small baseline
       set of interval-sampled frames already (see `baselineFrames` in the
@@ -170,6 +183,15 @@ steps:
       frames that improve the visual story: moments the speaker explicitly
       directs attention to the screen, moments where seeing the screen is
       genuinely more informative than just hearing the audio.
+
+      TOOL POLICY (strict): this is a reasoning-only step. Do NOT call any
+      tool - do not open or view the frame images, do not list or read
+      files or directories, do not run shell or PowerShell commands, and
+      do not invoke ffmpeg / yt-dlp or try to extract frames yourself. The
+      NEXT step (targeted-frame-capture) captures the frames you pick.
+      Decide purely from the transcript text and the baselineFrames file
+      names already in the input. Tool calls are denied by policy and only
+      burn this step's time budget.
 
       Be GENEROUS, not conservative. The goal is for the user to see
       meaningful stills next to the summary. Almost every video has at
@@ -194,7 +216,8 @@ steps:
       so you don't duplicate (the file names typically encode the
       timestamp, e.g., `frame-003-02-15.jpg` is the 2:15 mark).
 
-      Output a SINGLE JSON object on stdout (no commentary, no fences):
+      Return a SINGLE JSON object as your entire response (no commentary,
+      no markdown fences):
 
         {
           "ok": true,
@@ -212,7 +235,7 @@ steps:
       Artifact pack:
       {{read-artifacts.output}}
 
-      Output ONLY the JSON.
+      Output ONLY the JSON. Do not call any tools.
     timeoutSeconds: 300
 
   - name: targeted-frame-capture

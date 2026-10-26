@@ -437,7 +437,7 @@ integration tests use this to point at a local mock server.
 
 ## Testing
 
-Three suites in `tests/`:
+Suites in `tests/`:
 
 - **`test-raindrop-cli.ps1`** -- 11 smoke tests covering arg parsing,
   missing-flag handling, and auth-missing error paths. No network, no
@@ -454,3 +454,17 @@ Three suites in `tests/`:
   XDG location, runs `tokens-show`, and asserts the file is migrated,
   encrypted at the new location, deleted from the old location, and
   readable on a second invocation.
+
+- **`test-capture-targeted-frames.ps1`** -- 29 offline tests for
+  `tools/scripts/capture-targeted-frames.ps1` with a fake `dotnet` first on
+  PATH. Pins two regressions that never failed a run: picks wrapped in prose
+  or a ```json fence (the post-2026-08-26 LLM shape) must still be extracted
+  instead of silently yielding zero frames, and a video URL containing `&`
+  (`...watch?v=ID&t=1s`) must reach Zakira.Replay as one argument via
+  `dotnet dnx` rather than being split by the `dnx.cmd` shim. Also covers the
+  cap/overflow accounting and the no-throw CLI-failure and missing-runId
+  envelopes.
+
+Also see `test-verify-dispatch.ps1`, `test-mark-state-scripts.ps1` and
+`test-article-entry-builder.ps1`, which exercise the shipped step scripts the
+same way.

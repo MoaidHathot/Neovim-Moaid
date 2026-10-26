@@ -2,23 +2,23 @@
 
 Use this when the user wants a list of search results (titles, URLs, snippets) for a query. If the user wants synthesis from multiple sources, prefer `references/research.md` instead. If the user already has a URL, prefer `references/fetch.md`.
 
-## MCP — `WebSearch`
+## MCP - `web_search`
 
-Returns a `SearchResponse` with `Results` (title, url, snippet, rank, provider) plus provider `Attempts` and an optional `Error`.
+Returns a `SearchResponse` with `results` (title, url, snippet, rank, provider) plus provider `attempts` and an optional `error`.
 
-| Parameter           | Type       | Default | Notes                                                                                  |
-|---------------------|------------|---------|----------------------------------------------------------------------------------------|
-| `query`             | string     | —       | Raw query. Pass operators through unchanged (`site:`, `filetype:`, `"exact"`).         |
-| `provider`          | string?    | profile | `duckduckgo`, `duckduckgo-browser`, `bing`, or alias (e.g. `ddg`).                     |
-| `profile`           | string?    | `default` | Named profile from `profiles.json`.                                                  |
-| `maxResults`        | int        | `10`    | Upper bound on returned results.                                                       |
-| `page`              | int        | `1`     | 1-indexed result page.                                                                  |
-| `timeRange`         | string?    | —       | `day`, `week`, `month`, `year`. Provider must support it.                              |
-| `safeSearch`        | bool?      | —       | Override profile/provider default.                                                      |
-| `enableFallback`    | bool?      | profile | Allow falling back to `fallbackProviders` if primary fails.                            |
-| `fallbackProviders` | string[]?  | profile | Ordered list of providers to try if the primary fails.                                  |
+| Parameter           | Type       | Default   | Notes                                                                                  |
+|---------------------|------------|-----------|----------------------------------------------------------------------------------------|
+| `query`             | string     | -         | Raw query. Pass operators through unchanged (`site:`, `filetype:`, `"exact"`).         |
+| `provider`          | string?    | profile   | `duckduckgo`, `duckduckgo-browser`, `bing`, or alias (e.g. `ddg`).                     |
+| `profile`           | string?    | `default` | Named profile from `profiles.json`.                                                    |
+| `maxResults`        | int        | `10`      | Upper bound on returned results.                                                       |
+| `page`              | int        | `1`       | 1-indexed result page.                                                                 |
+| `timeRange`         | string?    | -         | `day`, `week`, `month`, `year`. Provider must support it.                              |
+| `safeSearch`        | bool?      | -         | Override profile/provider default.                                                     |
+| `enableFallback`    | bool?      | profile   | Allow falling back to `fallbackProviders` if primary fails.                            |
+| `fallbackProviders` | string[]?  | profile   | Ordered list of providers to try if the primary fails.                                 |
 
-## CLI — `recall search`
+## CLI - `recall search`
 
 ```powershell
 recall search <query> `
@@ -33,7 +33,7 @@ recall search <query> `
   [--output <json|text|markdown|dump>]
 ```
 
-Default `--output` is `text`. Use `--output json` when piping to another agent or tool.
+Default `--output` is `text`. Use `--output json` when piping to another agent or tool (PascalCase field names; MCP results are camelCase).
 
 ## Query operators
 
@@ -60,7 +60,7 @@ recall providers list --output json
 
 ## Fallback
 
-If `enableFallback` is `true` (or set in the profile), the search service tries the primary provider, then each provider in `fallbackProviders` in order until one succeeds. The response's `ProviderAttempts` records each attempt with its outcome.
+If `enableFallback` is `true` (or set in the profile), the search service tries the primary provider, then each provider in `fallbackProviders` in order until one succeeds. The response's `attempts` records each attempt with its outcome.
 
 CLI:
 
@@ -97,35 +97,36 @@ recall search "playwright mcp" --time-range month --safe-search false
 
 `timeRange` accepts `day`, `week`, `month`, `year`. Providers silently ignore unsupported values.
 
-## Response shape (abridged)
+## Response shape (abridged, MCP camelCase)
 
 ```json
 {
-  "Query": "site:github.com mcp server",
-  "Provider": "duckduckgo",
-  "Profile": "default",
-  "Success": true,
-  "Results": [
+  "query": "site:github.com mcp server",
+  "provider": "duckduckgo",
+  "profile": "default",
+  "success": true,
+  "results": [
     {
-      "Title": "...",
-      "Url": "https://github.com/...",
-      "CanonicalUrl": "https://github.com/...",
-      "Host": "github.com",
-      "DisplayUrl": "github.com",
-      "Snippet": "...",
-      "Provider": "duckduckgo",
-      "Rank": 1,
-      "RawRank": 1,
-      "QualityScore": 0,
-      "SourceProviders": ["duckduckgo"]
+      "title": "...",
+      "url": "https://github.com/...",
+      "canonicalUrl": "https://github.com/...",
+      "host": "github.com",
+      "displayUrl": "github.com",
+      "snippet": "...",
+      "provider": "duckduckgo",
+      "rank": 1,
+      "rawRank": 1,
+      "qualityScore": 0,
+      "sourceProviders": ["duckduckgo"]
     }
   ],
-  "Attempts": [
-    { "Provider": "duckduckgo", "Success": true, "Skipped": false, "ResultCount": 10, "Error": null }
-  ],
-  "Error": null
+  "attempts": [
+    { "provider": "duckduckgo", "success": true, "skipped": false, "resultCount": 10 }
+  ]
 }
 ```
+
+When the search step fails, `success` is `false` and `error` is an `OperationError` with `code: "search_failed"`; `attempts` shows which providers were tried.
 
 ## Common patterns
 
@@ -151,10 +152,10 @@ MCP:
 
 **4. Probe provider health before committing:**
 
-Use `WebGetProviderHealth` (MCP) or `recall providers test <name>` (CLI). See `references/troubleshooting.md`.
+Use `web_get_provider_health` (MCP) or `recall providers test <name>` (CLI). See `references/troubleshooting.md`.
 
 ## When NOT to use search
 
-- The user already gave you a URL → use `WebFetch`. See `references/fetch.md`.
-- The user wants a synthesized answer from multiple sources → use `WebResearch`. See `references/research.md`.
-- You need to fetch the top N results' content after searching → use `WebSearchThenFetch`, which combines both. See `references/fetch.md`.
+- The user already gave you a URL → use `web_fetch`. See `references/fetch.md`.
+- The user wants a synthesized answer from multiple sources → use `web_research`. See `references/research.md`.
+- You need to fetch the top N results' content after searching → use `web_search_then_fetch`, which combines both. See `references/fetch.md`.

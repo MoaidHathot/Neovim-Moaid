@@ -25,8 +25,14 @@ version: 2.1.0
 tags: ["ZTS", "pipelines", "MSFT", "Azure-DevOps", "Pipeline", "auto-discovery", "auto"]
 defaultModel: gpt-6-astra
 timeoutSeconds: 7200
+# RETIRED 2026-09-27 (Orchestra 0.10 watchers): discovery + dedup + dispatch now happen
+# in the zts-official-pipeline-runs watcher (orchestra.watchers.json ->
+# Shared/watchers/fetch-zts-official-runs.ps1), which launches zts-official-pipeline-dispatcher
+# once per new relevant run. Kept disabled for manual re-runs / comparison; the Zakira
+# 'auto-discovered-claims' document it maintained is no longer read by anything.
 trigger:
   type: scheduler
+  enabled: false
   intervalSeconds: 900
 variables:
   pollIntervalSeconds: "900"
@@ -135,7 +141,7 @@ steps:
         Remove-Item -LiteralPath $stderrFile -ErrorAction SilentlyContinue
       }
 
-      $runs = New-Object System.Collections.Generic.List[object]
+      $runs = [System.Collections.Generic.List[object]]::new()
       foreach ($b in @($list)) {
         if ($null -eq $b) { continue }
 
@@ -286,7 +292,7 @@ steps:
         Remove-Item -LiteralPath $stderrFile -ErrorAction SilentlyContinue
       }
 
-      $runs = New-Object System.Collections.Generic.List[object]
+      $runs = [System.Collections.Generic.List[object]]::new()
       foreach ($b in @($list)) {
         if ($null -eq $b) { continue }
 
@@ -400,7 +406,7 @@ steps:
       {{discover-cd-runs.output}}
       '@ | ConvertFrom-Json -Depth 100
 
-      $runs = New-Object System.Collections.Generic.List[object]
+      $runs = [System.Collections.Generic.List[object]]::new()
 
       foreach ($source in @($ci, $cd)) {
         if ($null -eq $source -or $null -eq $source.runs) { continue }
@@ -556,7 +562,7 @@ steps:
       $discoveredCount = $allRuns.Count
 
       # ---- 1. Relevance filter -------------------------------------------------
-      $relevant = New-Object System.Collections.Generic.List[object]
+      $relevant = [System.Collections.Generic.List[object]]::new()
       $droppedRelevance = 0
       foreach ($run in $allRuns) {
         if ($null -eq $run) { continue }
@@ -606,7 +612,7 @@ steps:
       $claimsDoc = $null
       if ($claimsDocExists) { $claimsDoc = Get-ZakiraDataJson -Text $claimsResp.Text }
 
-      $claimsList = New-Object System.Collections.Generic.List[object]
+      $claimsList = [System.Collections.Generic.List[object]]::new()
       if ($null -ne $claimsDoc -and $null -ne $claimsDoc.claims) {
         foreach ($c in @($claimsDoc.claims)) {
           if ($null -eq $c) { continue }
@@ -616,7 +622,7 @@ steps:
 
       # ---- 2a. Prune stale claims ---------------------------------------------
       $prunedCount = 0
-      $keptClaims = New-Object System.Collections.Generic.List[object]
+      $keptClaims = [System.Collections.Generic.List[object]]::new()
       foreach ($c in $claimsList) {
         $claimedAt = ConvertTo-UtcDateTime $c.claimedAt
         if ($null -ne $claimedAt -and $claimedAt -lt $pruneCutoff) {
@@ -634,7 +640,7 @@ steps:
       }
 
       # ---- 3. State filter -----------------------------------------------------
-      $survivors = New-Object System.Collections.Generic.List[object]
+      $survivors = [System.Collections.Generic.List[object]]::new()
       $droppedAlreadyTracked = 0
       $droppedInFlight = 0
       $reclaimedStale = 0
@@ -683,7 +689,7 @@ steps:
         $claimsWritten++
       }
 
-      $finalClaims = New-Object System.Collections.Generic.List[object]
+      $finalClaims = [System.Collections.Generic.List[object]]::new()
       foreach ($key in $claimByKey.Keys) { [void]$finalClaims.Add($claimByKey[$key]) }
       $finalClaimsArr = $finalClaims.ToArray()
 

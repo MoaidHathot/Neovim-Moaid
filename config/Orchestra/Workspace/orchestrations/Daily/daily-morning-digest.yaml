@@ -435,7 +435,7 @@ steps:
       }
 
       $meetings = ConvertFrom-Json -InputObject $meetingsJson -Depth 50 -ErrorAction Stop
-      $lookups = New-Object System.Collections.Generic.List[object]
+      $lookups = [System.Collections.Generic.List[object]]::new()
       $errors = New-Object System.Collections.Generic.List[string]
 
       foreach ($m in @($meetings.meetings)) {
@@ -641,7 +641,7 @@ steps:
         # is absent (found=false), renders a polite "tracker has not
         # run yet today" markdown. Otherwise pulls counts + hot items.
         param([string]$Heading, [string]$Category, [pscustomobject]$Tracker, [string]$LinkLabel)
-        $body = New-Object System.Collections.Generic.List[object]
+        $body = [System.Collections.Generic.List[object]]::new()
         if ($null -eq $Tracker -or -not $Tracker.found) {
           $body.Add([ordered]@{
             type = 'markdown'
@@ -725,7 +725,7 @@ steps:
         return "$start - $end"
       }
 
-      $content = New-Object System.Collections.Generic.List[object]
+      $content = [System.Collections.Generic.List[object]]::new()
 
       $headerLines = @(
         "**Date:** $digestDate ($($date.weekday))",
@@ -759,7 +759,7 @@ steps:
             $(if (-not [string]::IsNullOrWhiteSpace([string]$m.webLink)) { [ordered]@{ type='link'; url=[string]$m.webLink; label='open' } } else { '-' })
           )
         }
-        $meetingsSection = New-Object System.Collections.Generic.List[object]
+        $meetingsSection = [System.Collections.Generic.List[object]]::new()
         $meetingsSection.Add([ordered]@{
           type    = 'table'
           label   = "Meetings"
@@ -772,7 +772,7 @@ steps:
           if ($null -eq $entry) { continue }
           $m = $entry.meeting
           $meetingTitle = "$(Format-MeetingTime -StartIso ([string]$m.startTime) -EndIso ([string]$m.endTime)) - $([string]$m.title)"
-          $nested = New-Object System.Collections.Generic.List[object]
+          $nested = [System.Collections.Generic.List[object]]::new()
           $kv = [ordered]@{
             'Organizer' = [string]$m.organizer
             'Attendees' = "$(@($m.attendees).Count)"
@@ -892,6 +892,7 @@ steps:
   - name: save-daily-note-obsidian
     type: Script
     dependsOn: [resolve-digest-date, inject-content]
+    when: "{{param.dryRun}} != true"
     shell: pwsh
     script: |
       # Renders a permanent daily note from the injected entry. The
@@ -1021,6 +1022,8 @@ steps:
   - name: submit-actionview-entry
     type: Orchestration
     dependsOn: [inject-content]
+    # Dry runs used to post the card anyway (the step had no dryRun handling); the digest state writer tolerates the empty output this leaves.
+    when: "{{param.dryRun}} != true"
     orchestration: actionview-submit
     parameters:
       entryJson: "{{inject-content.output}}"
@@ -1035,6 +1038,7 @@ steps:
   - name: build-focus-todo-payload
     type: Script
     dependsOn: [resolve-digest-date, synthesize-focus]
+    when: "{{param.pushFocusToTodo}} == true && {{param.dryRun}} != true"
     shell: pwsh
     script: |
       # Builds a single-element items array for the push-to-todo
@@ -1096,6 +1100,7 @@ steps:
   - name: push-focus-to-todo
     type: Orchestration
     dependsOn: [build-focus-todo-payload]
+    when: "{{param.pushFocusToTodo}} == true && {{param.dryRun}} != true"
     orchestration: todo-upsert
     forEach: "{{build-focus-todo-payload.output}}"
     forEachPath: items
@@ -1116,6 +1121,7 @@ steps:
   - name: emit-digest-state
     type: Script
     dependsOn: [resolve-digest-date, inject-content, save-daily-note-obsidian, submit-actionview-entry, push-focus-to-todo]
+    when: "{{param.dryRun}} != true"
     shell: pwsh
     script: |
       # Persists a per-day record of the digest run so a future caller
@@ -1157,13 +1163,25 @@ steps:
 
       function Write-DigestKey {
         param([string]$Key)
-        $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
-          --data $payload --author "daily-morning-digest:$runId" --reason 'daily digest run' 2>&1
+        $edit = { & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
+          --data $payload --author "daily-morning-digest:$runId" --reason 'daily digest run' 2>&1 }
+        $out = & $edit
+        # zakira.db is shared by every orchestration; a concurrent writer surfaces as a transient
+        # 'database is locked' failure. Retry those briefly before treating edit as failed.
+        $attempt = 1
+        while ($LASTEXITCODE -ne 0 -and $attempt -lt 4 -and (($out -join ' ') -match 'locked|busy|SQLITE_BUSY')) {
+          Start-Sleep -Seconds (2 * $attempt)
+          $attempt++
+          $out = & $edit
+        }
         if ($LASTEXITCODE -ne 0) {
+          # Keep the edit failure: when the entry already exists the create below fails with a UNIQUE
+          # violation, and reporting only that hid the real reason edit failed (seen 2026-09-29).
+          $editOut = $out
           $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $Key `
             --data $payload --author "daily-morning-digest:$runId" --reason 'daily digest run' 2>&1
           if ($LASTEXITCODE -ne 0) {
-            throw "Zakira write failed for $category/${Key}: $($out -join ' ')"
+            throw "Zakira write failed for $category/${Key}. edit: $($editOut -join ' ') | create: $($out -join ' ')"
           }
         }
       }

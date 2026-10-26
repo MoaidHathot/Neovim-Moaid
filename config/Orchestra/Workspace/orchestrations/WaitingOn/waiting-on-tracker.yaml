@@ -278,7 +278,7 @@ steps:
         }
       }
 
-      $entries = New-Object System.Collections.Generic.List[object]
+      $entries = [System.Collections.Generic.List[object]]::new()
       foreach ($key in $keys) {
         $out = & dnx Zakira.Exchange --yes -- --db $dbPath get $category $key 2>&1
         if ($LASTEXITCODE -ne 0) { continue }
@@ -630,7 +630,7 @@ steps:
         }
       }
 
-      $entries = New-Object System.Collections.Generic.List[object]
+      $entries = [System.Collections.Generic.List[object]]::new()
       foreach ($key in $keys) {
         $out = & dnx Zakira.Exchange --yes -- --db $dbPath get $category $key 2>&1
         if ($LASTEXITCODE -ne 0) { continue }
@@ -718,7 +718,7 @@ steps:
       $remainingPriorKeys = New-Object System.Collections.Generic.HashSet[string]
       foreach ($k in $priorMap.Keys) { [void]$remainingPriorKeys.Add($k) }
 
-      $upserts = New-Object System.Collections.Generic.List[object]
+      $upserts = [System.Collections.Generic.List[object]]::new()
       $rollup = [ordered]@{
         new = 0; 'still-open' = 0; 'manual-closed' = 0;
         'stale-auto' = 0; orphaned = 0
@@ -904,32 +904,10 @@ steps:
       - "{{param.dryRun}}"
     timeoutSeconds: 30
 
-  - name: noteworthy-gate-prompt
-    type: Prompt
-    dependsOn: [gate-noteworthy-activity]
-    systemPrompt: |
-      You read a JSON object that contains a `noteworthy` boolean. Your
-      ONLY job is to gate downstream ActionView submission.
-
-      Rules:
-      1. If `noteworthy` is exactly `true`, output the JSON object
-         verbatim with no prose, fences, or alterations.
-      2. If `noteworthy` is `false`, call the engine tool
-         `orchestra_set_status` with status `no_action` and a reason
-         that includes the supplied `reason` field. After calling the
-         tool, output the JSON object verbatim.
-      3. Do not call any other tools.
-      4. Do not add prose, markdown fences, or commentary.
-    userPrompt: |
-      Gate decision input:
-      {{gate-noteworthy-activity.output}}
-    outputHandlerPrompt: |
-      Output exactly one JSON object - the gate decision verbatim.
-      Strip any markdown fences, prose, or trailing whitespace.
-
   - name: update-ledger
     type: Script
     dependsOn: [merge-and-diff]
+    when: "{{param.dryRun}} != true"
     shell: pwsh
     script: |
       # Bulk Zakira writes + last-run cursor refresh. Runs even when
@@ -1015,6 +993,7 @@ steps:
   - name: build-todo-payloads
     type: Script
     dependsOn: [merge-and-diff]
+    when: "{{param.pushToTodo}} == true && {{param.dryRun}} != true"
     shell: pwsh
     script: |
       # Push to To Do only open asks whose age exceeds the per-priority
@@ -1041,7 +1020,7 @@ steps:
       $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
       $now = (Get-Date).ToUniversalTime()
 
-      $items = New-Object System.Collections.Generic.List[object]
+      $items = [System.Collections.Generic.List[object]]::new()
       $newPushed = 0
 
       foreach ($u in @($diff.upserts)) {
@@ -1117,6 +1096,7 @@ steps:
   - name: push-to-todo
     type: Orchestration
     dependsOn: [build-todo-payloads]
+    when: "{{param.pushToTodo}} == true && {{param.dryRun}} != true"
     orchestration: todo-upsert
     forEach: "{{build-todo-payloads.output}}"
     forEachPath: items
@@ -1142,7 +1122,11 @@ steps:
 
   - name: build-actionview-entry
     type: Script
-    dependsOn: [merge-and-diff, noteworthy-gate-prompt, update-ledger, push-to-todo]
+    # Replaces the former noteworthy-gate-prompt (an LLM call whose only job was to call
+    # orchestra_set_status). A no-op or dry run now skips the ActionView branch by condition;
+    # emit-daily-summary is not downstream of this step and keeps running on every non-dry run.
+    when: "{{gate-noteworthy-activity.output.noteworthy}} == true"
+    dependsOn: [merge-and-diff, gate-noteworthy-activity, update-ledger, push-to-todo]
     shell: pwsh
     script: |
       # Deterministic ActionView entry builder. Open asks grouped by
@@ -1290,7 +1274,7 @@ steps:
           @{ Expression = { if ([string]$_.priority -eq 'urgent') { 0 } elseif ([string]$_.priority -eq 'normal') { 1 } else { 2 } } }, `
           @{ Expression = { -[double]$_.ageHours } }
         $shown = $sorted | Select-Object -First $cap
-        $nested = New-Object System.Collections.Generic.List[object]
+        $nested = [System.Collections.Generic.List[object]]::new()
         $nested.Add([ordered]@{
           type = 'markdown'
           body = "**$($Asks.Count) open ask(s) for this recipient.**"
@@ -1311,7 +1295,7 @@ steps:
         }
       }
 
-      $content = New-Object System.Collections.Generic.List[object]
+      $content = [System.Collections.Generic.List[object]]::new()
 
       if ($urgentOpen.Count -gt 0) {
         $alertBody = "**$($urgentOpen.Count) urgent ask(s) outstanding:**`n`n"
@@ -1395,6 +1379,7 @@ steps:
   - name: submit-actionview-entry
     type: Orchestration
     dependsOn: [build-actionview-entry]
+    when: "!empty({{build-actionview-entry.output}})"
     orchestration: actionview-submit
     parameters:
       entryJson: "{{build-actionview-entry.output}}"
@@ -1402,14 +1387,15 @@ steps:
       groupId: "{{vars.actionViewGroupId}}"
     # No inputHandlerPrompt: the parameters are already the exact shape the
     # child expects; an LLM re-serialising the entry only burned minutes of the
-    # child's timeout budget. noteworthy-gate-prompt already skipped this branch
-    # via orchestra_set_status('no_action') on no-op runs.
+    # child's timeout budget. The 'when:' above skips this step whenever
+    # build-actionview-entry was condition-skipped on a no-op or dry run.
     mode: sync
     timeoutSeconds: 360
 
   - name: weekly-obsidian-digest
     type: Script
     dependsOn: [merge-and-diff, update-ledger]
+    when: "{{param.dryRun}} != true"
     shell: pwsh
     script: |
       # Monday-only weekly digest. Writes one note per ISO week
@@ -1501,6 +1487,7 @@ steps:
   - name: emit-daily-summary
     type: Script
     dependsOn: [merge-and-diff, update-ledger, push-to-todo, gate-noteworthy-activity]
+    when: "{{param.dryRun}} != true"
     shell: pwsh
     script: |
       # Always-on summary writer. Writes the daily snapshot under
@@ -1553,13 +1540,25 @@ steps:
 
       function Write-SummaryKey {
         param([string]$Key)
-        $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
-          --data $payload --author "waiting-on-tracker:$runId" --reason 'daily summary' 2>&1
+        $edit = { & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
+          --data $payload --author "waiting-on-tracker:$runId" --reason 'daily summary' 2>&1 }
+        $out = & $edit
+        # zakira.db is shared by every orchestration; a concurrent writer surfaces as a transient
+        # 'database is locked' failure. Retry those briefly before treating edit as failed.
+        $attempt = 1
+        while ($LASTEXITCODE -ne 0 -and $attempt -lt 4 -and (($out -join ' ') -match 'locked|busy|SQLITE_BUSY')) {
+          Start-Sleep -Seconds (2 * $attempt)
+          $attempt++
+          $out = & $edit
+        }
         if ($LASTEXITCODE -ne 0) {
+          # Keep the edit failure: when the entry already exists the create below fails with a UNIQUE
+          # violation, and reporting only that hid the real reason edit failed (seen 2026-09-29).
+          $editOut = $out
           $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $Key `
             --data $payload --author "waiting-on-tracker:$runId" --reason 'daily summary' 2>&1
           if ($LASTEXITCODE -ne 0) {
-            throw "Zakira write failed for $category/${Key}: $($out -join ' ')"
+            throw "Zakira write failed for $category/${Key}. edit: $($editOut -join ' ') | create: $($out -join ' ')"
           }
         }
       }

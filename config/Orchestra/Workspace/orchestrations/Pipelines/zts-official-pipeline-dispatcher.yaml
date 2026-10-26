@@ -6,8 +6,24 @@ tags: ["ZTS", "pipelines", "MSFT", "Azure-DevOps", "Pipeline", "Tracking", "Disp
 defaultModel: gpt-6-astra
 timeoutSeconds: 9200
 
+# Event-driven since Orchestra 0.10: the `zts-official-pipeline-runs` watcher (declared in
+# ../../orchestra.watchers.json, fetcher Shared/watchers/fetch-zts-official-runs.ps1) polls the
+# ZTS-Official CI/CD definitions every 15 minutes and launches one dispatcher run per NEW
+# relevant build (dedup key = `<ci|cd>:<runId>`). This replaced the
+# zts-official-pipeline-auto-discoverer scheduler and its hand-rolled Zakira claims set.
+# Manual tracking still goes through zts-official-pipeline-manual-tracker, which invokes this
+# orchestration explicitly with source: manual - a watcher trigger does not block that.
 trigger:
-  type: manual
+  type: watcher
+  watcher: zts-official-pipeline-runs
+  enabled: true
+  maxConcurrent: 3
+  catchup: from-now
+  parameters:
+    trackedRunJson: "{{item}}"
+    source: auto
+    forceTrack: "false"
+    trackReason: "auto-discovered by the zts-official-pipeline-runs watcher"
 
 inputs:
   pipelineUrl:
@@ -328,44 +344,59 @@ steps:
     timeoutSeconds: 900
 
   - name: gate-dispatch
-    type: Prompt
+    type: Script
     dependsOn: [decide-dispatch]
-    parameters:
-      - source
-      - forceTrack
-    systemPrompt: |
-      You are a deterministic DAG gate for the pipeline dispatcher. You receive
-      a single dispatch decision JSON object plus the orchestration's `source`
-      and `forceTrack` parameters. You apply mechanical rules; you do not
-      reason.
+    shell: pwsh
+    timeoutSeconds: 60
+    # Deterministic DAG gate (was a Prompt step: one extra LLM round-trip per dispatched run,
+    # now fired by the zts-official-pipeline-runs watcher for every new pipeline run).
+    # Mirrors the mechanical rules documented in decide-dispatch:
+    #   skip-irrelevant / skip-already-tracked -> no_action (all dependents are skipped)
+    #   anything else                          -> proceed
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $decisionJson = [string]$args[0]
+      $source       = [string]$args[1]
+      $forceTrack   = [string]$args[2]
 
-      Mechanical rules:
-        1. If decision == "skip-irrelevant":
-             - Call orchestra_set_status with status "no_action" and a short
-               reason of "Run is not relevant to the user; auto dispatch
-               suppressed."
-             - Return strict JSON: {"proceed": false, "reason": "skip-irrelevant"}
-        2. Else if decision == "skip-already-tracked":
-             - Call orchestra_set_status with status "no_action" and a short
-               reason of "Run is already tracked; duplicate dispatch
-               suppressed."
-             - Return strict JSON: {"proceed": false, "reason": "skip-already-tracked"}
-        3. Otherwise (decision == "track"):
-             - Return strict JSON: {"proceed": true, "reason": "dispatch"}
+      if ([string]::IsNullOrWhiteSpace($decisionJson)) {
+        Orchestra-SetStatus -Status failed -Reason 'decide-dispatch produced no output; cannot evaluate the dispatch gate.'
+        return
+      }
 
-      Do NOT call any other tools. Do NOT add commentary. Output strict JSON
-      only.
-    userPrompt: |
-      Apply the gate rules.
+      $decision = ConvertFrom-Json -InputObject $decisionJson -Depth 50 -ErrorAction Stop
+      $kind = [string]$decision.decision
+      $force = [string]::Equals($forceTrack.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
 
-      Source: {{param.source}}
-      ForceTrack: {{param.forceTrack}}
-
-      Dispatch decision:
-      {{decide-dispatch.output}}
-    outputHandlerPrompt: |
-      Ensure the output is a single JSON object with exactly the keys `proceed` (boolean) and `reason` (string).
-    timeoutSeconds: 160
+      switch ($kind) {
+        'skip-irrelevant' {
+          if ($force) {
+            # decide-dispatch should never emit this when forceTrack is set; be explicit rather than silently dropping a forced dispatch.
+            Orchestra-SetStatus -Status failed -Reason "decide-dispatch returned 'skip-irrelevant' although forceTrack=true (source=$source)."
+            return
+          }
+          Orchestra-SetStatus -Status no_action -Reason 'Run is not relevant to the user; auto dispatch suppressed.'
+          [pscustomobject]@{ proceed = $false; reason = 'skip-irrelevant' } | ConvertTo-Json -Compress
+        }
+        'skip-already-tracked' {
+          if ($force) {
+            Orchestra-SetStatus -Status failed -Reason "decide-dispatch returned 'skip-already-tracked' although forceTrack=true (source=$source)."
+            return
+          }
+          Orchestra-SetStatus -Status no_action -Reason 'Run is already tracked; duplicate dispatch suppressed.'
+          [pscustomobject]@{ proceed = $false; reason = 'skip-already-tracked' } | ConvertTo-Json -Compress
+        }
+        'track' {
+          [pscustomobject]@{ proceed = $true; reason = 'dispatch' } | ConvertTo-Json -Compress
+        }
+        default {
+          Orchestra-SetStatus -Status failed -Reason "decide-dispatch returned unknown decision '$kind'."
+        }
+      }
+    arguments:
+      - "{{decide-dispatch.output}}"
+      - "{{param.source}}"
+      - "{{param.forceTrack}}"
 
   - name: persist-tracking-state
     type: Prompt

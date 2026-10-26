@@ -156,8 +156,8 @@ steps:
 
       $items = ConvertFrom-Json -InputObject $itemsJson -NoEnumerate -ErrorAction Stop
 
-      $toProcess = New-Object System.Collections.Generic.List[object]
-      $skipped   = New-Object System.Collections.Generic.List[object]
+      $toProcess = [System.Collections.Generic.List[object]]::new()
+      $skipped   = [System.Collections.Generic.List[object]]::new()
       $errors    = 0
 
       function Get-DataJsonFromCliOutput {

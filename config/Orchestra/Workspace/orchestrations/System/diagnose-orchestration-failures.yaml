@@ -30,6 +30,23 @@ version: 1.0.0
 tags: ["system", "diagnostics", "self-healing", "orchestra", "auto"]
 defaultModel: gpt-6-astra
 
+# Event-driven since Orchestra 0.10: the `orchestra-failed-runs` watcher (declared in
+# ../../orchestra.watchers.json, fetcher Shared/watchers/fetch-failed-runs.ps1) reads the
+# host's failure history every 15 minutes with a cursor and launches one run of this
+# orchestration per orchestration that gained NEW failures (dedup key =
+# `<orchestrationName>|<newest executionId>`). This replaced the hourly
+# `diagnose-auto-failed-orchestrations` scheduler and its overlapping 70-minute window.
+# Direct callers (diagnose-auto-failed-orchestrations, run-self-healing, manual runs) still
+# pass `group` or `orchestrationName` + `failedRuns` explicitly.
+trigger:
+  type: watcher
+  watcher: orchestra-failed-runs
+  enabled: true
+  maxConcurrent: 1
+  catchup: from-now
+  parameters:
+    group: "{{item}}"
+
 inputs:
   group:
     type: string
@@ -61,16 +78,20 @@ inputs:
     type: string
     description: Root of on-disk run artifacts (defaults to %LOCALAPPDATA%/OrchestraHost/executions when missing).
     required: false
-    default: ""
+    default: "{{env.LOCALAPPDATA}}/OrchestraHost/executions"
   sourceRoot:
     type: string
     description: Optional read-only path to the Orchestra product source tree.
     required: false
-    default: ""
+    default: "W:/Github/Orchestra"
   orchestrationsRoot:
     type: string
-    description: Root directory of orchestration YAMLs in the watched dotfiles workspace.
-    required: true
+    description: |
+      Root directory of orchestration YAMLs in the watched dotfiles workspace. Pinned to
+      XDG_CONFIG_HOME (never the orchestration's own source directory) so a fix edits the
+      dotfile source. Watcher-launched runs rely on this default; explicit callers may override.
+    required: false
+    default: "{{env.XDG_CONFIG_HOME}}/Orchestra/workspace/orchestrations"
   dbPath:
     type: string
     description: Absolute path to the Zakira SQLite database for the diagnosis ledger.
@@ -210,7 +231,7 @@ steps:
 
       # Parse the forEach rollup and pull each grandchild's finalContent (the
       # per-run "incoming" diagnosis object).
-      $incomings = New-Object System.Collections.Generic.List[object]
+      $incomings = [System.Collections.Generic.List[object]]::new()
       $parseErrors = 0
       if (-not [string]::IsNullOrWhiteSpace($rollupRaw)) {
         try {

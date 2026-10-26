@@ -130,7 +130,7 @@ steps:
         return $id
       }
 
-      $prs = New-Object System.Collections.Generic.List[object]
+      $prs = [System.Collections.Generic.List[object]]::new()
       $cacheDirty = $false
 
       foreach ($target in @($targets)) {
@@ -416,7 +416,13 @@ steps:
       5. Confirmation that ActionView entry was submitted
       6. Any errors or issues encountered during the run
 
+# RETIRED 2026-09-27 (Orchestra 0.10 watchers): the 'ado-my-active-prs' watcher
+# (orchestra.watchers.json -> Shared/watchers/fetch-active-prs.ps1, mode authored) now
+# launches pr-comment-dispatcher only when a PR's change token moves (reviewer comment, new
+# iteration, draft -> published) instead of re-dispatching every PR hourly. The per-run
+# pr-comment-tracker-run ActionView digest this orchestration produced is gone; the
+# responder path still publishes per-PR entries. Kept disabled for manual runs.
 trigger:
   type: scheduler
-  enabled: true
+  enabled: false
   intervalSeconds: 3600

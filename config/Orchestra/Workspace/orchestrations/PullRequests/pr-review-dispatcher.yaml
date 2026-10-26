@@ -5,6 +5,27 @@ version: 1.0.0
 tags: ["ZTS", "MSFT", "PR", "Code-Review", "dispatcher"]
 defaultModel: gpt-6-astra
 
+# Event-driven since Orchestra 0.10: the `ado-assigned-prs` watcher (declared in
+# ../../orchestra.watchers.json, fetcher Shared/watchers/fetch-active-prs.ps1 in `assigned`
+# mode) lists the active PRs I am asked to review (excluding my own) every 15 minutes and
+# launches one dispatcher run per PR whose change token moved - a new iteration was pushed,
+# the PR left draft, or someone other than me commented (e.g. the author replied to a review
+# thread). Dedup key = `<url>@<lastMergeSourceCommitId>|<isDraft>|<latest non-self comment>`.
+# This replaced the hourly pr-auto-reviewer fan-out that re-dispatched every PR each tick.
+# The Zakira / PowerReview state checks below are unchanged and still decide whether a review
+# is actually needed; pr-manual-reviewer keeps invoking this orchestration explicitly.
+trigger:
+  type: watcher
+  watcher: ado-assigned-prs
+  enabled: true
+  maxConcurrent: 3
+  catchup: from-now
+  parameters:
+    prData: "{{item}}"
+    prUrl: "{{item.url}}"
+    mode: auto
+    forceReview: "false"
+
 inputs:
   prUrl:
     type: string

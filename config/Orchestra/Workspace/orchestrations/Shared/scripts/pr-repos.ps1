@@ -120,7 +120,7 @@ function Get-PrRepoConfig {
     $defaultOrg = if ($config.PSObject.Properties['organization']) { [string]$config.organization } else { '' }
     $defaultProject = if ($config.PSObject.Properties['project']) { [string]$config.project } else { '' }
 
-    $entries = New-Object System.Collections.Generic.List[object]
+    $entries = [System.Collections.Generic.List[object]]::new()
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
 
     foreach ($entry in @($config.repositories)) {

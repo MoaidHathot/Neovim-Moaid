@@ -170,7 +170,7 @@ steps:
         return $id
       }
 
-      $prs = New-Object System.Collections.Generic.List[object]
+      $prs = [System.Collections.Generic.List[object]]::new()
       $cacheDirty = $false
 
       foreach ($target in @($targets)) {
@@ -342,7 +342,7 @@ steps:
       {{fetch-assigned-prs.output}}
       '@ | ConvertFrom-Json -Depth 100
 
-      $filtered = New-Object System.Collections.Generic.List[object]
+      $filtered = [System.Collections.Generic.List[object]]::new()
       foreach ($pr in @($all)) {
         if ($null -eq $pr) { continue }
         $createdBy = [string]$pr.createdBy
@@ -561,7 +561,13 @@ steps:
       8. Any errors or issues encountered during the run
     timeoutSeconds: 60
 
+# RETIRED 2026-09-27 (Orchestra 0.10 watchers): the 'ado-assigned-prs' watcher
+# (orchestra.watchers.json -> Shared/watchers/fetch-active-prs.ps1, mode assigned) now
+# launches pr-review-dispatcher only when a PR's change token moves (new iteration,
+# draft -> published, a non-self comment such as an author reply) instead of re-dispatching
+# every assigned PR hourly. The per-run PR Auto-Review Run ActionView digest is gone;
+# pr-code-reviewer still publishes per-PR entries. Kept disabled for manual runs.
 trigger:
   type: scheduler
-  enabled: true
+  enabled: false
   intervalSeconds: 3600

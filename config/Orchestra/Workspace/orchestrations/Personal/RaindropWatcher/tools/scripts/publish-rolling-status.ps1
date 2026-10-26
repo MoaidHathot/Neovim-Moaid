@@ -19,7 +19,9 @@ param(
     [Parameter(Mandatory=$true)] [string]$BootstrapJson,
     [Parameter(Mandatory=$true)] [string]$ListInboxJson,
     [Parameter(Mandatory=$true)] [string]$SelectionJson,
-    [Parameter(Mandatory=$true)] [string]$DispatchJson,
+    # dispatch is condition-skipped (when: selectedCount > 0) on ticks with nothing to
+    # dispatch and then resolves to an empty string here; Try-ParseJson already copes.
+    [Parameter(Mandatory=$true)] [AllowEmptyString()] [string]$DispatchJson,
     [Parameter(Mandatory=$true)] [string]$DeadLetterJson
 )
 

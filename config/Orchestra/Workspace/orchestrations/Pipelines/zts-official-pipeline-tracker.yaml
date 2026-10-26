@@ -71,42 +71,74 @@ steps:
       Load or create the Zakira tracked-runs index document and return all currently active tracked run records.
 
   - name: gate-active-runs
-    type: Prompt
+    type: Script
     dependsOn: [ensure-tracked-runs-index]
-    systemPrompt: |
-      You are a scheduler gate for the pipeline tracker.
+    shell: pwsh
+    timeoutSeconds: 60
+    # Deterministic gate (was a Prompt step - one LLM call per 20-minute tick just to
+    # count array entries). Ends the run with no_action when nothing is tracked.
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $raw = [string]$args[0]
+      if ([string]::IsNullOrWhiteSpace($raw)) {
+        Orchestra-SetStatus -Status failed -Reason 'ensure-tracked-runs-index returned no output; cannot decide whether active runs exist.'
+        return
+      }
+      $state = ConvertFrom-Json -InputObject $raw -Depth 100 -ErrorAction Stop
 
-      Read the provided JSON. If there are zero active runs, call orchestra_set_status with:
-      - status: no_action
-      - reason: No active tracked pipeline runs
+      $activeCount = 0
+      if ($null -ne $state.index -and $null -ne $state.index.runs) {
+        $activeCount = @(@($state.index.runs) | Where-Object { $_.isActive -eq $true }).Count
+      }
+      if ($activeCount -eq 0 -and $null -ne $state.activeRuns) {
+        $activeCount = @($state.activeRuns).Count
+      }
 
-      If active runs exist, return JSON only:
-      { "activeCount": <number>, "proceed": true }
+      if ($activeCount -eq 0) {
+        Orchestra-SetStatus -Status no_action -Reason 'No active tracked pipeline runs'
+        return
+      }
 
-      Do not add prose.
-    userPrompt: |
-      Decide whether this tracker run should continue.
-
-      {{ensure-tracked-runs-index.output}}
+      [ordered]@{ activeCount = $activeCount; proceed = $true } | ConvertTo-Json -Compress
+    arguments:
+      - "{{ensure-tracked-runs-index.output}}"
 
   - name: refresh-active-run-statuses
     type: Script
     dependsOn: [gate-active-runs]
     shell: pwsh
+    # Hard ceiling for the whole step. Before this existed a single hung az call stalled the
+    # run for an hour (46-61 minute steps observed on 2026-09-28).
+    timeoutSeconds: 900
     script: |
-      # Deterministic refresh via az CLI (replaces the prior azdo MCP prompt).
-      # Inputs come from `ensure-tracked-runs-index.output` and contain both the index
-      # document and the per-run records for currently active runs. For each active
-      # run we call `az pipelines runs show` and classify terminal state by the same
-      # rules previously encoded in the prompt:
-      #   completed+succeeded                                 => "success"
-      #   completed+(failed|canceled|partiallySucceeded)      => "failure"
-      #   any other status                                    => "active"
-      # The output JSON contract matches what `shape-run-updates` expects.
+      # Deterministic refresh via `az rest` against the Azure DevOps Build REST API.
+      #
+      # Why not `az pipelines runs show`? That goes through the azure-devops extension's msrest
+      # client, which honours 429 Retry-After headers for three retries: when the signed-in az
+      # identity is not usable for the organization, dev.azure.com throttles it and every call
+      # slept 20-27 minutes before failing with a misleading "run az login" error. `az rest`
+      # performs exactly one request, fails in ~2 s and surfaces the real X-VSS-AuthenticateError.
+      # Every call is additionally bounded by a wall-clock timeout and gets a closed stdin so no
+      # interactive prompt can ever block it.
+      #
+      # Output contract (unchanged; `shape-run-updates` depends on it):
+      #   completed+succeeded                            => terminalState "success"
+      #   completed+(failed|canceled|partiallySucceeded) => terminalState "failure"
+      #   anything else                                  => terminalState "active"
+      # A run whose lookup FAILS stays "active" (reason in `summary`, `lookupFailed: true`) so a
+      # transient ADO/auth problem is never reported downstream as a failed pipeline run.
       $ErrorActionPreference = 'Stop'
-      try { Get-Command az -ErrorAction Stop | Out-Null } catch {
-        throw "az CLI is not available on PATH; cannot refresh tracked pipeline runs."
+
+      $organization = '{{vars.organization}}'
+      $adoResource = '499b84ac-1321-427f-aa17-267ca6975798'
+      $callTimeoutSeconds = 60
+
+      $azCommand = Get-Command az -ErrorAction SilentlyContinue
+      if ($null -eq $azCommand) {
+        Orchestra-SetStatus -Status failed -Reason 'az CLI is not available on PATH; cannot refresh tracked pipeline runs.'
+        return
       }
+      $azPath = $azCommand.Source
 
       function ConvertTo-IsoUtcString {
         param($value)
@@ -116,9 +148,77 @@ steps:
         return [string]$value
       }
 
-      $organization = '{{vars.organization}}'
-      $orgUrl = "https://dev.azure.com/$organization"
+      function Invoke-BoundedAz {
+        # Runs `az <arguments>` with separated stdout/stderr, a closed stdin and a hard wall-clock
+        # limit. On timeout the whole tree (cmd.exe -> az.cmd -> python) is killed.
+        param([Parameter(Mandatory)][string]$Arguments, [int]$TimeoutSeconds = 60)
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = 'cmd.exe'
+        $psi.Arguments = '/d /s /c ""' + $azPath + '" ' + $Arguments + '"'
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $psi.Environment['PYTHONIOENCODING'] = 'utf-8'
+        $psi.Environment['AZURE_CORE_NO_COLOR'] = 'true'
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $proc.StandardInput.Close()
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        $timedOut = -not $proc.WaitForExit($TimeoutSeconds * 1000)
+        if ($timedOut) {
+          & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null
+          [void]$proc.WaitForExit(5000)
+        }
+        [pscustomobject]@{
+          exitCode = $(if ($timedOut) { -1 } else { $proc.ExitCode })
+          stdout   = $stdoutTask.GetAwaiter().GetResult()
+          stderr   = $stderrTask.GetAwaiter().GetResult()
+          timedOut = $timedOut
+        }
+      }
 
+      function Get-AzFailureReason {
+        param($result)
+        if ($result.timedOut) { return "az did not return within $callTimeoutSeconds s and was killed" }
+        $err = [string]$result.stderr
+        $m = [regex]::Match($err, '<title>\s*(.+?)\s*</title>', 'Singleline')
+        if ($m.Success) { return "exit $($result.exitCode): $($m.Groups[1].Value.Trim())" }
+        $m = [regex]::Match($err, '"message"\s*:\s*"((?:[^"\\]|\\.)*)"')
+        if ($m.Success) { return "exit $($result.exitCode): $($m.Groups[1].Value)" }
+        $line = ($err -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 1)
+        if ([string]::IsNullOrWhiteSpace($line)) { $line = 'no error output' }
+        if ($line.Length -gt 300) { $line = $line.Substring(0, 300) + '...' }
+        return "exit $($result.exitCode): $line"
+      }
+
+      function Invoke-AdoGet {
+        param([Parameter(Mandatory)][string]$Url)
+        Invoke-BoundedAz -Arguments ('rest --method get --url "' + $Url + '" --resource ' + $adoResource + ' --only-show-errors -o json') -TimeoutSeconds $callTimeoutSeconds
+      }
+
+      # --- Preflight: is the signed-in az identity usable for this organization at all? -------
+      # One cheap request instead of discovering the same failure once per tracked run.
+      $preflight = Invoke-AdoGet -Url "https://dev.azure.com/$organization/_apis/connectionData?api-version=7.1-preview.1"
+      if ($preflight.exitCode -ne 0) {
+        $identity = 'unknown'
+        $who = Invoke-BoundedAz -Arguments 'account show --only-show-errors --query user.name -o tsv' -TimeoutSeconds 30
+        if ($who.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($who.stdout)) { $identity = $who.stdout.Trim() }
+        $reason = "Azure DevOps auth check failed for https://dev.azure.com/$organization (" + (Get-AzFailureReason $preflight) + "). " +
+          "Current az identity: $identity. Sign in with an account that has access to the organization ('az login' interactively), " +
+          "open https://dev.azure.com/$organization in a browser once if ADO reports NotMaterialized, then confirm with 'az account show'."
+        Orchestra-SetStatus -Status failed -Reason $reason
+        return
+      }
+      $authenticatedAs = ''
+      try {
+        $conn = $preflight.stdout | ConvertFrom-Json -Depth 20
+        $authenticatedAs = [string]$conn.authenticatedUser.properties.Account.'$value'
+        if ([string]::IsNullOrWhiteSpace($authenticatedAs)) { $authenticatedAs = [string]$conn.authenticatedUser.providerDisplayName }
+      } catch { }
+
+      # --- Per-run refresh -------------------------------------------------------------------
       $state = @'
       {{ensure-tracked-runs-index.output}}
       '@ | ConvertFrom-Json -Depth 100
@@ -131,7 +231,7 @@ steps:
       $activeRecords = @()
       if ($null -ne $state.activeRuns) { $activeRecords = @($state.activeRuns) }
 
-      $out = New-Object System.Collections.Generic.List[object]
+      $out = [System.Collections.Generic.List[object]]::new()
       foreach ($indexEntry in $indexRuns) {
         if ($null -eq $indexEntry) { continue }
 
@@ -158,90 +258,72 @@ steps:
           if ([string]::IsNullOrWhiteSpace($runId) -and $matchingRecord.runId) { $runId = [string]$matchingRecord.runId }
         }
 
-        $currentStatus = ""
-        $currentResult = ""
+        $currentStatus = $previousStatus
+        $currentResult = $previousResult
         $terminalState = "active"
+        $lookupFailed = $false
         $summary = ""
         $finishTime = ""
         $checkedAt = (Get-Date).ToUniversalTime().ToString("o")
 
         if ([string]::IsNullOrWhiteSpace($runId)) {
-          $terminalState = "failure"
-          $currentResult = "unavailable"
-          $summary = "Tracked run missing runId; cannot resolve via az CLI."
+          $lookupFailed = $true
+          $summary = "Tracked run missing runId; cannot resolve via the Build API."
         } elseif ([string]::IsNullOrWhiteSpace($project)) {
-          $terminalState = "failure"
-          $currentResult = "unavailable"
-          $summary = "Tracked run missing project; cannot resolve via az CLI."
+          $lookupFailed = $true
+          $summary = "Tracked run missing project; cannot resolve via the Build API."
         } else {
-          $azArgs = @(
-            'pipelines','runs','show',
-            '--org', $orgUrl,
-            '--project', $project,
-            '--id', $runId,
-            '-o','json'
-          )
-          # Route stderr to a temp file rather than merging it into stdout with
-          # 2>&1. az ignores $env:PYTHONIOENCODING on Windows and unconditionally
-          # emits `WARNING: Unable to encode the output with cp1252 encoding...`
-          # whenever the HTTP response contains a non-ASCII character (e.g. a
-          # build queued by an identity with a diacritic). With 2>&1 that
-          # warning contaminates the JSON parser's input ('W' is invalid JSON).
-          # Keeping the streams separate gives us clean stdout for parsing and
-          # preserves stderr for the failure branch so real errors still surface
-          # with full context in the per-run summary.
-          $stderrFile = [System.IO.Path]::GetTempFileName()
-          try {
-            $raw = & az @azArgs 2>$stderrFile
-            if ($LASTEXITCODE -ne 0) {
-              $stderr = Get-Content -Raw -LiteralPath $stderrFile -ErrorAction SilentlyContinue
-              $terminalState = "failure"
-              $currentResult = "unavailable"
-              $summary = "az pipelines runs show failed for $project run $runId (exit $LASTEXITCODE). stderr: $stderr"
-            } else {
-              $jsonString = ($raw | ForEach-Object { [string]$_ }) -join "`n"
-              $build = $jsonString | ConvertFrom-Json -Depth 100
+          $url = "https://dev.azure.com/$organization/$([uri]::EscapeDataString($project))/_apis/build/builds/$([uri]::EscapeDataString($runId))?api-version=7.1"
+          $result = Invoke-AdoGet -Url $url
+          if ($result.exitCode -ne 0) {
+            $lookupFailed = $true
+            $summary = "Lookup failed for $project run $runId (" + (Get-AzFailureReason $result) + "); keeping the run active until the next tick."
+          } else {
+            try {
+              $build = $result.stdout | ConvertFrom-Json -Depth 100
               $currentStatus = [string]$build.status
               $currentResult = [string]$build.result
               $finishTime = ConvertTo-IsoUtcString $build.finishTime
               if ($currentStatus -eq "completed") {
                 switch -Regex ($currentResult) {
-                  '^succeeded$'              { $terminalState = "success"; break }
+                  '^succeeded$'                            { $terminalState = "success"; break }
                   '^(failed|canceled|partiallySucceeded)$' { $terminalState = "failure"; break }
-                  default                    { $terminalState = "failure" }
+                  default                                  { $terminalState = "failure" }
                 }
               } else {
                 $terminalState = "active"
               }
               $summary = "Build $runId $currentStatus/$currentResult finished=$finishTime"
+            } catch {
+              $lookupFailed = $true
+              $summary = "Lookup returned unparseable JSON for $project run $runId ($($_.Exception.Message)); keeping the run active until the next tick."
             }
-          } finally {
-            Remove-Item -LiteralPath $stderrFile -ErrorAction SilentlyContinue
           }
         }
 
         $entry = [ordered]@{
-          runKey         = $runKey
-          recordKey      = $recordKey
-          groupId        = $groupId
-          project        = $project
-          definitionId   = $definitionId
-          runId          = $runId
-          previousStatus = $previousStatus
-          previousResult = $previousResult
-          currentStatus  = $currentStatus
-          currentResult  = $currentResult
-          terminalState  = $terminalState
-          checkedAt      = $checkedAt
-          summary        = $summary
+          runKey          = $runKey
+          recordKey       = $recordKey
+          groupId         = $groupId
+          project         = $project
+          definitionId    = $definitionId
+          runId           = $runId
+          previousStatus  = $previousStatus
+          previousResult  = $previousResult
+          currentStatus   = $currentStatus
+          currentResult   = $currentResult
+          terminalState   = $terminalState
+          lookupFailed    = $lookupFailed
+          checkedAt       = $checkedAt
+          summary         = $summary
         }
         [void]$out.Add($entry)
       }
 
       [ordered]@{
-        runs = $out.ToArray()
+        authenticatedAs = $authenticatedAs
+        runs            = $out.ToArray()
       } | ConvertTo-Json -Depth 100 -Compress
-
   - name: shape-run-updates
     type: Script
     dependsOn: [ensure-tracked-runs-index, refresh-active-run-statuses]
@@ -258,9 +340,9 @@ steps:
       $index = $state.index
       $refreshRuns = @($refresh.runs)
 
-      $active = New-Object System.Collections.Generic.List[object]
-      $succeeded = New-Object System.Collections.Generic.List[object]
-      $failed = New-Object System.Collections.Generic.List[object]
+      $active = [System.Collections.Generic.List[object]]::new()
+      $succeeded = [System.Collections.Generic.List[object]]::new()
+      $failed = [System.Collections.Generic.List[object]]::new()
 
       foreach ($run in $refreshRuns) {
         # Compute every value into a local variable first to avoid the
@@ -368,8 +450,8 @@ steps:
       {{shape-run-updates.output}}
       '@ | ConvertFrom-Json -Depth 100
 
-      $entries = New-Object System.Collections.Generic.List[object]
-      $skipped = New-Object System.Collections.Generic.List[object]
+      $entries = [System.Collections.Generic.List[object]]::new()
+      $skipped = [System.Collections.Generic.List[object]]::new()
 
       foreach ($run in @($shape.succeeded)) {
         if (-not [string]::IsNullOrWhiteSpace([string]$run.actionViewSubmittedAt)) {
@@ -405,7 +487,7 @@ steps:
           CheckedAt = [string]$run.checkedAt
         }
 
-        $contentBlocks = New-Object System.Collections.Generic.List[object]
+        $contentBlocks = [System.Collections.Generic.List[object]]::new()
         [void]$contentBlocks.Add([ordered]@{
           type  = "keyValue"
           label = "Run"

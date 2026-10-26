@@ -7,24 +7,24 @@ defaultModel: gpt-6-astra
 
 inputs:
   shiftStartDate:
-    type: String
+    type: string
     description: |
       Start date/time of the on-call shift in ISO 8601 format (e.g., '2025-01-15T09:00:00Z'). Used to scope the time window for incident discovery.
     required: true
   shiftEndDate:
-    type: String
+    type: string
     description: |
       End date/time of the on-call shift in ISO 8601 format. Defaults to now if not provided.
     required: false
     default: ""
   handoffRecipient:
-    type: String
+    type: string
     description: |
       Name or alias of the person taking over the on-call shift. Used in the handoff document header.
     required: false
     default: ""
   additionalNotes:
-    type: String
+    type: string
     description: |
       Any additional notes or context to include in the handoff (e.g., 'Deployment freeze until Monday', 'Known flaky alert for XYZ').
     required: false

@@ -62,7 +62,8 @@ steps:
 | `inputs` | `object` | No | `null` | Typed input schema. Keys are input names, values are `InputDefinition` objects. When defined, provides type validation, descriptions, defaults, and enum constraints. |
 | `trigger` | `TriggerConfig` | No | Manual | How the orchestration is triggered. Defaults to manual (on-demand). |
 | `mcps` | `Mcp[]` | No | `[]` | Inline MCP (Model Context Protocol) server definitions available to steps. |
-| `defaultModel` | `string` | No | `null` | Default model for all Prompt steps. Steps can override. |
+| `defaultModel` | `string` | No | `null` | Default model for all Prompt steps. Steps can override. Resolution per step: step `model` -> `defaultModel` -> host `defaultModel` (`orchestra.json`). |
+| `defaultReasoningLevel` | `string` | No | `null` | Default reasoning effort for all Prompt steps that set no `reasoningLevel`. Same values as `reasoningLevel`. Resolution per step: step `reasoningLevel` -> `defaultReasoningLevel` -> host `defaultReasoningLevel` (`orchestra.json`) -> provider/model default. |
 | `agentPool` | `AgentPoolConfig` | No | Provider defaults | Provider worker-pool capacity request for prompt execution. Providers map instances to their own resources, such as Copilot CLI clients. |
 | `defaultSystemPromptMode` | `string` | No | `null` | Default system prompt mode for all Prompt steps. Values: `"append"`, `"replace"`, or `"customize"`. |
 | `defaultRetryPolicy` | `RetryPolicy` | No | `null` | Default retry policy applied to all steps unless overridden at the step level. |
@@ -300,12 +301,12 @@ Sends a prompt to an LLM and captures the response as output. Supports input/out
 | `systemPromptFile` | `string` | **Yes*** | -- | Path to a file containing the system prompt. Mutually exclusive with `systemPrompt`. |
 | `userPrompt` | `string` | **Yes*** | -- | User prompt text provided inline. |
 | `userPromptFile` | `string` | **Yes*** | -- | Path to a file containing the user prompt. Mutually exclusive with `userPrompt`. |
-| `model` | `string` | No | from `defaultModel` | LLM model identifier (e.g., `"claude-opus-4.8"`, `"gpt-4o"`). Required only when the orchestration sets no `defaultModel` -- a Prompt step with neither fails at execution. |
+| `model` | `string` | No | from `defaultModel` | LLM model identifier (e.g., `"claude-opus-4.8"`, `"gpt-4o"`). Required only when neither the orchestration (`defaultModel`) nor the host (`orchestra.json` `defaultModel`) provides a default -- a Prompt step with none of the three fails at execution. |
 | `inputHandlerPrompt` | `string` | No | `null` | An LLM prompt that pre-processes dependency outputs before the main prompt sees them. |
 | `inputHandlerPromptFile` | `string` | No | `null` | Path to file containing the input handler prompt. Mutually exclusive with `inputHandlerPrompt`. |
 | `outputHandlerPrompt` | `string` | No | `null` | An LLM prompt that post-processes the main LLM output. |
 | `outputHandlerPromptFile` | `string` | No | `null` | Path to file containing the output handler prompt. Mutually exclusive with `outputHandlerPrompt`. |
-| `reasoningLevel` | `string` | No | `null` | Controls the model's extended thinking. Values: `"Low"`, `"Medium"`, `"High"`. |
+| `reasoningLevel` | `string` | No | from `defaultReasoningLevel` | Reasoning effort requested from the model (forwarded as the provider's `reasoning_effort`). Values: `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"` (case-insensitive). `xhigh`/`max` are only honoured by models that advertise them (GPT-5.x/6 and Claude Opus 4.7+); older models stop at `high`. Falls back to the orchestration's `defaultReasoningLevel`, then the host's, then the provider default. |
 | `reasoningSummary` | `string` | No | `null` | Verbosity of the model's reasoning summary. Values: `"none"`, `"concise"`, `"detailed"`. Opt-in. |
 | `contextTier` | `string` | No | `null` | Context-window tier. `"default"` or `"longContext"` (opts into the model's extended context window where supported). Opt-in. |
 | `workingDirectory` | `string` | No | `null` | Working directory for the agent's shell/file tools and config discovery (custom instructions, `.github/agents`, `.github/mcp.json`). Template-resolved (`{{param.*}}`/`{{env.*}}`/`{{vars.*}}`) and validated to exist at run time. |
@@ -885,7 +886,7 @@ Runtime file-writing steps should receive absolute paths. Build paths relative t
 `Append` (adds to SDK built-in prompts), `Replace` (removes SDK built-in prompts), `Customize` (selectively override individual sections)
 
 ### Reasoning Level
-`Low`, `Medium`, `High`
+`Low`, `Medium`, `High`, `XHigh`, `Max` (case-insensitive; `xhigh`/`max` require a model that advertises them)
 
 ### Trigger Type
 `Manual` (default), `Scheduler`, `Loop`, `Webhook`

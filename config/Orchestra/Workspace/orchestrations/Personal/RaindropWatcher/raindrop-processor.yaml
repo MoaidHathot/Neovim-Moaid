@@ -16,7 +16,8 @@ description: |
   raindrop-error ActionView entry so the failure is visible.
 
   Step order is intentionally: classify -> dispatch-processor ->
-  verify-dispatch -> move-to-processed -> mark-completed -> processor-summary.
+  verify-dispatch -> move-to-processed -> mark-completed ->
+  clear-failure-cards / processor-summary.
   CRITICAL: `invoke_orchestration` (sync) does NOT throw when the child
   fails -- it returns status="Failed" -- so `dispatch-processor` (an LLM
   step) succeeds even for a failed child. Without a gate, move-to-processed
@@ -31,7 +32,10 @@ description: |
   the tracker retries on the next tick (then dead-letters after maxAttempts).
   The raindrop is still moved into AI-Processed *before* mark-completed, so a
   flaky move can never leave "state=completed but raindrop still in AI-Inbox".
-version: 1.3.0
+  After mark-completed, `clear-failure-cards` deletes any stale
+  raindrop-error / raindrop-dead-letter ActionView card left over from an
+  earlier failed attempt of the same raindrop (best-effort, never fails the run).
+version: 1.3.1
 tags: ["personal", "raindrop", "auto", "processor"]
 defaultModel: gpt-6-astra
 
@@ -571,6 +575,71 @@ steps:
       - "{{env.XDG_CONFIG_HOME}}/orchestra/zakira.db"
       - "{{vars.zakiraCategory}}"
     timeoutSeconds: 120
+
+  - name: clear-failure-cards
+    type: Script
+    shell: pwsh
+    dependsOn: [mark-completed]
+    # Success-path cleanup. The failure hook publishes a `raindrop-error-<id>` card
+    # (and dead-letter-move a `raindrop-dead-letter-<id>` card) with a stable id, but
+    # nothing removed them when a later attempt SUCCEEDED: the per-processor submit
+    # only upserts its own `raindrop-<id>-<type>` id. Raindrop 1876741587 sat on the
+    # dashboard as "Raindrop processing failed" for a day after it had been processed.
+    # Deliberately best-effort and never throws: a failure here must not trip the
+    # orchestration.failure hook and flip an already-completed item back to failed.
+    # Presence is checked against `list --type` first because the CLI's `delete`
+    # falls back to PREFIX matching on the id (and exits 0 when nothing matches).
+    script: |
+      $ErrorActionPreference = 'Continue'
+      $PSNativeCommandUseErrorActionPreference = $false
+      try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+
+      $rid = [string]$args[0]
+      $result = [ordered]@{ ok = $true; raindropId = $rid; deleted = @(); absent = @(); errors = @() }
+
+      if ([string]::IsNullOrWhiteSpace($rid)) {
+        $result.ok = $false; $result.errors += 'raindropId is required.'
+        $result | ConvertTo-Json -Compress; return
+      }
+
+      # Real dotnet.exe rather than the dnx.cmd shim (see mark-processing / mark-completed).
+      $dotnet = (Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+      if (-not $dotnet) {
+        $result.ok = $false; $result.errors += 'dotnet not found on PATH.'
+        $result | ConvertTo-Json -Compress; return
+      }
+
+      foreach ($pair in @(@('raindrop-error', "raindrop-error-$rid"), @('raindrop-dead-letter', "raindrop-dead-letter-$rid"))) {
+        $type = $pair[0]; $id = $pair[1]
+        try {
+          $listOut = & $dotnet dnx ActionView.Cli --yes -- list --type $type 2>&1
+          if ($LASTEXITCODE -ne 0) { $result.errors += "list --type ${type} exit=${LASTEXITCODE}: $(($listOut | Out-String).Trim())"; continue }
+
+          # `list` prints `{pin}{id,-33} ...` per row; take the first token of each row.
+          $present = $false
+          foreach ($line in @($listOut)) {
+            $t = ([string]$line).TrimStart('*', ' ')
+            if ($t -match '^(\S+)' -and $Matches[1] -eq $id) { $present = $true; break }
+          }
+          if (-not $present) { $result.absent += $id; continue }
+
+          $delOut = & $dotnet dnx ActionView.Cli --yes -- delete $id --force 2>&1
+          $delText = ($delOut | Out-String)
+          if ($LASTEXITCODE -eq 0 -and $delText -match 'Deleted entry') { $result.deleted += $id }
+          else { $result.errors += "delete ${id} exit=${LASTEXITCODE}: $($delText.Trim())" }
+        } catch {
+          $result.errors += "${id}: $($_.Exception.Message)"
+        }
+      }
+
+      if ($result.errors.Count -gt 0) { $result.ok = $false }
+      $result | ConvertTo-Json -Compress
+    arguments:
+      - "{{param.raindropId}}"
+    # Two to four cold `dnx` launches; each can take a few seconds on a cold package cache.
+    timeoutSeconds: 180
+    retry:
+      maxRetries: 0
 
   - name: processor-summary
     type: Prompt

@@ -179,7 +179,7 @@ steps:
       # with its on-disk session file. Reading the files directly avoids one
       # `powerreview session` subprocess per session.
       $sessionRoot = Join-Path $env:LOCALAPPDATA 'PowerReview\sessions'
-      $sessions = New-Object System.Collections.Generic.List[object]
+      $sessions = [System.Collections.Generic.List[object]]::new()
       foreach ($s in $summaries) {
         if ($null -eq $s) { continue }
         $sessionId = [string]$s.id
@@ -223,8 +223,8 @@ steps:
 
       # ── Physical directories under the worktree root ─────────────────
       # Layout: <worktree_dir>/<repoId>/<prId>  and  <worktree_dir>/.fixes/<repoId>/<prId>
-      $dirs = New-Object System.Collections.Generic.List[object]
-      $emptyRepoIdDirs = New-Object System.Collections.Generic.List[object]
+      $dirs = [System.Collections.Generic.List[object]]::new()
+      $emptyRepoIdDirs = [System.Collections.Generic.List[object]]::new()
 
       function Add-WorktreeDirs {
         param(
@@ -266,7 +266,7 @@ steps:
       Add-WorktreeDirs -Root (Join-Path $worktreeDir '.fixes') -IsFixes $true
 
       # ── Worktrees git has registered, per configured repo ────────────
-      $registered = New-Object System.Collections.Generic.List[object]
+      $registered = [System.Collections.Generic.List[object]]::new()
       foreach ($t in @($targets)) {
         if (-not (Test-Path -LiteralPath (Join-Path $t.repoPath '.git'))) {
           continue
@@ -361,7 +361,7 @@ steps:
 
       # ── Active PR ids per repository ─────────────────────────────────
       $activeByRepo = @{}
-      $repoLookupErrors = New-Object System.Collections.Generic.List[object]
+      $repoLookupErrors = [System.Collections.Generic.List[object]]::new()
       foreach ($r in @($inventory.repositories)) {
         $uri = "$($r.orgUrl)/$($r.project)/_apis/git/repositories/$($r.repository)/pullrequests"
         $res = Invoke-AzRestJson -Uri $uri -UriParameters @('searchCriteria.status=active', '$top=500')
@@ -404,8 +404,8 @@ steps:
       $registeredByPath = @{}
       foreach ($w in @($inventory.registered)) { $registeredByPath[$w.pathKey] = $w }
 
-      $candidates = New-Object System.Collections.Generic.List[object]
-      $keep = New-Object System.Collections.Generic.List[object]
+      $candidates = [System.Collections.Generic.List[object]]::new()
+      $keep = [System.Collections.Generic.List[object]]::new()
 
       foreach ($d in @($inventory.worktreeDirs)) {
         $lastWrite = [datetime]::Parse($d.lastWriteUtc).ToUniversalTime()
@@ -481,7 +481,7 @@ steps:
 
       # Empty <repoId> directories carry no work and no risk; age is the only
       # gate, so an in-flight `open` that just created one is not disturbed.
-      $emptyCandidates = New-Object System.Collections.Generic.List[object]
+      $emptyCandidates = [System.Collections.Generic.List[object]]::new()
       foreach ($e in @($inventory.emptyRepoIdDirs)) {
         $lastWrite = [datetime]::Parse($e.lastWriteUtc).ToUniversalTime()
         if ($lastWrite -lt $idleCutoff) {
@@ -532,7 +532,7 @@ steps:
       $plan     = ConvertFrom-Json -InputObject $args[0] -Depth 50 -ErrorAction Stop
       $dryRun   = ([string]$args[1]) -match '^(?i:true|1|yes)$'
 
-      $actions = New-Object System.Collections.Generic.List[object]
+      $actions = [System.Collections.Generic.List[object]]::new()
 
       function Add-Action {
         param(
@@ -645,7 +645,7 @@ steps:
       }
 
       # ── Drop dangling administrative entries ─────────────────────────
-      $pruned = New-Object System.Collections.Generic.List[object]
+      $pruned = [System.Collections.Generic.List[object]]::new()
       foreach ($r in @($plan.repositories)) {
         if (-not $r.exists) { continue }
         if ($dryRun) {
@@ -709,8 +709,11 @@ steps:
       $errors  = @($plan.repoLookupErrors).Count
 
       if ($touched -eq 0 -and $errors -eq 0) {
-        # Nothing to report; short-circuit the rest of the orchestration.
-        orchestra_complete "No PowerReview worktrees required pruning (scanned $($plan.totalScanned), kept $($plan.keptCount))."
+        # Nothing to report; short-circuit the rest of the orchestration. This must be the
+        # injected pwsh helper (Orchestra-Complete) - `orchestra_complete` is the LLM tool name
+        # and does not exist in a Script step, so the previous spelling threw CommandNotFound
+        # under $ErrorActionPreference = 'Stop' and failed every no-op weekly run right here.
+        Orchestra-Complete -Status success -Reason "No PowerReview worktrees required pruning (scanned $($plan.totalScanned), kept $($plan.keptCount))."
       }
 
       [pscustomobject]@{
