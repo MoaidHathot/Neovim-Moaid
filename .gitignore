@@ -48,6 +48,8 @@ config/gh
 config/gh-copilot
 config/.copilot
 config/configstore
+# OpenCode private background-service settings (contains a generated password)
+config/opencode/service.json
 config/nushell
 config/k9s
 config/Orchestra/.orchestra.pids.json
