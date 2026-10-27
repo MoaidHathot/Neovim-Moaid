@@ -13,6 +13,12 @@ local function wait_for(predicate, message)
 	assert(vim.wait(5000, predicate, 20), message)
 end
 
+local function flush_scheduled()
+	local done = false
+	vim.schedule(function() done = true end)
+	wait_for(function() return done end, "Scheduled UI events did not finish")
+end
+
 local function mapping(lhs)
 	return assert(vim.fn.maparg(lhs, "n", false, true).callback, "Missing mapping: " .. lhs)
 end
@@ -111,6 +117,7 @@ local function check_power_review(expected)
 		"PowerReview files panel did not render")
 	assert(state.window.mappings.v == "toggle_reviewed", "Review-status mappings were lost")
 	vim.cmd("Neotree close")
+	flush_scheduled()
 	extension.changed_files({ previewer = false })
 	check_picker("visible", 1)
 
@@ -143,6 +150,7 @@ vim.api.nvim_create_autocmd("VimEnter", {
 				if first == "neo-tree" then
 					vim.cmd("Neotree focus filesystem")
 					vim.cmd("Neotree close")
+					flush_scheduled()
 				elseif first == "PowerReview" then
 					vim.cmd("PowerReview files")
 				else
