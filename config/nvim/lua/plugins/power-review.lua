@@ -1,14 +1,17 @@
+local dir = require("config.power-review").dir
+if not dir then
+	return {}
+end
+
 return {
 	-- PowerReview.nvim - PR review inside Neovim
 	-- All business logic (auth, provider, git) is handled by the `powerreview` CLI tool.
-	-- CLI config lives at $XDG_CONFIG_HOME/PowerReview/config.json
+	-- CLI config lives at $XDG_CONFIG_HOME/PowerReview/powerreview.json
 	{
-		dir = "W:\\Github\\PowerReview",
+		dir = dir,
 		name = "power-review.nvim",
 		dependencies = {
 			"MunifTanjim/nui.nvim",
-			"nvim-neo-tree/neo-tree.nvim",
-			"nvim-telescope/telescope.nvim",
 		},
 		cmd = "PowerReview",
 		keys = {
@@ -19,14 +22,25 @@ return {
 			{ "<leader>pa", desc = "[PowerReview] Add comment", mode = { "n", "v" } },
 			{ "<leader>pe", desc = "[PowerReview] Edit draft" },
 			{ "<leader>pA", desc = "[PowerReview] Approve draft" },
+			{ "<leader>pU", desc = "[PowerReview] Unapprove draft" },
+			{ "<leader>pX", desc = "[PowerReview] Delete draft" },
 			{ "<leader>pS", desc = "[PowerReview] Submit pending" },
 			{ "<leader>pv", desc = "[PowerReview] Set vote" },
 			{ "<leader>pR", desc = "[PowerReview] Reply to thread" },
 			{ "<leader>ps", desc = "[PowerReview] Sync remote threads" },
 			{ "<leader>pQ", desc = "[PowerReview] Close review" },
 			{ "<leader>pD", desc = "[PowerReview] Delete session" },
+			{ "<leader>pd", desc = "[PowerReview] Show PR description" },
+			{ "<leader>px", desc = "[PowerReview] Resolve thread" },
+			{ "<leader>pi", desc = "[PowerReview] AI drafts" },
+			{ "<leader>pm", desc = "[PowerReview] Mark file reviewed" },
+			{ "<leader>pM", desc = "[PowerReview] Mark all files reviewed" },
+			{ "<leader>pI", desc = "[PowerReview] Check iteration" },
+			{ "<leader>pn", desc = "[PowerReview] Iteration diff" },
 			{ "]r", desc = "[PowerReview] Next comment" },
 			{ "[r", desc = "[PowerReview] Previous comment" },
+			{ "]u", desc = "[PowerReview] Next unreviewed file" },
+			{ "[u", desc = "[PowerReview] Previous unreviewed file" },
 		},
 		config = function(_, opts)
 			require("power-review").setup(opts)

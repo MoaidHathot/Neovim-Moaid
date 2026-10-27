@@ -55,10 +55,14 @@ return {
 		'HiPhish/rainbow-delimiters.nvim',
 		enabled = true,
 		event = { "BufReadPost", "BufNewFile" },
-		-- config = function()
-		-- 	require('rainbow-delimiters.setup').setup {
-		-- 	}
-		-- end
+		main = "rainbow-delimiters.setup",
+		opts = {
+			condition = function(buf)
+				-- Neovim 0.12 returns nil, rather than throwing, when no parser exists.
+				local ok, parser = pcall(vim.treesitter.get_parser, buf)
+				return ok and parser ~= nil
+			end,
+		},
 	},
 	{
 		"tzachar/local-highlight.nvim",

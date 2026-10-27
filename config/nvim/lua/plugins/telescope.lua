@@ -1,3 +1,5 @@
+local power_review_dir = require("config.power-review").dir
+
 local extract_args = function(prompt, opts)
 	if not prompt or prompt == "" then
 		return nil
@@ -88,6 +90,7 @@ local smart_grep = function(opts)
 			end
 
 			local command_args = extracted.command_args or {}
+			vim.list_extend(command_args, opts.additional_args or {})
 			vim.list_extend(command_args, { "--color=never", "--no-heading", "--with-filename", "--line-number", "--column", "--smart-case", "--follow" })
 
 			local final_args = vim.iter({ args, command_args }):flatten():totable()
@@ -168,64 +171,6 @@ local smart_find_files = function(opts)
 	}):find()
 end
 
-local smart_fd = function(opts)
-	opts.cwd = opts.cwd or vim.uv.cwd()
-	opts.delimeter = opts.delimeter or "  "
-	opts.title = opts.title or "Smart File Search"
-
-	local pickers = require('telescope.pickers')
-	local finders = require('telescope.finders')
-	local make_entry = require('telescope.make_entry')
-	local config = require('telescope.config').values
-
-	local finder = finders.new_async_job({
-		command_generator = function(prompt)
-			if not prompt or prompt == "" then
-				return nil
-			end
-
-			local args = { "fd" }
-
-			local extracted = extract_args(prompt, opts)
-			print("Extracted", vim.inspect(extracted))
-
-			if not extracted then
-				return nil
-			end
-
-			if extracted.prompt then
-				-- table.insert(args, "-e")
-				table.insert(args, extracted.prompt)
-			end
-
-			if extracted.type then
-				table.insert(args, "-e")
-				table.insert(args, extracted.type)
-			end
-
-			local command_args = extracted.command_args or {}
-			vim.list_extend(command_args, { "--color=never", "--no-heading", "--with-filename", "--line-number", "--column", "--smart-case", "--follow" })
-
-			local final_args = vim.iter({ args, command_args }):flatten():totable()
-
-			print(vim.inspect(final_args))
-
-			return final_args
-		end,
-
-		entry_maker = make_entry.gen_from_vimgrep(opts),
-		cwd = opts.cwd,
-	})
-
-	pickers.new(opts, {
-		debounce = 100,
-		prompt_title = opts.title,
-		finder = finder,
-		previewer = config.grep_previewer(opts),
-		sorter = require('telescope.sorters').empty(),
-	}):find()
-end
-
 return {
 	{
 		'nvim-telescope/telescope.nvim',
@@ -233,11 +178,17 @@ return {
 		-- tag = '0.1.5',
 		dependencies = {
 			'nvim-lua/plenary.nvim',
-			-- {
-			-- 	'nvim-telescope/telescope-fzf-native.nvim',
-			-- 	build = 'make'
-			-- }
+			'nvim-telescope/telescope-ui-select.nvim',
+			power_review_dir and 'power-review.nvim' or nil,
 		},
+		config = function(_, opts)
+			local telescope = require('telescope')
+			telescope.setup(opts)
+			telescope.load_extension('ui-select')
+			if power_review_dir then
+				telescope.load_extension('power_review')
+			end
+		end,
 		opts = {
 			defaults = {
 				mappings = {
@@ -247,20 +198,7 @@ return {
 				path_display = { 'filename_first' }
 			},
 			extensions = {
-				["ui-select"] = {
-					-- require("telescope.themes").get_dropdown {
-					-- },
-					file_browser = {
-						theme = 'ivy',
-						--hijack_newtrw = true
-					}
-				},
-				fzf = {
-					fuzzy = true,    -- false will only do exact matching
-					override_generic_sorter = true, -- override the generic sorter
-					override_file_sorter = true, -- override the file sorter
-					case_mode = "smart_case", -- or "ignore_case" or "respect_case"
-				}
+				["ui-select"] = {},
 			}
 		},
 		keys = {
@@ -305,25 +243,7 @@ return {
 			{ '<leader>st', function() require('telescope.builtin').builtin() end, mode = "n", desc = 'Find Telescope Pickers' },
 			{ '<leader>sT', function() require('telescope.builtin').builtin() end, mode = "n", desc = 'Find Telescope cached Pickers' },
 			{ '<leader>sg', function() smart_grep({}) end, mode = "n", desc = "Find Grep with filters" },
-			{ '<leader>sG', function() smart_fd({}) end, mode = "n", desc = "Find Grep with filters" },
+			{ '<leader>sG', function() smart_grep({ additional_args = { "--hidden", "--no-ignore" } }) end, mode = "n", desc = "Find Grep in all files with filters" },
 		},
 	},
-	{
-		'nvim-telescope/telescope-ui-select.nvim',
-		-- 'nvim-telescope/telescope-fzf-native.nvim',
-		-- enables = false,
-		-- event = "VeryLazy"
-		cmd = "Telescope",
-		config = function()
-			local telescope = require('telescope')
-
-			telescope.load_extension('ui-select')
-			telescope.load_extension('fzf')
-			telescope.load_extension('power_review')
-		end
-	},
-	-- {
-	-- 	'nvim-telescope/telescope-fzf-native.nvim',
-	-- 	build = 'make'
-	-- }
 }

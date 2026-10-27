@@ -2,6 +2,19 @@ local function augroup(name)
 	return vim.api.nvim_create_augroup("moaid_" .. name, { clear = true })
 end
 
+local function is_tui_terminal(buf)
+	-- A terminal name also contains its working directory. Match only the
+	-- command, so editing inside an "opencode" directory does not trap Escape.
+	local command = vim.api.nvim_buf_get_name(buf):match("^term://.-//%d+:(.*)$") or ""
+	command = command:lower()
+	for _, name in ipairs({ "opencode", "lazygit", "copilot", "sidekick" }) do
+		if command:find(name, 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
 -- auto format file on save
 -- vim.cmd [[autocmd BufWritePre * lua vim.lsp.buf.format()]]
 
@@ -82,24 +95,12 @@ vim.api.nvim_create_autocmd("FileType", {
 
 vim.api.nvim_create_autocmd("TermOpen", {
 	group = vim.api.nvim_create_augroup("custom-terminal-group", { clear = true }),
-	callback = function()
-		local bufnr = vim.api.nvim_get_current_buf()
-		local bufname = vim.api.nvim_buf_get_name(bufnr)
-
-		-- List of CLI tools that need <Esc> to pass through (TUI applications)
-		local passthrough_patterns = {
-			"opencode",
-			"lazygit",
-			"copilot",
-			"sidekick",
-		}
-
-		for _, pattern in ipairs(passthrough_patterns) do
-			if bufname:lower():find(pattern) then
-				-- Pass <Esc> through to the terminal application
-				vim.keymap.set("t", "<Esc>", "<Esc>", { buffer = bufnr, noremap = true, silent = true })
-				return
-			end
+	callback = function(event)
+		local bufnr = event.buf
+		if is_tui_terminal(bufnr) then
+			-- Pass <Esc> through to the terminal application
+			vim.keymap.set("t", "<Esc>", "<Esc>", { buffer = bufnr, noremap = true, silent = true })
+			return
 		end
 
 		-- Default: <Esc> exits terminal mode
@@ -116,32 +117,13 @@ vim.api.nvim_create_autocmd({ "BufRead", "BufNewFile" }, {
 
 -- Auto-enter terminal mode for TUI applications (OpenCode, lazygit, etc.)
 -- This prevents Neovim's normal mode from interfering with the application's keybindings
-vim.api.nvim_create_autocmd({"BufEnter", "WinEnter"}, {
-    group = augroup("tui-auto-terminal-mode"),
-    callback = function()
-        local bufnr = vim.api.nvim_get_current_buf()
-        local bufname = vim.api.nvim_buf_get_name(bufnr)
-        
-        -- Only apply to terminal buffers
-        if vim.bo[bufnr].buftype ~= "terminal" then
-            return
-        end
-        
-        -- List of TUI applications that should auto-enter terminal mode
-        local auto_terminal_patterns = {
-            "opencode",
-            "lazygit",
-            "copilot",
-            "sidekick",
-        }
-        
-        for _, pattern in ipairs(auto_terminal_patterns) do
-            if bufname:lower():find(pattern) then
-                vim.cmd("startinsert")
-                return
-            end
-        end
-    end,
+vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
+	group = augroup("tui-auto-terminal-mode"),
+	callback = function(event)
+		if vim.bo[event.buf].buftype == "terminal" and is_tui_terminal(event.buf) then
+			vim.cmd("startinsert")
+		end
+	end,
 })
 
 -- Screen clearing on exit is handled by the PowerShell wrapper function

@@ -1,7 +1,10 @@
+local power_review_dir = require("config.power-review").dir
+
 return {
-{
+	{
 		"nvim-neo-tree/neo-tree.nvim",
 		enabled = true,
+		cmd = "Neotree",
 		-- event = "VeryLazy",
 		branch = "v3.x",
 		keys = {
@@ -10,8 +13,11 @@ return {
 				'<leader>tf',
 				mode = { 'n', 'v' },
 				function()
-					local currBuffer = vim.api.nvim_buf_get_name(0)
-					vim.cmd("Neotree reveal_file=" .. currBuffer)
+					require("neo-tree.command").execute({
+						action = "focus",
+						source = "filesystem",
+						reveal_file = vim.api.nvim_buf_get_name(0),
+					})
 				end,
 				desc = "Find file in Neotree"
 			}
@@ -20,90 +26,53 @@ return {
 			"nvim-lua/plenary.nvim",
 			"nvim-tree/nvim-web-devicons", -- not strictly required, but recommended
 			"MunifTanjim/nui.nvim",
+			power_review_dir and "power-review.nvim" or nil,
 			-- "3rd/image.nvim", -- Optional image support in preview window: See `# Preview Mode` for more information
 		},
-		opts = {
-			sources = {
-				"filesystem",
-				"buffers",
-				"git_status",
-				"power_review", -- PowerReview.nvim PR changed files
-			},
-			filesystem = {
-				use_libuv_file_watcher = true,
-			},
-			source_selector = {
-				winbar = false,
+		opts = function()
+			local opts = {
 				sources = {
-					{ source = "filesystem",   display_name = " Files" },
-					{ source = "buffers",      display_name = " Buffers" },
-					{ source = "git_status",   display_name = " Git" },
-					{ source = "power_review", display_name = " PR Review" },
+					"filesystem",
+					"buffers",
+					"git_status",
 				},
-			},
-			window = {
-				mappings = {
-					["Y"] = function(state)
-						-- Copy absolute path to clipboard
-						local node = state.tree:get_node()
-						local filepath = node:get_id()
-						vim.fn.setreg("+", filepath)
-						vim.notify("Copied path: " .. filepath)
-					end,
-					["y"] = function(state)
-						-- Copy file name to clipboard
-						local node = state.tree:get_node()
-						local filename = node.name
-						vim.fn.setreg("+", filename)
-						vim.notify("Copied name: " .. filename)
-					end,
+				filesystem = {
+					use_libuv_file_watcher = true,
 				},
-			},
-			-- PowerReview Neo-tree source config
-			power_review = {
+				source_selector = {
+					winbar = false,
+					sources = {
+						{ source = "filesystem", display_name = " Files" },
+						{ source = "buffers", display_name = " Buffers" },
+						{ source = "git_status", display_name = " Git" },
+					},
+				},
 				window = {
-					position = "left",
-					width = 40,
 					mappings = {
-						["<cr>"] = "open",
-						["o"] = "open",
-						["<C-v>"] = "open_vsplit",
-						["<C-x>"] = "open_split",
-						["<C-t>"] = "open_tabnew",
-						["a"] = "add_comment",
-						["i"] = "show_file_details",
-						["R"] = "refresh",
-						["y"] = "copy_path",
+						["Y"] = function(state)
+							-- Copy absolute path to clipboard
+							local node = state.tree:get_node()
+							local filepath = node:get_id()
+							vim.fn.setreg("+", filepath)
+							vim.notify("Copied path: " .. filepath)
+						end,
+						["y"] = function(state)
+							-- Copy file name to clipboard
+							local node = state.tree:get_node()
+							local filename = node.name
+							vim.fn.setreg("+", filename)
+							vim.notify("Copied name: " .. filename)
+						end,
 					},
 				},
-				renderers = {
-					pr_root = {
-						{ "indent" },
-						{ "icon" },
-						{ "name" },
-						{ "comment_count" },
-					},
-					pr_dir = {
-						{ "indent" },
-						{ "icon" },
-						{ "name" },
-					},
-					pr_file = {
-						{ "indent" },
-						{ "change_type" },
-						{ "icon" },
-						{ "comment_count" },
-						{ "name" },
-						{ "file_stats" },
-					},
-					message = {
-						{ "indent" },
-						{ "icon" },
-						{ "name" },
-					},
-				},
-			},
-		},
+			}
+			if power_review_dir then
+				table.insert(opts.sources, "power_review")
+				table.insert(opts.source_selector.sources, { source = "power_review", display_name = " PR Review" })
+				opts.power_review = require("power-review.config").get().ui.neotree
+			end
+			return opts
+		end,
 		-- opts = function(_, opts)
 		-- 	local function on_move(data)
 		-- 		Snacks.rename.on_rename_file(data.source, data.destination)

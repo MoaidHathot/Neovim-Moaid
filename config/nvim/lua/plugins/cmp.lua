@@ -24,7 +24,6 @@ return {
 		lazy = true,
 		-- event = { "BufReadPre", "BufNewFile" },
 		dependencies = {
-			'saadparwaiz1/cmp_luasnip',
 			'rafamadriz/friendly-snippets'
 		}
 	},
@@ -35,7 +34,10 @@ return {
 		event = "InsertEnter",
 		-- event = "VeryLazy",
 		dependencies = {
-			-- 'hrsh7th/cmp-cmdline',
+			'L3MON4D3/LuaSnip',
+			'saadparwaiz1/cmp_luasnip',
+			'hrsh7th/cmp-buffer',
+			'hrsh7th/cmp-nvim-lsp',
 			'hrsh7th/cmp-nvim-lsp-signature-help',
 		},
 		config = function()
@@ -171,12 +173,7 @@ return {
 				callback = set_cmp_highlights,
 			})
 
-			vim.api.nvim_create_autocmd("InsertEnter", {
-				callback = function()
-					require("luasnip.loaders.from_vscode").lazy_load()
-				end,
-				once = true,
-			})
+			require("luasnip.loaders.from_vscode").lazy_load()
 			vim.api.nvim_create_autocmd({ "FileType", "TextChanged" }, {
 				group = vim.api.nvim_create_augroup("moaid_cmp_docs_csharp", { clear = true }),
 				pattern = "cmp_docs",
@@ -294,7 +291,7 @@ return {
 	},
 	{
 		"hrsh7th/cmp-cmdline",
-		dependencies = { "hrsh7th/nvim-cmp" },
+		dependencies = { "hrsh7th/nvim-cmp", "hrsh7th/cmp-path" },
 		event = "CmdlineEnter",
 		config = function()
 			local cmp = require("cmp")

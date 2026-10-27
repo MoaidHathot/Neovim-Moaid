@@ -20,7 +20,7 @@ return {
 			{ "<leader>nR", group = ".NET References" },
 			{ "<leader>np", group = ".NET Packages" },
 			{ "<leader>P", group = "Preview" },
-			{ "<leader>p", group = "PowerReview" },
+			{ "<leader>p", group = "PowerReview", cond = require("config.power-review").dir ~= nil },
 			{ "<leader>a", group = "AI" },
 			{ "<leader>d", group = "Debug/Run" },
 			{ "<leader>h", group = "Highlight" },

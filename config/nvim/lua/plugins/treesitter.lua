@@ -1,9 +1,11 @@
 return {
 	'nvim-treesitter/nvim-treesitter',
+	-- Keep the configs.setup API and matching textobjects until migrating both.
+	branch = 'master',
 	build = ':TSUpdate',
 	event = { "BufReadPost", "BufNewFile" },
 	dependencies = {
-		'nvim-treesitter/nvim-treesitter-textobjects',
+		{ 'nvim-treesitter/nvim-treesitter-textobjects', branch = 'master' },
 	},
 	config = function()
 		-- Workaround for Neovim 0.12.0 bug: treesitter's async parsing of injected

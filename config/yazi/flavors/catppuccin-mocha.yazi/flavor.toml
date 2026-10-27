@@ -1,13 +1,10 @@
+#:schema https://yazi-rs.github.io/schemas/theme.json
 # vim:fileencoding=utf-8:foldmethod=marker
 
 # : Manager {{{
 
-[manager]
+[mgr]
 cwd = { fg = "#94e2d5" }
-
-# Hovered
-hovered         = { reversed = true }
-preview_hovered = { underline = true }
 
 # Find
 find_keyword  = { fg = "#f9e2af", bold = true, italic = true, underline = true }
@@ -19,11 +16,6 @@ marker_cut      = { fg = "#f38ba8", bg = "#f38ba8" }
 marker_marked   = { fg = "#94e2d5", bg = "#94e2d5" }
 marker_selected = { fg = "#f9e2af", bg = "#f9e2af" }
 
-# Tab
-tab_active   = { reversed = true }
-tab_inactive = {}
-tab_width    = 1
-
 # Count
 count_copied   = { fg = "#1e1e2e", bg = "#a6e3a1" }
 count_cut      = { fg = "#1e1e2e", bg = "#f38ba8" }
@@ -32,6 +24,25 @@ count_selected = { fg = "#1e1e2e", bg = "#f9e2af" }
 # Border
 border_symbol = "│"
 border_style  = { fg = "#7f849c" }
+
+# : }}}
+
+
+# : Tabs {{{
+
+[tabs]
+active   = { fg = "#1e1e2e", bg = "#89b4fa", bold = true }
+inactive = { fg = "#89b4fa", bg = "#313244" }
+
+# : }}}
+
+
+# : Indicator {{{
+
+[indicator]
+parent  = { reversed = true }
+current = { reversed = true }
+preview = { underline = true }
 
 # : }}}
 
@@ -57,8 +68,8 @@ unset_alt  = { fg = "#f2cdcd", bg = "#313244" }
 # : Status bar {{{
 
 [status]
-separator_open  = ""
-separator_close = ""
+sep_left  = { open = "", close = "" }
+sep_right = { open = "", close = "" }
 
 # Progress
 progress_label  = { fg = "#ffffff", bold = true }
@@ -98,7 +109,7 @@ selected = { reversed = true }
 
 # : Completion {{{
 
-[completion]
+[cmp]
 border = { fg = "#89b4fa" }
 
 # : }}}
@@ -130,10 +141,10 @@ separator_style = { fg = "#585b70" }
 # : Help {{{
 
 [help]
-on      = { fg = "#94e2d5" }
-run     = { fg = "#f5c2e7" }
+border  = { fg = "#89b4fa" }
+chord   = { fg = "#94e2d5" }
+action  = { fg = "#f5c2e7" }
 hovered = { reversed = true, bold = true }
-footer  = { fg = "#313244", bg = "#cdd6f4" }
 
 # : }}}
 
@@ -154,20 +165,23 @@ title_error = { fg = "#f38ba8" }
 
 rules = [
 	# Images
-	{ mime = "image/*", fg = "#94e2d5" },
+	{ mime = "**/image/*", fg = "#94e2d5" },
 
 	# Media
-	{ mime = "{audio,video}/*", fg = "#f9e2af" },
+	{ mime = "**/{audio,video}/*", fg = "#f9e2af" },
 
 	# Archives
-	{ mime = "application/{zip,rar,7z*,tar,gzip,xz,zstd,bzip*,lzma,compress,archive,cpio,arj,xar,ms-cab*}", fg = "#f5c2e7" },
+	{ mime = "**/application/{zip,rar,7z*,tar,gzip,xz,zstd,bzip*,lzma,compress,archive,cpio,arj,xar,ms-cab*}", fg = "#f5c2e7" },
 
 	# Documents
-	{ mime = "application/{pdf,doc,rtf}", fg = "#a6e3a1" },
+	{ mime = "**/application/{pdf,doc,rtf}", fg = "#a6e3a1" },
+
+	# Virtual file system
+	{ mime = "vfs/{absent,stale}", fg = "#9399b2" },
 
 	# Fallback
-	{ name = "*", fg = "#cdd6f4" },
-	{ name = "*/", fg = "#89b4fa" }
+	{ url = "*", fg = "#cdd6f4" },
+	{ url = "*/", fg = "#89b4fa" }
 ]
 
 # : }}}

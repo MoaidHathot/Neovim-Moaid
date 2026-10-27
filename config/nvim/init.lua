@@ -33,6 +33,8 @@ require("lazy").setup({
 		{ import = "plugins" },
 	},
 	install = { colorscheme = { "nightfox", "habamax" } },
+	-- None of the configured plugins require LuaRocks.
+	rocks = { enabled = false },
 	change_detection = {
 		enabled = false,
 		notify = false

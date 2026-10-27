@@ -291,6 +291,17 @@ properties:
         value: '${WinGetConfigRoot}/../config/yazi'
 
     - resource: PSDscResources/Environment
+      id: YAZI_FILE_ONE
+      dependsOn:
+        - Git
+      directives:
+        description: Use Git for Windows file.exe for Yazi MIME detection
+        allowPrerelease: false
+      settings:
+        name: YAZI_FILE_ONE
+        value: 'C:\Program Files\Git\usr\bin\file.exe'
+
+    - resource: PSDscResources/Environment
       id: PRIVATE_LOCAL_NUGET_FEED
       directives:
         description: |
