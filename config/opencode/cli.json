@@ -18,7 +18,7 @@
   "plugins": [
     "-opencode.notifications",
     "./tui-plugins/tab-status",
-    "./tui-plugins/overshell"
+    "./plugins/overshell-v2"
   ],
   "prompt": {
     "paste": "full"

@@ -99,8 +99,8 @@
   // chrome - acrylic | mica | micaalt | none (OVERSHELL_BACKDROP in the environment overrides it for
   // a run). "terminalOpacity": the backdrop shows through the terminal's default background like
   // Windows Terminal's own "opacity" (text and coloured cells stay opaque); 1 is an opaque body.
-  // Windows paints acrylic for the active window only, so an inactive window shows an opaque
-  // fallback behind the text. Crossing 1 in either direction takes a restart (a terminal's window
+  // Inactive windows keep the same material; terminalOpacityUnfocused can override their body
+  // opacity. Crossing 1 in either direction takes a restart (a terminal's window
   // is created once, in one rendering mode); the value itself follows live.
   "window": {
     "backdrop": "acrylic",
@@ -173,9 +173,10 @@
     }
   },
 
-  // Tab items: twoLine shows the state · project line under the label (strip and list);
+  // Tab items: show the session/task name, with project and state on the second line.
   // showHarnessGlyph shows the harness icon (OpenCode, Copilot, ...) on agent tabs.
   "tabs": {
+    "labelMode": "session",
     "twoLine": true,
     "showHarnessGlyph": true
   }
