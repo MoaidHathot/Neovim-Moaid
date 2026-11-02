@@ -26,6 +26,7 @@ This is the complete property-level reference for every field, step type, trigge
   - [Scheduler Trigger](#scheduler-trigger)
   - [Loop Trigger](#loop-trigger)
   - [Webhook Trigger](#webhook-trigger)
+  - [Watcher Trigger](#watcher-trigger)
 - [MCP Definitions](#mcp-definitions)
 - [Template Expressions](#template-expressions)
 - [Enums Reference](#enums-reference)
@@ -66,9 +67,14 @@ steps:
 | `defaultReasoningLevel` | `string` | No | `null` | Default reasoning effort for all Prompt steps that set no `reasoningLevel`. Same values as `reasoningLevel`. Resolution per step: step `reasoningLevel` -> `defaultReasoningLevel` -> host `defaultReasoningLevel` (`orchestra.json`) -> provider/model default. |
 | `agentPool` | `AgentPoolConfig` | No | Provider defaults | Provider worker-pool capacity request for prompt execution. Providers map instances to their own resources, such as Copilot CLI clients. |
 | `defaultSystemPromptMode` | `string` | No | `null` | Default system prompt mode for all Prompt steps. Values: `"append"`, `"replace"`, or `"customize"`. |
+| `defaultEnableConfigDiscovery` | `bool` | No | `null` | Copilot ambient configuration discovery default. Step overrides orchestration, then provider host default (false). |
+| `defaultCapturePlans` | `bool` | No | `true` | Capture explicit provider task lists and plan documents for automatic live updates and durable execution history. Overridden by Prompt `capturePlans`. |
+| `defaultEnableOnDemandInstructionDiscovery` | `bool` | No | `null` | Copilot nested-instruction discovery after file reads. |
 | `defaultRetryPolicy` | `RetryPolicy` | No | `null` | Default retry policy applied to all steps unless overridden at the step level. |
 | `defaultStepTimeoutSeconds` | `int` | No | `null` | Default per-step timeout in seconds. Individual steps can override this. |
 | `timeoutSeconds` | `int` | No | `0` (disabled) | Maximum time in seconds for the entire orchestration run. `0` or `null` means no orchestration-level timeout. |
+| `maxConcurrency` | `int` | No | `null` (unbounded) | Maximum number of steps executing at the same time within one run. Ready steps beyond the cap wait for a slot; a waiting step is not reported as started and its `timeoutSeconds` does not tick while it queues. Falls back to the host's `defaultMaxConcurrency` (`orchestra.json`); unbounded when both are unset (every ready step starts immediately on its own thread). Approval steps and Orchestration steps in `async` mode never occupy a slot; skipped steps never take one; a sync Orchestration step holds its slot for the child's whole duration. Must be >= 1. |
+| `onStepFailure` | `string` | No | `"continue"` | `"continue"`: when a step ends Failed (after retries), its dependents are skipped (cascading) and independent branches finish; the run ends Failed. `"stop"`: fail fast -- every step that has not finished is cancelled immediately; the run ends **Failed** (not Cancelled) and each cancelled step's error message reads `Cancelled: step 'X' failed and onStepFailure is 'stop'`. Case-insensitive. |
 | `variables` | `object` | No | `{}` | Key-value pairs of user-defined variables. Values can contain template expressions. Accessed via `{{vars.name}}`. |
 | `tags` | `string[]` | No | `[]` | Tags for categorizing and filtering orchestrations. |
 | `hooks` | `Hook[]` | No | `[]` | Lifecycle hooks that run after step or orchestration outcomes. Hooks receive structured JSON payloads on stdin and can execute follow-up scripts. |
@@ -283,7 +289,8 @@ These properties are shared by **all** step types.
 | `type` | `string` | **Yes** | -- | Step type. One of: `"Prompt"`, `"Http"`, `"Transform"`, `"Command"`, `"Script"`, `"Orchestration"`, `"Approval"` (case-insensitive). |
 | `dependsOn` | `string[]` | No | `[]` | Names of steps that must complete before this step runs. Defines the DAG edges. |
 | `parameters` | `string[]` or `object` | No | `[]` | For most step types, parameter names this step expects. For Orchestration steps, child parameter values keyed by child input name. |
-| `enabled` | `bool` | No | `true` | When `false`, the step is skipped during execution. |
+| `enabled` | `bool` | No | `true` | When `false`, the step is skipped during execution (recorded as an empty success; dependents see `""`). Static switch. |
+| `when` | `string` | No | `null` | Run-time boolean condition, evaluated after every dependency settles. False => the step is `Skipped` (skipKind `Condition`) **without blocking dependents**, which see `""` for its output. Grammar: `{{...}}` references used directly as values (`{{param.x}}`, `{{step.output}}`, `{{step.output.a.b}}`, `{{step.status}}`, `{{step.errorMessage}}`), `'string'`/number/`true`/`false`/`null` literals, `== != < <= > >= && \|\| !` (`and`/`or`/`not` aliases), parentheses, functions `contains(t, n)`, `startsWith`, `endsWith` (case-insensitive), `matches(t, regex)`, `empty(x)`, `lower(x)`, `trim(x)`, `length(x)`, `always()`, `success()`, `failure()`. Outcome-aware conditions (`failure()`/`success()`/`always()` or a `{{step.status}}`/`{{step.errorMessage}}` reference) suspend the dependency-failure cascade for the step so on-failure handlers can run; other conditions are consulted only after every dependency succeeded. Syntax errors fail `orchestra validate`; run-time evaluation errors fail the step with `ConditionError`. Quote the whole value in YAML when it starts with `{{`. |
 | `timeoutSeconds` | `int` | No | `null` | Per-step timeout in seconds. Falls back to `defaultStepTimeoutSeconds` if not set. Set to `0` to explicitly disable timeout. |
 | `retry` | `RetryPolicy` | No | `null` | Per-step retry policy. Overrides `defaultRetryPolicy`. |
 
@@ -301,7 +308,7 @@ Sends a prompt to an LLM and captures the response as output. Supports input/out
 | `systemPromptFile` | `string` | **Yes*** | -- | Path to a file containing the system prompt. Mutually exclusive with `systemPrompt`. |
 | `userPrompt` | `string` | **Yes*** | -- | User prompt text provided inline. |
 | `userPromptFile` | `string` | **Yes*** | -- | Path to a file containing the user prompt. Mutually exclusive with `userPrompt`. |
-| `model` | `string` | No | from `defaultModel` | LLM model identifier (e.g., `"claude-opus-4.8"`, `"gpt-4o"`). Required only when neither the orchestration (`defaultModel`) nor the host (`orchestra.json` `defaultModel`) provides a default -- a Prompt step with none of the three fails at execution. |
+| `model` | `string` | No | from `defaultModel` | LLM model identifier (e.g., `"claude-opus-4.8"`, `"gpt-5"`). Required only when neither the orchestration (`defaultModel`) nor the host (`orchestra.json` `defaultModel`) provides a default -- a Prompt step with none of the three fails at execution. |
 | `inputHandlerPrompt` | `string` | No | `null` | An LLM prompt that pre-processes dependency outputs before the main prompt sees them. |
 | `inputHandlerPromptFile` | `string` | No | `null` | Path to file containing the input handler prompt. Mutually exclusive with `inputHandlerPrompt`. |
 | `outputHandlerPrompt` | `string` | No | `null` | An LLM prompt that post-processes the main LLM output. |
@@ -309,9 +316,9 @@ Sends a prompt to an LLM and captures the response as output. Supports input/out
 | `reasoningLevel` | `string` | No | from `defaultReasoningLevel` | Reasoning effort requested from the model (forwarded as the provider's `reasoning_effort`). Values: `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"` (case-insensitive). `xhigh`/`max` are only honoured by models that advertise them (GPT-5.x/6 and Claude Opus 4.7+); older models stop at `high`. Falls back to the orchestration's `defaultReasoningLevel`, then the host's, then the provider default. |
 | `reasoningSummary` | `string` | No | `null` | Verbosity of the model's reasoning summary. Values: `"none"`, `"concise"`, `"detailed"`. Opt-in. |
 | `contextTier` | `string` | No | `null` | Context-window tier. `"default"` or `"longContext"` (opts into the model's extended context window where supported). Opt-in. |
-| `workingDirectory` | `string` | No | `null` | Working directory for the agent's shell/file tools and config discovery (custom instructions, `.github/agents`, `.github/mcp.json`). Template-resolved (`{{param.*}}`/`{{env.*}}`/`{{vars.*}}`) and validated to exist at run time. |
+| `workingDirectory` | `string` | No | Definition directory | Working directory for tools and discovery. Relative overrides resolve from the orchestration file directory; in-memory definitions without source metadata inherit process CWD. Template-resolved and validated to exist. |
 | `githubToken` | `string` | No | `null` | GitHub token for this step's Copilot session, overriding the host default. Prefer a template reference such as `{{env.GITHUB_TOKEN}}`; never logged. Falls back to `orchestra.json` `copilot.gitHubToken`/`useLoggedInUser`, then the CLI's stored credentials. |
-| `humanInput` | `bool` | No | `false` | When `true`, the agent's elicitation and exit-plan-mode (plan approval) requests are routed to Orchestra's human-in-the-loop instead of resolving autonomously. See [Human-in-the-Loop](#human-in-the-loop). |
+| `humanInput` | `bool` | No | `false` | True selects interactive guidance and native questions/elicitation. False selects non-interactive guidance. The legacy request_user_input opt-in implies true only when this field is omitted. See [Human-in-the-Loop](#human-in-the-loop). |
 | `permissionPolicy` | `PermissionPolicy` | No | `null` | Controls how the agent's permission requests (shell/file/url/mcp/…) are resolved. See [Permission Policy](#permission-policy). Overrides `defaultPermissionPolicy`; omit for auto-approve. |
 | `sandbox` | `SandboxPolicy` | No | `null` | Opt-in filesystem/network sandbox for this step's tool access. See [Sandbox](#sandbox). Overrides `defaultSandboxPolicy`; omit for no sandbox. |
 | `systemPromptMode` | `string` | No | `null` | How the system prompt interacts with the SDK's built-in prompts. `"append"` adds to them; `"replace"` removes them; `"customize"` selectively overrides individual sections. |
@@ -322,13 +329,27 @@ Sends a prompt to an LLM and captures the response as output. Supports input/out
 | `loop` | `LoopConfig` | No | `null` | Loop/checker configuration for iterative refinement. |
 | `subagents` | `Subagent[]` | No | `[]` | Subagent definitions for multi-agent delegation. |
 | `skillDirectories` | `string[]` | No | `[]` | Directories containing `SKILL.md` files that provide additional context/instructions. |
-| `enableTools` | `string[]` | No | `null` | Opt-in engine tool names this Prompt step grants the agent access to. Currently supports `"request_user_input"` (the LLM-decided human-in-the-loop tool). Falls back to the orchestration's `defaultEnableTools` when null. Always-on tools (`orchestra_set_status`, `orchestra_complete`, file save/read) are unaffected. |
+| `instructionDirectories` | `string[]` | No | `null` | Explicit instruction directories, relative to the definition file. Copilot omission uses its legacy skill-directory fallback; [] disables it. OpenCode V2 omission adds none; explicit directories load Markdown files recursively. |
+| `enableConfigDiscovery` | `bool` | No | `null` | Copilot ambient configuration discovery from the agent working directory; also discovers supported agents, MCPs and plugins. |
+| `enableOnDemandInstructionDiscovery` | `bool` | No | `null` | Copilot nested instruction discovery following file reads. Separate from root instructions. |
+| `responseSchema` | `object` | No | `null` | JSON Schema contract for final successful output and output handlers. Copilot: native constrained generation. OpenCode V2: schema guidance. Both: strict engine validation. Completion-tool filtering is internal; authors simply request fields and consume them downstream. |
+| `capturePlans` | `bool` | No | orchestration default (`true`) | Observe task/plan revisions without changing DAG outcomes or selecting plan mode. Copilot uses native reads/events; OpenCode supports native todo observations and a labelled shared-step planning tool. No plan is required for trivial work. |
+| `executionPolicy` | `object` | No | `standard` | `mode`: `standard` or `autopilot`; `maxContinues`: non-negative integer, default 5. Autopilot is native in Copilot and Orchestra-managed in OpenCode V2. Exhaustion fails the step. Counts continuations, not tool calls; timeout/cancellation still apply. Scoped to one Prompt session, separate from DAG loops and retries. |
+| `enableTools` | `string[]` | No | `null` | Opt-in engine tool names, currently `"request_user_input"`. Falls back to `defaultEnableTools`. Structured/autopilot steps internally omit immediate-stop tools (`orchestra_set_status`, `orchestra_complete`); file tools remain available. |
 
 > **\*Mutual exclusion rules:**
 > - Exactly one of `systemPrompt` or `systemPromptFile` is required.
 > - Exactly one of `userPrompt` or `userPromptFile` is required.
 > - `inputHandlerPrompt` and `inputHandlerPromptFile` are mutually exclusive.
 > - `outputHandlerPrompt` and `outputHandlerPromptFile` are mutually exclusive.
+
+For JSON steps, authors set `responseSchema` and describe the desired fields. Do not add
+internal completion markers or special stop-tool instructions. Branch downstream with the
+validated data. OpenCode V2 accepts ambient/nested discovery `true`, but rejects explicit or
+inherited `false`; Copilot supports both values independently.
+OpenCode autopilot uses its existing continuation budget to correct invalid JSON before
+completion. Subagent-specific MCPs/skills and `infer: false` require Copilot. See
+[provider-controls.md](provider-controls.md) for the full authoring contract and examples.
 
 #### System Prompt Section Overrides
 
@@ -445,7 +466,7 @@ These per-step Copilot controls are all opt-in; omit a field to inherit the host
 
 #### Human-in-the-Loop
 
-`humanInput: true` routes the agent's **elicitation** and **exit-plan-mode (plan approval)** requests to Orchestra's human-in-the-loop — the same pending-input surface as the `Approval` step and `orchestra_request_user_input` (operators answer via `POST /api/orchestrations/{name}/runs/{runId}/respond`). Like the engine-tool variant, these waits are session-bound and do **not** survive a host restart. Default (off) resolves them autonomously. Pairs naturally with `permissionPolicy: requireHumanApproval`.
+`humanInput: true` selects interactive guidance and routes native `ask_user`, elicitation and plan approval to Orchestra's human-input surface (operators answer via `POST /api/orchestrations/{name}/runs/{runId}/respond`). False/omitted selects non-interactive guidance, except that the existing request_user_input opt-in retains interactive behavior when this field is omitted. Explicit false overrides the opt-in. These waits are session-bound and do not survive a host restart. Copilot memory and cross-session history remain disabled; per-session conversation and SQL todos remain available.
 
 #### Permission Policy
 
@@ -502,6 +523,7 @@ Makes an HTTP request and captures the response body as output. No LLM is involv
 | `headers` | `object` | No | `{}` | Key-value pairs of request headers. Values support template expressions. |
 | `body` | `string` | No | `null` | Request body. Supports template expressions. |
 | `contentType` | `string` | No | `"application/json"` | Content-Type header for the request body. |
+| `maxOutputBytes` | `int` | No | `10485760` (10 MiB) | Maximum bytes of the response body kept. The body is read from the network only up to the cap; the rest is discarded, `[output truncated: ...]` is appended and an `output-truncated` session warning is reported. `0` disables the cap. |
 
 ---
 
@@ -530,10 +552,11 @@ Do not use `Command` for shell snippets or wrappers such as `pwsh -Command`, `po
 |---|---|---|---|---|
 | `command` | `string` | **Yes** | -- | Executable to run (e.g., `"dotnet"`, `"python"`, `"git"`). |
 | `arguments` | `string[]` | No | `[]` | Command-line arguments. Each element supports template expressions. |
-| `workingDirectory` | `string` | No | Current directory | Working directory for the process. |
+| `workingDirectory` | `string` | No | Definition directory | Working directory for the process. Relative overrides use the orchestration file directory. |
 | `environment` | `object` | No | `{}` | Environment variables to set. Values support template expressions. |
 | `includeStdErr` | `bool` | No | `false` | Whether to append stderr to the captured output. |
 | `stdin` | `string` | No | `null` | Content to pipe to the process's standard input. |
+| `maxOutputBytes` | `int` | No | `10485760` (10 MiB) | Maximum bytes of output kept, stdout and stderr combined. Output beyond the cap is dropped at a line boundary, `[output truncated: ...]` is appended to the output and an `output-truncated` session warning is reported; the step still succeeds. `0` disables the cap. |
 
 ---
 
@@ -549,10 +572,11 @@ Executes an inline or file-based script via a shell interpreter. The script's st
 | `script` | `string` | **Yes*** | -- | Inline script content. Mutually exclusive with `scriptFile`. |
 | `scriptFile` | `string` | **Yes*** | -- | Path to an external script file. Relative paths resolve from the orchestration file's directory. |
 | `arguments` | `string[]` | No | `[]` | Arguments passed to the script. |
-| `workingDirectory` | `string` | No | Current directory | Working directory for the process. |
+| `workingDirectory` | `string` | No | Definition directory | Working directory for the process. Relative overrides use the orchestration file directory. |
 | `environment` | `object` | No | `{}` | Environment variables to set. |
 | `includeStdErr` | `bool` | No | `false` | Whether to append stderr to the captured output. |
 | `stdin` | `string` | No | `null` | Content to pipe to the process's standard input. |
+| `maxOutputBytes` | `int` | No | `10485760` (10 MiB) | Maximum bytes of output kept, stdout and stderr combined. Output beyond the cap is dropped at a line boundary, `[output truncated: ...]` is appended to the output and an `output-truncated` session warning is reported; the step still succeeds. `0` disables the cap. |
 
 > **\*Mutual exclusion:** Exactly one of `script` or `scriptFile` is required.
 
@@ -736,6 +760,8 @@ Retry policies control automatic retries on step failure with exponential backof
 | `maxRetries` | `int` | `3` | Maximum retry attempts after the initial failure. |
 | `backoffSeconds` | `double` | `1.0` | Initial delay before the first retry (in seconds). |
 | `backoffMultiplier` | `double` | `2.0` | Multiplier applied to the backoff delay after each retry. |
+| `maxDelaySeconds` | `double` | `null` (uncapped) | Upper bound on the computed backoff delay, applied before jitter. With the defaults the uncapped curve is 1s, 2s, 4s, 8s, 16s... |
+| `jitterSeconds` | `double` | `0` | Maximum random jitter added to every delay: actual wait = capped backoff + uniform random in `[0, jitterSeconds]`. Spreads out retries of steps that failed together. |
 | `retryOnTimeout` | `bool` | `true` | Whether to retry when the failure is a timeout. |
 
 ---
@@ -750,7 +776,7 @@ All trigger types share these properties:
 
 | Property | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `type` | `string` | **Yes** | -- | Trigger type: `"manual"`, `"scheduler"`, `"loop"`, or `"webhook"`. |
+| `type` | `string` | **Yes** | -- | Trigger type: `"manual"`, `"scheduler"`, `"loop"`, `"webhook"`, or `"watcher"`. |
 | `enabled` | `bool` | No | `true` | Whether the trigger is active. |
 | `inputHandlerPrompt` | `string` | No | `null` | LLM prompt to transform raw trigger input into expected parameters. |
 | `inputHandlerModel` | `string` | No | `null` | Model to use for the input handler prompt. |
@@ -796,6 +822,34 @@ All trigger types share these properties:
 | `waitForResult` | `bool` | `false` | Whether to block the HTTP response until orchestration completes. |
 | `responseTemplate` | `string` | `null` | Template string for formatting the response body. |
 | `timeoutSeconds` | `int` | `120` | Maximum seconds to wait for completion. Returns 504 on timeout. |
+
+### Watcher Trigger
+
+**Type value:** `"watcher"`
+
+Subscribes the orchestration to a watcher - an in-process poller that runs a fetcher command or script on a schedule, deduplicates the returned items per subscribing orchestration and launches one run per new item. Watchers are declared in `orchestra.watchers.json` beside `orchestra.json` (schema `schemas/orchestra.watchers.schema.json`) and referenced by name, or defined inline. A watcher only runs while at least one enabled orchestration subscribes to it.
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `watcher` | `string` | `null` | Name of a library watcher. Exactly one of `watcher` / `definition` is required. |
+| `definition` | `object` | `null` | Inline watcher: a library entry plus a required `name` (must not collide with a library name). Relative `fetch` paths resolve against the orchestration file's folder. |
+| `maxConcurrent` | `int` | `1` | Parallel launches per tick for this subscription (not a cap on in-flight runs). |
+| `catchup` | `string` | `"from-now"` | `"from-now"` skips items the watcher has already seen when this orchestration first subscribes; `"all"` dispatches every item currently visible. |
+| `parameters` | `map` | `null` | Item-to-input templates: `{{item}}` is the whole item as JSON, `{{item.path.to.field}}` a nested field (`[n]` indexes arrays). Missing paths render as the literal `null`. |
+
+**Library entry** (`orchestra.watchers.json` is `{ "watchers": { "<name>": <entry> } }`):
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `type` | `string` | -- | `"poll-command"` (run an executable) or `"poll-script"` (run a script through `shell`). |
+| `enabled` | `bool` | `true` | Disabled watchers reject subscriptions. |
+| `schedule` | `object` | -- | Exactly one of `intervalSeconds` (int) or `cron` (UTC; 5 fields, or 6 with leading seconds). |
+| `fetch` | `object` | -- | `command` + `arguments` (poll-command) or `shell` + exactly one of `scriptFile` / `script` (poll-script); plus `workingDirectory`, `env`, `timeoutSeconds` (60), `includeStdErr` (false), `config` (passed verbatim to the fetcher). |
+| `items` | `object` | `{ jsonPath: "$.items[*]" }` | Where items live in the output (simple JSONPath: root, member, `[n]`, trailing `[*]`). |
+| `dedup` | `object` | fifo, hash of whole item | `key` template; `mode` `fifo` (`fifo.maxEntries` 10000, `fifo.ttlDays` 14) or `presence` (`presence.graceTicks` 3). |
+| `failurePolicy` | `string` | `"warn"` | `warn` / `ignore` keep polling with exponential back-off (2s doubling, capped at 300s); `fail` stops this watcher's loop. |
+
+**Fetcher protocol v1.** stdin: `{ "protocolVersion": "1", "watcher": "<name>", "cursor": <previous or null>, "subscribers": [ids], "config": <fetch.config or null> }`. stdout (exit 0): `{ "protocolVersion": "1", "items": [...], "cursor": <opaque, optional>, "diagnostics": { "message": "..." } }`. Empty `items` means nothing new; the cursor is stored and sent back next tick. Try a fetcher with `orchestra watcher test --watcher <name>`.
 
 ---
 
@@ -889,7 +943,7 @@ Runtime file-writing steps should receive absolute paths. Build paths relative t
 `Low`, `Medium`, `High`, `XHigh`, `Max` (case-insensitive; `xhigh`/`max` require a model that advertises them)
 
 ### Trigger Type
-`Manual` (default), `Scheduler`, `Loop`, `Webhook`
+`Manual` (default), `Scheduler`, `Loop`, `Webhook`, `Watcher`
 
 ### MCP Type
 `Local` (stdio), `Remote` (HTTP)

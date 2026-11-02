@@ -50,6 +50,7 @@
 			"command": "npx",
 			"arguments": [
 				"-y",
+				"--replace-registry-host=https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/",
 				"@azure-devops/mcp",
 				"msazure",
 				"-a",

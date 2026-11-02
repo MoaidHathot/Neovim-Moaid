@@ -1,6 +1,6 @@
 ---
 name: orchestration-authoring
-description: Creates and validates Orchestra orchestration files (JSON/YAML) that define DAGs of steps (Prompt, Command, Script, Http, Transform, Approval, Orchestration) with triggers, hooks, MCPs, subagents, loops, typed inputs, human-in-the-loop pauses, per-step Copilot controls (model tuning, working directory, auth, permission policies, sandboxing), and template expressions. Use when authoring new orchestrations, generating orchestration files from descriptions, reviewing existing orchestrations for correctness, or debugging orchestration issues.
+description: Creates and validates Orchestra orchestration files (JSON/YAML) with DAG steps, Copilot/OpenCode V2 providers, validated JSON responses, bounded autopilot, definition-relative working directories, skills/instructions, MCPs, subagents, human input, triggers, hooks, loops, and template expressions. Use when authoring or generating orchestrations, reviewing existing workflows, or debugging orchestration issues.
 ---
 
 # Orchestra Orchestration Authoring Reference
@@ -8,6 +8,7 @@ description: Creates and validates Orchestra orchestration files (JSON/YAML) tha
 Complete reference for creating valid, idiomatic Orchestra orchestration files.
 
 **Detailed references** (read on demand):
+- [references/provider-controls.md](references/provider-controls.md) -- Orchestra 0.11+ provider matrix, JSON/autopilot examples, working-directory migration, and interaction rules
 - [references/examples.md](references/examples.md) -- Full real-world example orchestrations
 - [references/full-schema-reference.md](references/full-schema-reference.md) -- Complete property-level documentation with all edge cases
 
@@ -20,7 +21,7 @@ Orchestrations are single JSON or YAML objects. Three fields are required: `name
 1. **Public URL** (works anywhere, requires network the first time):
    - JSON: `"$schema": "https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json"`
    - YAML: `# yaml-language-server: $schema=https://raw.githubusercontent.com/MoaidHathot/orchestra/main/schemas/orchestration.schema.json`
-   - Same pattern for `orchestra.mcp.schema.json` and `orchestra.services.schema.json`.
+   - Same pattern for `orchestra.mcp.schema.json`, `orchestra.services.schema.json` and `orchestra.watchers.schema.json`.
    - For version-pinned validation, replace `main` with a release tag (e.g., `v0.2.0`).
 
 2. **Local copy bundled with the tool** (offline, version-pinned to your installed Orchestra):
@@ -53,9 +54,14 @@ YAML modelines work in VS Code (Red Hat YAML extension), JetBrains IDEs, and any
 | `defaultProvider` | string | No | null | Default agent provider for Prompt steps: `"copilot"` or `"opencode"`. Resolution per step: step `provider` -> `defaultProvider` -> host default. |
 | `agentPool` | object | No | provider defaults | Provider worker-pool capacity request (see Agent Pool) |
 | `defaultSystemPromptMode` | string | No | null | `"append"`, `"replace"`, or `"customize"` for all Prompt steps |
+| `defaultEnableConfigDiscovery` | bool | No | null | Copilot ambient discovery default; step values override it, then the Copilot host default applies |
+| `defaultCapturePlans` | bool | No | true | Capture explicit agent task lists/documents for live views and durable history; overridden by Prompt `capturePlans` |
+| `defaultEnableOnDemandInstructionDiscovery` | bool | No | null | Copilot nested-instruction discovery default |
 | `defaultRetryPolicy` | RetryPolicy | No | null | Default retry for all steps |
 | `defaultStepTimeoutSeconds` | int | No | null | Default per-step timeout |
 | `timeoutSeconds` | int | No | 0 (disabled) | Orchestration-level timeout. 0 or null means no timeout |
+| `maxConcurrency` | int | No | null (unbounded) | Max steps executing at once within a run. Ready steps beyond the cap wait for a slot; dependency order is unchanged. Falls back to host `defaultMaxConcurrency` (`orchestra.json`). Approval steps and async Orchestration steps never take a slot; skipped steps never take one. |
+| `onStepFailure` | string | No | `"continue"` | `"continue"`: a failed step's dependents are skipped, independent branches finish, run ends Failed. `"stop"`: fail fast -- every unfinished step is cancelled the moment one step fails (after its retries); the run ends Failed and cancelled steps carry the reason `step 'X' failed and onStepFailure is 'stop'`. |
 | `variables` | object | No | {} | Key-value pairs accessed via `{{vars.name}}` |
 | `tags` | string[] | No | [] | Categorization tags |
 | `hooks` | Hook[] | No | [] | Lifecycle hooks that run after step or orchestration outcomes |
@@ -72,7 +78,7 @@ Every Prompt step runs on an agent provider. Resolution is **step `provider` -> 
 | Provider | Notes |
 |---|---|
 | `copilot` | GitHub Copilot CLI via the Copilot SDK. Supports the full feature surface. |
-| `opencode` | Spawns an `opencode serve` HTTP server. Requires OpenCode installed on PATH. |
+| `opencode` | Uses a private OpenCode V2 HTTP server. Requires authenticated V2 installed on PATH. See the provider-controls reference for supported settings. |
 
 A single orchestration can mix providers per step:
 
@@ -209,8 +215,77 @@ Steps form a DAG. Steps with no `dependsOn` run first (in parallel). Downstream 
 | `dependsOn` | string[] | No | [] |
 | `parameters` | string[] or object | No | [] |
 | `enabled` | bool | No | true |
+| `when` | string (condition) | No | null |
 | `timeoutSeconds` | int | No | null |
 | `retry` | RetryPolicy | No | null |
+
+### Conditional Steps (`when`)
+
+`when` is a boolean expression evaluated **after every dependency has settled and just before the
+step would start**. When it is false the step is recorded as `Skipped` (skipKind `Condition`)
+and, unlike a failed or dependency-skipped step, it does **not** block its dependents: they run
+and see `""` for `{{thisStep.output}}`. That is what makes if/else + join expressible.
+
+```yaml
+steps:
+  - name: decide
+    type: Transform
+    template: "{{param.environment}}"
+  - name: deploy-prod
+    type: Transform
+    dependsOn: [decide]
+    when: "{{decide.output}} == 'prod'"
+    template: "deployed to prod"
+  - name: deploy-staging
+    type: Transform
+    dependsOn: [decide]
+    when: "{{decide.output}} != 'prod'"
+    template: "deployed to staging"
+  - name: announce            # join: exactly one branch has output, the other is ""
+    type: Transform
+    dependsOn: [deploy-prod, deploy-staging]
+    template: "{{deploy-prod.output}}{{deploy-staging.output}}"
+```
+
+**Syntax.** `{{...}}` references are *values* in the expression — use them directly, never
+inside quotes: `{{param.x}}`, `{{step.output}}`, `{{step.output.json.path}}`, `{{step.status}}`
+(`succeeded|failed|skipped|cancelled|noaction`), `{{step.errorMessage}}`. Literals: `'text'` or
+`"text"`, numbers, `true`, `false`, `null`. Operators: `==` `!=` `<` `<=` `>` `>=` `&&` `||` `!`
+(aliases `and` `or` `not`), parentheses. Functions: `contains(text, needle)`, `startsWith`,
+`endsWith` (all case-insensitive), `matches(text, regex)`, `empty(x)`, `lower(x)`, `trim(x)`,
+`length(x)`, and the outcome functions `always()`, `success()`, `failure()`. `==` compares
+numerically when both sides are numbers, otherwise as case-insensitive text (`'Succeeded'` and
+`'succeeded'` both match); `null == ''`. A bare value is truthy unless it is empty or, ignoring
+case, `false`/`0`/`no`/`off`/`null`. Backslashes inside string literals are literal (write
+regexes as `'^\d+$'`); only `\'` / `\"` / `\\` are escapes.
+
+**Failures and `when`.** By default a step whose dependency failed is skipped *before* its
+condition is consulted (failures cascade). A condition that reasons about outcomes — it calls
+`failure()`, `success()` or `always()`, or references some step's `status`/`errorMessage` —
+suspends that cascade for its step, so the condition alone decides. This is how you write an
+on-failure handler:
+
+```yaml
+  - name: on-test-failure
+    type: Prompt
+    dependsOn: [run-tests]
+    when: "failure()"                      # or: "{{run-tests.status}} == 'failed'"
+    userPrompt: "Tests failed: {{run-tests.errorMessage}}. Suggest a fix."
+  - name: publish
+    dependsOn: [run-tests]
+    when: "success()"
+```
+
+A condition about something else (`when: "{{param.deploy}} == 'yes'"`) keeps the cascade: if
+`run-tests` fails, `deploy` is dependency-skipped without evaluating the condition.
+
+**Rules.**
+- In YAML, quote the whole expression when it starts with `{{` (otherwise YAML reads a flow mapping).
+- Every `{{step.*}}` reference must be a direct or transitive dependency of the step (the validator enforces this, like any other template).
+- A syntax error fails `orchestra validate`. An evaluation error at run time (e.g. an invalid regex) fails the step with error category `ConditionError`.
+- An unresolvable reference (a missing JSON-path field) evaluates to `null` (falsy) — the step is skipped, not failed.
+- A condition-skipped step is not checkpointed; on resume its condition is re-evaluated.
+- `enabled: false` is a *static* off switch (recorded as an empty success); `when` is the dynamic one.
 
 ### Prompt Step (type: "Prompt")
 
@@ -231,7 +306,7 @@ Calls an LLM.
 | `reasoningLevel` | string | No | from `defaultReasoningLevel` |
 | `reasoningSummary` | string | No | null |
 | `contextTier` | string | No | null |
-| `workingDirectory` | string | No | null |
+| `workingDirectory` | string | No | orchestration file directory |
 | `githubToken` | string | No | null |
 | `humanInput` | bool | No | false |
 | `permissionPolicy` | PermissionPolicy | No | null |
@@ -244,6 +319,12 @@ Calls an LLM.
 | `loop` | LoopConfig | No | null |
 | `subagents` | Subagent[] | No | [] |
 | `skillDirectories` | string[] | No | [] |
+| `instructionDirectories` | string[] | No | null |
+| `enableConfigDiscovery` | bool | No | null |
+| `enableOnDemandInstructionDiscovery` | bool | No | null |
+| `responseSchema` | object | No | null |
+| `capturePlans` | bool | No | from `defaultCapturePlans` (true) |
+| `executionPolicy` | object | No | standard, maxContinues: 5 |
 | `enableTools` | string[] | No | null | Opt-in engine tool names this Prompt step grants the agent access to. Currently supports `"request_user_input"` (the LLM-decided human-in-the-loop tool). Falls back to the orchestration's `defaultEnableTools` when null. |
 
 *Mutual exclusion: use `systemPrompt` OR `systemPromptFile`, not both. Same for `userPrompt`/`userPromptFile`, `inputHandlerPrompt`/`inputHandlerPromptFile`, `outputHandlerPrompt`/`outputHandlerPromptFile`.
@@ -331,7 +412,71 @@ Per-step Copilot controls, all opt-in (omit to inherit the host/provider default
 
 ### Human-in-the-Loop (`humanInput`)
 
-`humanInput: true` routes the agent's **elicitation** and **exit-plan-mode (plan approval)** requests to Orchestra's human-in-the-loop — the same pending-input surface as the `Approval` step and `orchestra_request_user_input` (answer via `POST /api/orchestrations/{name}/runs/{runId}/respond`). Session-bound (does NOT survive a host restart). Default (off) resolves them autonomously. Pairs naturally with `permissionPolicy: requireHumanApproval`.
+`humanInput: true` selects interactive guidance and routes native questions/elicitation to Orchestra's human-input surface (Copilot callbacks; OpenCode V2 forms). False/omitted uses non-interactive guidance. The existing `request_user_input` opt-in implies interactive guidance when `humanInput` is omitted; explicit false overrides it. Waits are session-bound (do not survive a host restart). Copilot native persistent memory and cross-session history are disabled in both modes.
+
+### Discovery and working directory
+
+- `enableConfigDiscovery` enables ambient configuration discovery (skills, agents, MCPs and plugins) from the agent working directory. `enableOnDemandInstructionDiscovery` separately enables nested instructions after file reads. Precedence: step -> orchestration default -> Copilot host default -> false.
+- Prompt, Command, and Script `workingDirectory` defaults to the orchestration file's directory, equivalent to `{{orchestration.sourceDirectory}}`, including when installed as a .NET tool. Relative overrides also resolve from that directory; use `..` for its parent. In-memory definitions without a source directory inherit process CWD.
+- Explicit `skillDirectories` and `instructionDirectories` resolve relative to the orchestration file. On Copilot they work with discovery disabled; omitted `instructionDirectories` retains its legacy skill-directory fallback, while `[]` disables it. OpenCode omission supplies no extra instruction files and keeps skills lazy. Root instruction loading is distinct from the on-demand switch.
+- OpenCode V2 uses native explicit skill paths and Markdown instruction files without copying skills into the project. Its ambient/nested discovery is enabled: explicit `true` is accepted, but explicit/inherited `false` is rejected because equivalent independent disable controls are unavailable.
+
+### Structured JSON output (`responseSchema`)
+
+Set a JSON Schema object and describe the fields wanted. Successful output is strictly
+validated, including output handlers, and can be read with `{{step.output.property}}`.
+Copilot constrains generation natively; OpenCode V2 uses schema guidance plus the same engine
+validation. Invalid JSON, Markdown fences, or schema violations fail the step.
+
+```yaml
+responseSchema:
+  type: object
+  properties:
+    count: { type: integer }
+  required: [count]
+  additionalProperties: false
+```
+
+**Authors do not need special completion prompts or tool calls.** Orchestra internally
+omits `orchestra_set_status` and `orchestra_complete` for structured steps so the agent can
+deliver its final JSON. Use downstream conditions/scripts for branching; a `status` field in
+JSON is data, not an engine status override. Do not add internal completion markers to schemas.
+
+### Automatic plan capture (`capturePlans`)
+
+Explicit task lists and Markdown plans are captured by default, shown read-only in the Portal,
+and saved in execution history. Set `capturePlans: false` on a Prompt step or
+`defaultCapturePlans: false` on the orchestration to disable capture. This does not select plan
+mode, force a plan for trivial work, or change the DAG's completion rules.
+
+Copilot uses native todo/plan notifications and read APIs. OpenCode captures supported native
+todo updates and provides `orchestra_update_plan` as a labelled shared-step compatibility tool
+for runtimes such as 2.0.26 without native todos. Authors can ask agents to keep a task list
+current for complex work; no special completion markers are needed. Output handlers do not
+produce an additional plan stream.
+
+### Bounded autopilot (`executionPolicy`)
+
+```yaml
+executionPolicy:
+  mode: autopilot
+  maxContinues: 3
+timeoutSeconds: 300
+```
+
+Omission or `mode: standard` retains the normal full tool loop. Autopilot adds automatic
+continuation when the task is unfinished: native in Copilot, Orchestra-managed in OpenCode V2.
+`maxContinues` defaults to 5; 0 allows the initial tool loop but no continuation. It does not
+count individual tool calls. Exhaustion or a non-completion stop fails the step. Timeout and
+cancellation still apply. Retry/worker-recovery budgets are separate.
+
+The policy stays within one Prompt session and can be combined with `responseSchema`.
+OpenCode autopilot spends the same continuation budget correcting invalid JSON from completed
+work. Standard mode makes no extra correction calls. See [provider controls](references/provider-controls.md)
+for provider differences, output-handler behavior, and unsupported subagent settings.
+It does not share sessions between DAG steps, rewrite the DAG, or select native plan mode.
+Immediate-stop tools and provider-specific completion signals are managed internally.
+No author-supplied stop instruction or completion marker is required.
 
 ### Permission Policy (`permissionPolicy`)
 
@@ -378,6 +523,7 @@ Makes an HTTP request, captures response body.
 | `headers` | object | No | {} |
 | `body` | string | No | null |
 | `contentType` | string | No | `"application/json"` |
+| `maxOutputBytes` | int | No | 10485760 (10 MiB); 0 = no cap |
 
 ### Transform Step (type: "Transform")
 
@@ -398,11 +544,11 @@ Do not use `Command` for shell snippets or wrappers such as `pwsh -Command`, `po
 |---|---|---|---|
 | `command` | string | Yes | -- |
 | `arguments` | string[] | No | [] |
-| `workingDirectory` | string | No | current dir |
+| `workingDirectory` | string | No | orchestration file directory |
 | `environment` | object | No | {} |
 | `includeStdErr` | bool | No | false |
 | `stdin` | string | No | null |
-| `strictMode` | bool | No | null (auto) |
+| `maxOutputBytes` | int | No | 10485760 (10 MiB); 0 = no cap |
 
 ### Script Step (type: "Script")
 
@@ -414,13 +560,16 @@ Executes an inline or file-based script via a shell interpreter (e.g., `pwsh`, `
 | `script` | string | Yes* | -- |
 | `scriptFile` | string | Yes* | -- |
 | `arguments` | string[] | No | [] |
-| `workingDirectory` | string | No | current dir |
+| `workingDirectory` | string | No | orchestration file directory |
 | `environment` | object | No | {} |
 | `includeStdErr` | bool | No | false |
 | `stdin` | string | No | null |
 | `strictMode` | bool | No | null (auto) |
+| `maxOutputBytes` | int | No | 10485760 (10 MiB); 0 = no cap |
 
 *Mutual exclusion: use `script` OR `scriptFile`, not both. `scriptFile` paths resolve relative to the orchestration file's directory.
+
+**`maxOutputBytes` (Command, Script, Http).** Every output-capturing step keeps at most 10 MiB of output by default (stdout and stderr combined; the response body for Http). Beyond that the rest is dropped, the step's output ends with `[output truncated: exceeded maxOutputBytes (...); N bytes dropped]`, and an `output-truncated` session warning is raised - the step still succeeds. Raise the value for legitimately large output, set `0` to disable the cap, or have the script write large data to a file and pass the path downstream.
 
 **`strictMode` (PowerShell only).** Controls the error-handling prologue the executor injects for `shell: pwsh|powershell`:
 
@@ -634,7 +783,11 @@ Multi-agent delegation within a single Prompt step.
 | `maxRetries` | int | 3 |
 | `backoffSeconds` | double | 1.0 |
 | `backoffMultiplier` | double | 2.0 |
+| `maxDelaySeconds` | double | null (uncapped) |
+| `jitterSeconds` | double | 0 |
 | `retryOnTimeout` | bool | true |
+
+Delay before retry N = `min(backoffSeconds * backoffMultiplier^(N-1), maxDelaySeconds) + random(0..jitterSeconds)`. Set `maxDelaySeconds` when `maxRetries` is large so exponential growth cannot turn into multi-minute waits, and `jitterSeconds` when several steps hit the same rate-limited dependency so their retries do not land on the same instant.
 
 ## Triggers
 
@@ -669,6 +822,26 @@ trigger:
 | `response` | WebhookResponseConfig | null |
 
 WebhookResponseConfig: `waitForResult` (bool), `responseTemplate` (string), `timeoutSeconds` (int, default 120).
+
+### Watcher
+Subscribes the orchestration to a poller declared in `orchestra.watchers.json` (or defined inline). One run per new item; dedup is per orchestration.
+
+| Property | Type | Default |
+|---|---|---|
+| `watcher` | string | null (library name; exactly one of `watcher` / `definition`) |
+| `definition` | object | null (inline entry: `name` + same shape as a library watcher) |
+| `maxConcurrent` | int | 1 (parallel launches per tick) |
+| `catchup` | `from-now` \| `all` | `from-now` |
+| `parameters` | map | null (`{{item}}` = whole item JSON, `{{item.a.b}}` = field; missing renders `null`) |
+
+```yaml
+trigger:
+  type: watcher
+  watcher: github-pr-comments
+  parameters: { comment: "{{item}}", author: "{{item.user.login}}" }
+```
+
+Declare the matching `inputs` and read them with `{{param.comment}}`. Test a fetcher without a host: `orchestra watcher test --watcher <name>`.
 
 All triggers share: `type` (required), `enabled` (bool, default true), `inputHandlerPrompt` (string), `inputHandlerModel` (string).
 
@@ -710,6 +883,9 @@ Syntax: `{{expression}}` -- supported in prompts, URLs, headers, bodies, templat
 | `{{env.VAR_NAME}}` | Environment variable |
 | `{{stepName.output}}` | Step's processed output |
 | `{{stepName.rawOutput}}` | Step's raw output (before output handler) |
+| `{{stepName.output.a.b}}` | A scalar plucked from the step's JSON output by dotted path |
+| `{{stepName.status}}` | Lowercase terminal status of any finished step: `succeeded`, `failed`, `skipped`, `cancelled`, `noaction` (the child run's status on an Orchestration step) |
+| `{{stepName.errorMessage}}` | The step's error text, or `""` (the child run's error on an Orchestration step) |
 | `{{stepName.files}}` | JSON array of saved file paths |
 | `{{stepName.files[N]}}` | Nth file path (0-indexed) |
 | `{{orchestration.name}}` | Orchestration name |
@@ -723,13 +899,11 @@ Syntax: `{{expression}}` -- supported in prompts, URLs, headers, bodies, templat
 | `{{step.type}}` | Current step type |
 | `{{server.url}}` | Orchestra server URL |
 
-**Orchestration-step accessors** (only on steps whose `type` is `Orchestration`):
+**Orchestration-step accessors** (only on steps whose `type` is `Orchestration`; `status` and `errorMessage` above work on every step type):
 
 | Expression | Description |
 |---|---|
 | `{{S.executionId}}` | Child run's execution id |
-| `{{S.status}}` | Lowercase child status (succeeded/failed/cancelled/pending) |
-| `{{S.errorMessage}}` | Child's top-level error |
 | `{{S.completionReason}}` | `orchestra_complete` reason if early-completed |
 | `{{S.childResult}}` | Full JSON of child run (executionId/status/error/finalContent/stepResults) |
 | `{{S.steps}}` | JSON map of all child step results |
@@ -1112,7 +1286,7 @@ Orchestrations can be registered in Orchestra via:
 13. **Do NOT use `Command` with `pwsh -Command`, `powershell -Command`, or `bash -c` for script logic.** Use `type: Script`, `shell: pwsh`, and `script: |` instead.
 14. **Do NOT rely on the host process working directory for runtime file paths.** Use `{{orchestration.sourceDirectory}}` to build absolute paths relative to the orchestration file.
 15. **`systemPromptSections` requires `systemPromptMode: "customize"`**. Section overrides are ignored with `append` or `replace`.
-16. **Image attachments require a vision-capable model** (e.g., `claude-opus-4.8`, `gpt-4o`). Non-vision models will not understand the images.
+16. **Image attachments require a vision-capable model** (e.g., `claude-opus-4.8`, `gpt-5`). Non-vision models will not understand the images.
 17. **`infiniteSessions` thresholds are ratios (0.0-1.0)**, not token counts. `0.80` means 80% of context used.
 18. **`hooks` is a top-level array**, not a step-level property.
 19. **Hook actions require exactly one of `script` or `scriptFile`.** Do not specify both.
@@ -1125,7 +1299,7 @@ Orchestrations can be registered in Orchestra via:
 26. **`humanInput` waits do NOT survive host restarts.** Like `orchestra_request_user_input`, elicitation/plan-approval pauses are session-bound. Use the declarative `Approval` step for restart-durable gates.
 27. **`permissionPolicy.deny` is only used in `denyList` mode.** In `approveAll` (default) and `requireHumanApproval` modes the `deny` list is ignored.
 28. **Sandbox paths are passed verbatim** (NOT template-resolved), and sandbox enforcement is provided on Linux/macOS. By contrast, `workingDirectory` and `githubToken` ARE template-resolved via `{{env.*}}`/`{{param.*}}`/`{{vars.*}}`.
-29. **Per-step Copilot controls are opt-in.** `reasoningSummary`, `contextTier`, `workingDirectory`, `githubToken`, `humanInput`, `permissionPolicy`, and `sandbox` all default to off/unset — existing orchestrations are unchanged.
+29. **Select agent context explicitly.** Discovery and structured output are opt-in. Copilot Prompt steps use non-interactive guidance by default; `humanInput: true` opts into native questions. Persistent native memory/history are disabled. Use Append/Customize to retain native harness guidance.
 
 ## Naming Conventions
 

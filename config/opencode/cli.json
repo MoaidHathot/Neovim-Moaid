@@ -25,5 +25,8 @@
   },
   "attention": {
     "notifications": true
+  },
+  "session": {
+    "sidebar": "auto"
   }
 }
