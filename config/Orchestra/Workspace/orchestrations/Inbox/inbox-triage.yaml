@@ -19,7 +19,7 @@ description: |
   or Teams itself. The orchestration is strictly read-only against
   Microsoft 365.
 
-version: 1.1.0
+version: 1.1.1
 tags: ["ZTS", "triage", "mail", "teams", "auto", "track", "inbox"]
 defaultModel: gpt-6-astra
 
@@ -159,6 +159,10 @@ steps:
       $lastRunCategory   = $args[1]
       $defaultLookbackHrs= [int]$args[2]
 
+      # Invoke the native host: dnx.cmd reparses JSON quotes and URL ampersands on Windows.
+      $dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+      try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+
       function Get-DataJsonFromCliOutput {
         param([string[]]$Lines)
         if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
@@ -178,12 +182,12 @@ steps:
       }
 
       $lastRunIso = $null
-      $cursorOut = & dnx Zakira.Exchange --yes -- --db $dbPath get $lastRunCategory 'last-run' 2>&1
+      $cursorOut = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath get $lastRunCategory 'last-run' 2>&1
       if ($LASTEXITCODE -eq 0) {
         $dataJson = Get-DataJsonFromCliOutput -Lines $cursorOut
         if ($dataJson) {
           try {
-            $cursor = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop
+            $cursor = ConvertFrom-Json -InputObject $dataJson -DateKind String -ErrorAction Stop
             $lastRunIso = [string]$cursor.completedAt
           } catch { }
         }
@@ -245,6 +249,9 @@ steps:
       $cursorCategory= $args[1]
       $floorUtc      = $args[2]   # windowStartUtc from compute-lookback-window
 
+      $dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+      try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+
       function Get-DataJsonFromCliOutput {
         param([string[]]$Lines)
         if ($null -eq $Lines -or $Lines.Count -eq 0) { return $null }
@@ -269,7 +276,7 @@ steps:
         # 1) Enumerate keys via `list`. The list view truncates the data
         #    preview, so we only harvest keys here and `get` each for full
         #    data. Key column format: "  [<category>] <key>  (by <author>, <date>)".
-        $listOut = & dnx Zakira.Exchange --yes -- --db $dbPath list --cat $cursorCategory -n 500 2>&1
+        $listOut = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath list --cat $cursorCategory -n 500 2>&1
         $keys = New-Object System.Collections.Generic.List[string]
         if ($LASTEXITCODE -eq 0 -and $listOut) {
           $escapedCat = [regex]::Escape($cursorCategory)
@@ -285,7 +292,7 @@ steps:
 
         # 2) Fetch full data per key.
         foreach ($key in $keys) {
-          $getOut = & dnx Zakira.Exchange --yes -- --db $dbPath get $cursorCategory $key 2>&1
+          $getOut = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath get $cursorCategory $key 2>&1
           if ($LASTEXITCODE -ne 0) { continue }
           $dataJson = Get-DataJsonFromCliOutput -Lines $getOut
           if ([string]::IsNullOrWhiteSpace($dataJson)) { continue }
@@ -936,7 +943,7 @@ steps:
         )
         if ([string]::IsNullOrWhiteSpace($Json)) { return }
         try {
-          $payload = ConvertFrom-Json -InputObject $Json -Depth 50 -ErrorAction Stop
+          $payload = ConvertFrom-Json -InputObject $Json -Depth 50 -DateKind String -ErrorAction Stop
         } catch {
           [void]$script:errors.Add("$($Source): failed to parse discovery JSON: $($_.Exception.Message)")
           return
@@ -998,6 +1005,9 @@ steps:
       $cursorCategory = $args[3]
       $dryRun         = $args[4]
       $runId          = $args[5]
+
+      $dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+      try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
       $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
       if ($dryRunBool) {
@@ -1067,7 +1077,7 @@ steps:
         # Only advance forward: read existing mark, skip if not newer.
         $shouldWrite = $true
         try {
-          $existing = & dnx Zakira.Exchange --yes -- --db $dbPath get $cursorCategory $key 2>&1
+          $existing = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath get $cursorCategory $key 2>&1
           if ($LASTEXITCODE -eq 0 -and $existing) {
             $text = ($existing | ForEach-Object { [string]$_ }) -join "`n"
             if ($text -match '"newestProcessedUtc"\s*:\s*"([^"]+)"') {
@@ -1081,10 +1091,10 @@ steps:
 
         if (-not $shouldWrite) { continue }
 
-        $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $cursorCategory $key `
+        $out = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath edit $cursorCategory $key `
           --data $payload --author "inbox-triage:$runId" --reason 'scan cursor advance' 2>&1
         if ($LASTEXITCODE -ne 0) {
-          $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $cursorCategory $key `
+          $out = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath create $cursorCategory $key `
             --data $payload --author "inbox-triage:$runId" --reason 'scan cursor seed' 2>&1
         }
         if ($LASTEXITCODE -eq 0) { $advanced += 1 }
@@ -1211,7 +1221,10 @@ steps:
       $dbPath     = $args[1]
       $category   = $args[2]
 
-      $merged = ConvertFrom-Json -InputObject $mergedJson -Depth 50 -ErrorAction Stop
+      $dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+      try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+
+      $merged = ConvertFrom-Json -InputObject $mergedJson -Depth 50 -DateKind String -ErrorAction Stop
 
       function Get-DataJsonFromCliOutput {
         param([string[]]$Lines)
@@ -1236,12 +1249,12 @@ steps:
         if ($null -eq $msg) { continue }
         $key = [string]$msg.zakiraKey
         if ([string]::IsNullOrWhiteSpace($key)) { continue }
-        $out = & dnx Zakira.Exchange --yes -- --db $dbPath get $category $key 2>&1
+        $out = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath get $category $key 2>&1
         if ($LASTEXITCODE -ne 0) { continue }
         $dataJson = Get-DataJsonFromCliOutput -Lines $out
         if (-not $dataJson) { continue }
         try {
-          $data = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop
+          $data = ConvertFrom-Json -InputObject $dataJson -DateKind String -ErrorAction Stop
           $prior[$key] = $data
         } catch { }
       }
@@ -1278,7 +1291,7 @@ steps:
       #
       # Status semantics:
       #   active     - we have not seen the user mark it handled
-      #   resolved   - mark-ledger-item.ps1 set status=completed
+      #   completed  - mark-ledger-item.ps1 set status=completed (legacy: resolved)
       #   dismissed  - mark-ledger-item.ps1 set status=dismissed
       #   archived   - mark-ledger-item.ps1 set status=archived
       #
@@ -1291,11 +1304,11 @@ steps:
       $priorJson     = $args[2]
       $runId         = $args[3]
 
-      $merged   = ConvertFrom-Json -InputObject $mergedJson  -Depth 50 -ErrorAction Stop
+      $merged   = ConvertFrom-Json -InputObject $mergedJson  -Depth 50 -DateKind String -ErrorAction Stop
       # classify is condition-skipped (when: messageCount > 0) on empty ticks and then resolves to
       # an empty string here; treat that as "no classifications" instead of failing the parse.
-      $classify = if ([string]::IsNullOrWhiteSpace($classifyJson)) { [pscustomobject]@{ items = @(); counts = $null } } else { ConvertFrom-Json -InputObject $classifyJson -Depth 50 -ErrorAction Stop }
-      $prior    = ConvertFrom-Json -InputObject $priorJson    -Depth 50 -ErrorAction Stop
+      $classify = if ([string]::IsNullOrWhiteSpace($classifyJson)) { [pscustomobject]@{ items = @(); counts = $null } } else { ConvertFrom-Json -InputObject $classifyJson -Depth 50 -DateKind String -ErrorAction Stop }
+      $prior    = ConvertFrom-Json -InputObject $priorJson    -Depth 50 -DateKind String -ErrorAction Stop
 
       $now = (Get-Date).ToUniversalTime()
       $nowIso = $now.ToString('o')
@@ -1337,7 +1350,7 @@ steps:
         # Manual-closed sticky path: preserve status, just refresh lastSeenAt.
         if (-not $isNew -and $priorData.PSObject.Properties['status']) {
           $priorStatus = [string]$priorData.status
-          if ($priorStatus -eq 'resolved' -or $priorStatus -eq 'dismissed' -or $priorStatus -eq 'archived') {
+          if ($priorStatus -in @('completed', 'resolved', 'dismissed', 'archived')) {
             $rollup['manualClosed'] += 1
             $refresh = [ordered]@{}
             foreach ($p in $priorData.PSObject.Properties) { $refresh[$p.Name] = $p.Value }
@@ -1406,7 +1419,7 @@ steps:
         }
 
         $classifyTag = if ($isNew) { 'new' }
-                       elseif (-not $isNew -and $data.PSObject.Properties['escalated'] -and $data['escalated'] -eq $true) { 'escalated' }
+                       elseif (-not $isNew -and $data.Contains('escalated') -and $data['escalated'] -eq $true) { 'escalated' }
                        elseif ($null -ne $priorCategory -and $priorCategory -ne $newCategory) { 'reclassified' }
                        else { 'unchanged' }
         $rollup[$classifyTag] += 1
@@ -1453,7 +1466,7 @@ steps:
       $forceRaw  = $args[1]
       $dryRunRaw = $args[2]
 
-      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -DateKind String -ErrorAction Stop
       $forceBool  = [string]::Equals($forceRaw.Trim(),  'true', [System.StringComparison]::OrdinalIgnoreCase)
       $dryRunBool = [string]::Equals($dryRunRaw.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
 
@@ -1516,56 +1529,62 @@ steps:
       $dryRun        = $args[4]
       $runId         = $args[5]
 
+      $dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+      try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+
       $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
       if ($dryRunBool) {
         [pscustomobject]@{ status='dry-run-skipped'; created=0; updated=0 } | ConvertTo-Json -Compress
         return
       }
 
-      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -DateKind String -ErrorAction Stop
 
       $created = 0; $updated = 0
       $errors = New-Object System.Collections.Generic.List[string]
+      $author = "inbox-triage:$runId"
 
       foreach ($u in @($diff.upserts)) {
         if ($null -eq $u) { continue }
         $key = [string]$u.zakiraKey
         $payload = $u.data | ConvertTo-Json -Depth 50 -Compress
         $reason = "$($u.classify); runId=$runId"
-        $author = "inbox-triage:$runId"
 
         if ($u.op -eq 'create') {
-          $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $key `
+          $out = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath create $category $key `
             --data $payload --author $author --reason $reason 2>&1
           if ($LASTEXITCODE -eq 0) { $created += 1 }
           else {
-            $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $key `
+            $out = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath edit $category $key `
               --data $payload --author $author --reason $reason 2>&1
             if ($LASTEXITCODE -eq 0) { $updated += 1 }
             else { $errors.Add("upsert ${key}: $($out -join ' ')") | Out-Null }
           }
         } else {
-          $out = & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $key `
+          $out = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath edit $category $key `
             --data $payload --author $author --reason $reason 2>&1
           if ($LASTEXITCODE -eq 0) { $updated += 1 }
           else { $errors.Add("edit ${key}: $($out -join ' ')") | Out-Null }
         }
       }
 
-      # Stamp the last-run cursor so the next run's lookback extends
-      # from here automatically.
+      if ($errors.Count -gt 0) {
+        throw "Zakira state persistence failed for $($errors.Count) item(s); last-run cursor was not advanced. $($errors -join ' | ')"
+      }
+
+      # Stamp a successful last-run cursor only after every item was persisted.
       $cursorPayload = @{
         completedAt = (Get-Date).ToUniversalTime().ToString('o')
         runId       = $runId
         upserts     = $created + $updated
       } | ConvertTo-Json -Compress
-      $cursorOut = & dnx Zakira.Exchange --yes -- --db $dbPath edit $lastRunCat 'last-run' `
+      $cursorOut = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath edit $lastRunCat 'last-run' `
         --data $cursorPayload --author $author --reason 'last-run cursor refresh' 2>&1
       if ($LASTEXITCODE -ne 0) {
-        $cursorOut = & dnx Zakira.Exchange --yes -- --db $dbPath create $lastRunCat 'last-run' `
+        $cursorOut = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath create $lastRunCat 'last-run' `
           --data $cursorPayload --author $author --reason 'last-run cursor seed' 2>&1
         if ($LASTEXITCODE -ne 0) {
-          $errors.Add("cursor write: $($cursorOut -join ' ')") | Out-Null
+          throw "Zakira last-run cursor write failed: $($cursorOut -join ' ')"
         }
       }
 
@@ -1613,7 +1632,7 @@ steps:
         return
       }
 
-      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -DateKind String -ErrorAction Stop
       $now = (Get-Date).ToUniversalTime()
       $cutoff = $now.AddHours(-$staleHoursForTodo)
 
@@ -1736,7 +1755,7 @@ steps:
       $forceSurface     = $args[7]
       $runId            = $args[8]
 
-      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -DateKind String -ErrorAction Stop
       $forceBool = [string]::Equals($forceSurface.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
       $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
 
@@ -1999,14 +2018,17 @@ steps:
       $dryRun        = $args[4]
       $runId         = $args[5]
 
+      $dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+      try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+
       $dryRunBool = [string]::Equals($dryRun.Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase)
       if ($dryRunBool) {
         [pscustomobject]@{ status='dry-run-skipped' } | ConvertTo-Json -Compress
         return
       }
 
-      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -ErrorAction Stop
-      $gate = ConvertFrom-Json -InputObject $gateJson -Depth 50 -ErrorAction Stop
+      $diff = ConvertFrom-Json -InputObject $diffJson -Depth 100 -DateKind String -ErrorAction Stop
+      $gate = ConvertFrom-Json -InputObject $gateJson -Depth 50 -DateKind String -ErrorAction Stop
 
       $active = @($diff.upserts | Where-Object { [string]$_.data.status -eq 'active' } | ForEach-Object { $_.data })
 
@@ -2036,7 +2058,7 @@ steps:
 
       function Write-SummaryKey {
         param([string]$Key)
-        $edit = { & dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
+        $edit = { & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath edit $category $Key `
           --data $payload --author "inbox-triage:$runId" --reason 'daily summary' 2>&1 }
         $out = & $edit
         # zakira.db is shared by every orchestration; a concurrent writer surfaces as a transient
@@ -2051,7 +2073,7 @@ steps:
           # Keep the edit failure: when the entry already exists the create below fails with a UNIQUE
           # violation, and reporting only that hid the real reason edit failed (seen 2026-09-29).
           $editOut = $out
-          $out = & dnx Zakira.Exchange --yes -- --db $dbPath create $category $Key `
+          $out = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath create $category $Key `
             --data $payload --author "inbox-triage:$runId" --reason 'daily summary' 2>&1
           if ($LASTEXITCODE -ne 0) {
             throw "Zakira write failed for $category/${Key}. edit: $($editOut -join ' ') | create: $($out -join ' ')"
