@@ -46,6 +46,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandArgumentPassing = 'Standard'
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 if ([string]::IsNullOrWhiteSpace($DatabasePath)) {
     $configHome = $env:XDG_CONFIG_HOME
@@ -60,8 +61,8 @@ if (-not (Test-Path -LiteralPath $DatabasePath)) {
     exit 3
 }
 
-try { Get-Command dnx -ErrorAction Stop | Out-Null } catch {
-    [Console]::Error.WriteLine("dnx is not on PATH; cannot reach Zakira.Exchange CLI.")
+try { $dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source } catch {
+    [Console]::Error.WriteLine("dotnet is not on PATH; cannot reach Zakira.Exchange CLI.")
     exit 2
 }
 
@@ -121,7 +122,7 @@ $patchObj | Add-Member -NotePropertyName lastMutatedAt -NotePropertyValue $nowIs
 $patchObj | Add-Member -NotePropertyName lastMutatedBy -NotePropertyValue 'actionview-button' -Force
 
 # Get existing entry.
-$cliOutput = & dnx Zakira.Exchange --yes -- --db $DatabasePath get $Category $Key 2>&1
+$cliOutput = & $dotnet dnx Zakira.Exchange --yes -- --db $DatabasePath get $Category $Key 2>&1
 $cliExit = $LASTEXITCODE
 
 if ($cliExit -eq 1) {
@@ -138,7 +139,7 @@ $dataJson = Get-DataJsonFromCliOutput -Lines $cliOutput
 $previousData = $null
 if ($dataJson) {
     try {
-        $previousData = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop
+        $previousData = ConvertFrom-Json -InputObject $dataJson -Depth 100 -DateKind String -ErrorAction Stop
     } catch {
         # Hard-fail rather than silently destroying every original field.
         # A parse failure here usually means the stored Data was written
@@ -148,7 +149,7 @@ if ($dataJson) {
         # discovering corruption later. Use stderr directly (not
         # Write-Error) so the script's `exit 2` actually runs under
         # $ErrorActionPreference='Stop'.
-        [Console]::Error.WriteLine("Failed to parse existing Data payload for $Category/${Key}: $($_.Exception.Message). Refusing to overwrite to avoid silent field loss; fix the upstream writer (likely a missing `$PSNativeCommandArgumentPassing = 'Standard') and retry.")
+        [Console]::Error.WriteLine("Failed to parse existing Data payload for $Category/${Key}: $($_.Exception.Message). Refusing to overwrite to avoid silent field loss; fix the upstream writer (use native dotnet dnx with Standard argument passing), repair its stored JSON, and retry.")
         exit 2
     }
 }
@@ -158,7 +159,7 @@ $merged = Merge-Deep -Target $base -Patch $patchObj
 $newDataJson = $merged | ConvertTo-Json -Depth 100 -Compress
 
 $reasonText = if ([string]::IsNullOrWhiteSpace($Reason)) { "actionview button -> $Action" } else { $Reason }
-$editOutput = & dnx Zakira.Exchange --yes -- --db $DatabasePath edit $Category $Key `
+$editOutput = & $dotnet dnx Zakira.Exchange --yes -- --db $DatabasePath edit $Category $Key `
     --data $newDataJson `
     --author 'actionview-button' `
     --reason $reasonText 2>&1

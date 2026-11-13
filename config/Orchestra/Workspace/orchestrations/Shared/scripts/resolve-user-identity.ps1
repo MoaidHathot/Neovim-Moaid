@@ -41,6 +41,8 @@
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandArgumentPassing = 'Standard'
+$dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 $dbPath          = $args[0]
 $cacheCategory   = if ($args.Count -gt 1 -and -not [string]::IsNullOrWhiteSpace([string]$args[1])) { [string]$args[1] } else { 'user-identity:cache' }
@@ -78,12 +80,12 @@ function Get-DataJsonFromCliOutput {
 
 # Cache lookup.
 if (-not $forceRefresh) {
-    $cacheOut = & dnx Zakira.Exchange --yes -- --db $dbPath get $cacheCategory $cacheKey 2>&1
+    $cacheOut = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath get $cacheCategory $cacheKey 2>&1
     if ($LASTEXITCODE -eq 0) {
         $dataJson = Get-DataJsonFromCliOutput -Lines $cacheOut
         if ($dataJson) {
             try {
-                $cached = ConvertFrom-Json -InputObject $dataJson -ErrorAction Stop
+                $cached = ConvertFrom-Json -InputObject $dataJson -DateKind String -ErrorAction Stop
                 $resolvedAtRaw = if ($cached.PSObject.Properties['resolvedAt']) { [string]$cached.resolvedAt } else { '' }
                 if (-not [string]::IsNullOrWhiteSpace($resolvedAtRaw)) {
                     try {
@@ -199,10 +201,10 @@ $result = [pscustomobject]@{
 
 # Write to cache.
 $payload = $result | ConvertTo-Json -Depth 10 -Compress
-$writeOut = & dnx Zakira.Exchange --yes -- --db $dbPath edit $cacheCategory $cacheKey `
+$writeOut = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath edit $cacheCategory $cacheKey `
     --data $payload --author 'resolve-user-identity' --reason 'identity refresh' 2>&1
 if ($LASTEXITCODE -ne 0) {
-    $writeOut = & dnx Zakira.Exchange --yes -- --db $dbPath create $cacheCategory $cacheKey `
+    $writeOut = & $dotnet dnx Zakira.Exchange --yes -- --db $dbPath create $cacheCategory $cacheKey `
         --data $payload --author 'resolve-user-identity' --reason 'identity seed' 2>&1
     if ($LASTEXITCODE -ne 0) {
         $writeText = if ($writeOut -is [array]) { ($writeOut -join "`n") } else { [string]$writeOut }
