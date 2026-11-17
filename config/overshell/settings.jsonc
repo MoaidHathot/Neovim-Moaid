@@ -87,6 +87,30 @@
   // Extensions: features built on top of the shell. Each has a section under its id with
   // "enabled" and its own settings; see the guide for the built-in ones.
   "extensions": {
+    // A dotfiles-owned command, hosted by OverShell's generic extension mechanism.
+    // One indicator per agent session on Taj; click it to focus that session.
+    // Requires OverShell 0.7.0 or newer (see extensions/taj-agents/README.md).
+    "taj.agents": {
+      "enabled": true,
+      "process": {
+        // Build.ps1 beside TajAgents.cs publishes this cache. Source stays in dotfiles;
+        // the native executable avoids keeping a .NET SDK runner resident.
+        "command": "{stateDir}/extensions/taj-agents/TajAgents.exe"
+      },
+      // Idle means no pending question and no unread result. Those always remain visible.
+      "showIdle": false,
+      "showExited": false,
+      "showUnknown": true,
+      "deduplicateSessions": true,
+      "showCount": true,
+      // The Taj config has twelve slots; fewer can be used, with +N for overflow.
+      "maxAgents": 8,
+      // harness | project | session. Optional names are shortened to labelLength.
+      "label": "harness",
+      "labelLength": 10,
+      "harnessLabels": { "opencode": "OC", "copilot": "GH", "claude": "CL", "codex": "CX" },
+      "stateGlyphs": { "working": "●", "blocked": "?", "done": "✓", "error": "!", "idle": "○", "unknown": "…", "exited": "×" }
+    }
   },
 
   // Registers overshell:// for this user at start (HKCU, no elevation), so a clicked

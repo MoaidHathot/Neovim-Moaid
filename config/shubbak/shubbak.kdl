@@ -398,6 +398,10 @@ contexts {
     context "microphone-in-use" { }
     context "microphone-muted" { }
 
+    // Held by the dotfiles-owned OverShell publisher on its IPC connection. Its
+    // disappearance hides the agent profile even if the publisher or OverShell crashes.
+    context "overshell-agents-online" { }
+
     // Policy, composed from the facts. A meeting is the microphone being open:
     // Teams and its kind keep the device open for the whole call, muted in-app or
     // not, so this is the reliable "in a call" signal; the camera is shown on its
@@ -874,6 +878,35 @@ bar {
     // actually produces.
     source "keyboard" kind="keyboard" interval=250
 
+    // Published by overshell/extensions/taj-agents/TajAgents.cs. Signal sources
+    // have no polling loop. The publisher replays these on Taj's "announce" signal.
+    source "overshell.count" kind="signal"
+    source "overshell.overflow" kind="signal"
+    source "overshell.agent.1" kind="signal"
+    source "overshell.agent.1.state" kind="signal"
+    source "overshell.agent.2" kind="signal"
+    source "overshell.agent.2.state" kind="signal"
+    source "overshell.agent.3" kind="signal"
+    source "overshell.agent.3.state" kind="signal"
+    source "overshell.agent.4" kind="signal"
+    source "overshell.agent.4.state" kind="signal"
+    source "overshell.agent.5" kind="signal"
+    source "overshell.agent.5.state" kind="signal"
+    source "overshell.agent.6" kind="signal"
+    source "overshell.agent.6.state" kind="signal"
+    source "overshell.agent.7" kind="signal"
+    source "overshell.agent.7.state" kind="signal"
+    source "overshell.agent.8" kind="signal"
+    source "overshell.agent.8.state" kind="signal"
+    source "overshell.agent.9" kind="signal"
+    source "overshell.agent.9.state" kind="signal"
+    source "overshell.agent.10" kind="signal"
+    source "overshell.agent.10.state" kind="signal"
+    source "overshell.agent.11" kind="signal"
+    source "overshell.agent.11.state" kind="signal"
+    source "overshell.agent.12" kind="signal"
+    source "overshell.agent.12.state" kind="signal"
+
     // Any program that writes lines to stdout can drive a widget - in any
     // language, with no Taj source code. This is the extension point that means
     // Taj never has to grow a widget for everything.
@@ -962,6 +995,10 @@ bar {
                 when of="window.state" value="fullscreen" colour="#f9e2af"
             }
         }
+
+        // Filled by the connected profile below. Without its leased context this
+        // zone is empty, so stale signals cannot survive a publisher crash.
+        zone "agents" justify="end" gap=5 { }
 
         // Two clocks, as in the Zebar config: Seattle dimmed on the left, local
         // accented on the right.
@@ -1091,6 +1128,89 @@ bar {
         }
     }
 
+    // One compact, clickable pill per agent session (ordinary shells are excluded).
+    // OC/GH/CL/CX identify the harness; the number identifies the session, not a tab.
+    // Blue ● working, amber ? needs input, green ✓ unread result, red ! error.
+    // Empty slots disappear. Visibility/labels/count/overflow are OverShell settings.
+    profile "with-agents" extends="default" {
+        zone "agents" justify="end" gap=5 {
+            text template="{{ overshell.count }}" colour="#ffffff73" on-click="signal overshell-agents attention"
+            text template="{{ overshell.agent.1 }}" colour="#7f849c" max-width=110 on-click="signal overshell-agents focus 1" {
+                when of="overshell.agent.1.state" value="working" colour="#8dbcff"
+                when of="overshell.agent.1.state" value="blocked" colour="#f9e2af" bold=#true
+                when of="overshell.agent.1.state" value="done" colour="#a6e3a1"
+                when of="overshell.agent.1.state" value="error" colour="#f38ba8" bold=#true
+            }
+            text template="{{ overshell.agent.2 }}" colour="#7f849c" max-width=110 on-click="signal overshell-agents focus 2" {
+                when of="overshell.agent.2.state" value="working" colour="#8dbcff"
+                when of="overshell.agent.2.state" value="blocked" colour="#f9e2af" bold=#true
+                when of="overshell.agent.2.state" value="done" colour="#a6e3a1"
+                when of="overshell.agent.2.state" value="error" colour="#f38ba8" bold=#true
+            }
+            text template="{{ overshell.agent.3 }}" colour="#7f849c" max-width=110 on-click="signal overshell-agents focus 3" {
+                when of="overshell.agent.3.state" value="working" colour="#8dbcff"
+                when of="overshell.agent.3.state" value="blocked" colour="#f9e2af" bold=#true
+                when of="overshell.agent.3.state" value="done" colour="#a6e3a1"
+                when of="overshell.agent.3.state" value="error" colour="#f38ba8" bold=#true
+            }
+            text template="{{ overshell.agent.4 }}" colour="#7f849c" max-width=110 on-click="signal overshell-agents focus 4" {
+                when of="overshell.agent.4.state" value="working" colour="#8dbcff"
+                when of="overshell.agent.4.state" value="blocked" colour="#f9e2af" bold=#true
+                when of="overshell.agent.4.state" value="done" colour="#a6e3a1"
+                when of="overshell.agent.4.state" value="error" colour="#f38ba8" bold=#true
+            }
+            text template="{{ overshell.agent.5 }}" colour="#7f849c" max-width=110 on-click="signal overshell-agents focus 5" {
+                when of="overshell.agent.5.state" value="working" colour="#8dbcff"
+                when of="overshell.agent.5.state" value="blocked" colour="#f9e2af" bold=#true
+                when of="overshell.agent.5.state" value="done" colour="#a6e3a1"
+                when of="overshell.agent.5.state" value="error" colour="#f38ba8" bold=#true
+            }
+            text template="{{ overshell.agent.6 }}" colour="#7f849c" max-width=110 on-click="signal overshell-agents focus 6" {
+                when of="overshell.agent.6.state" value="working" colour="#8dbcff"
+                when of="overshell.agent.6.state" value="blocked" colour="#f9e2af" bold=#true
+                when of="overshell.agent.6.state" value="done" colour="#a6e3a1"
+                when of="overshell.agent.6.state" value="error" colour="#f38ba8" bold=#true
+            }
+            text template="{{ overshell.agent.7 }}" colour="#7f849c" max-width=110 on-click="signal overshell-agents focus 7" {
+                when of="overshell.agent.7.state" value="working" colour="#8dbcff"
+                when of="overshell.agent.7.state" value="blocked" colour="#f9e2af" bold=#true
+                when of="overshell.agent.7.state" value="done" colour="#a6e3a1"
+                when of="overshell.agent.7.state" value="error" colour="#f38ba8" bold=#true
+            }
+            text template="{{ overshell.agent.8 }}" colour="#7f849c" max-width=110 on-click="signal overshell-agents focus 8" {
+                when of="overshell.agent.8.state" value="working" colour="#8dbcff"
+                when of="overshell.agent.8.state" value="blocked" colour="#f9e2af" bold=#true
+                when of="overshell.agent.8.state" value="done" colour="#a6e3a1"
+                when of="overshell.agent.8.state" value="error" colour="#f38ba8" bold=#true
+            }
+            text template="{{ overshell.agent.9 }}" colour="#7f849c" max-width=110 on-click="signal overshell-agents focus 9" {
+                when of="overshell.agent.9.state" value="working" colour="#8dbcff"
+                when of="overshell.agent.9.state" value="blocked" colour="#f9e2af" bold=#true
+                when of="overshell.agent.9.state" value="done" colour="#a6e3a1"
+                when of="overshell.agent.9.state" value="error" colour="#f38ba8" bold=#true
+            }
+            text template="{{ overshell.agent.10 }}" colour="#7f849c" max-width=110 on-click="signal overshell-agents focus 10" {
+                when of="overshell.agent.10.state" value="working" colour="#8dbcff"
+                when of="overshell.agent.10.state" value="blocked" colour="#f9e2af" bold=#true
+                when of="overshell.agent.10.state" value="done" colour="#a6e3a1"
+                when of="overshell.agent.10.state" value="error" colour="#f38ba8" bold=#true
+            }
+            text template="{{ overshell.agent.11 }}" colour="#7f849c" max-width=110 on-click="signal overshell-agents focus 11" {
+                when of="overshell.agent.11.state" value="working" colour="#8dbcff"
+                when of="overshell.agent.11.state" value="blocked" colour="#f9e2af" bold=#true
+                when of="overshell.agent.11.state" value="done" colour="#a6e3a1"
+                when of="overshell.agent.11.state" value="error" colour="#f38ba8" bold=#true
+            }
+            text template="{{ overshell.agent.12 }}" colour="#7f849c" max-width=110 on-click="signal overshell-agents focus 12" {
+                when of="overshell.agent.12.state" value="working" colour="#8dbcff"
+                when of="overshell.agent.12.state" value="blocked" colour="#f9e2af" bold=#true
+                when of="overshell.agent.12.state" value="done" colour="#a6e3a1"
+                when of="overshell.agent.12.state" value="error" colour="#f38ba8" bold=#true
+            }
+            text template="{{ overshell.overflow }}" colour="#f9e2af" on-click="signal overshell-agents overflow"
+        }
+    }
+
     // A quieter bar for presenting. `extends` inherits everything not overridden -
     // font, colours, padding, and zones, which are merged by id - so a variant costs
     // a few lines rather than a duplicate. Redeclare a zone with no widgets to empty
@@ -1109,11 +1229,13 @@ bar {
         }
     }
 
-    // No rules, so the default profile applies everywhere and the bar keeps the
-    // seattle clock, the binding mode and the layout picture on every workspace.
+    // The publisher's connection owns this context. Its exit/crash removes the
+    // entire agent zone; reconnect republishes every value before showing it again.
+    rule use="with-agents" context="overshell-agents-online"
     //
     // The profile above is left defined as a working example: add a rule such as
     //   rule use="presentation" workspace="\\"
+    // before the connected-agent rule above
     // to bring it back for presenting. First matching rule wins, and profiles are
     // built up front, so switching is a pointer swap rather than a restart.
 }
