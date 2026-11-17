@@ -17,10 +17,12 @@ colours, gestures and connected profile are in `../../../shubbak/shubbak.kdl`.
 | `showUnknown` | Show detected agents whose state is not known yet; default true |
 | `deduplicateSessions` | Count the same harness/session ID once across multiple views |
 | `showCount` | Display `AI N`, the number of sessions passing the visibility filters |
+| `showHarnessIcons` | Use OpenCode's two-tone icon, matching OverShell's tabs; default true |
+| `iconColour` | Icon foreground as `#RRGGBB`; default `#cdd6f4` |
 | `maxAgents` | Number of individual pills, 1–12; the configured default is 8 |
 | `label` | `harness`, `project`, or `session`; the latter two add a shortened name |
 | `labelLength` | Maximum added-name length, default 10 |
-| `harnessLabels` | Initials or glyphs to use for each harness |
+| `harnessLabels` | Initials/glyphs for harnesses without an icon, or when icons are disabled |
 | `stateGlyphs` | The state symbols, independently configurable |
 
 Saving display settings updates the running publisher. Set `enabled` false to stop
@@ -63,16 +65,17 @@ command is configured here because of the measured difference below.
 
 ## Reading the bar
 
-An example is `AI 3  OC1●  OC2?  GH3✓`:
+Each session shows a harness mark followed by its number and status:
 
-- `OC` OpenCode, `GH` Copilot, `CL` Claude, `CX` Codex.
+- OpenCode uses the same two-tone frame and lower block as OverShell's tabs.
+  `GH` is Copilot, `CL` Claude, `CX` Codex. With icons disabled, OpenCode uses `OC`.
 - A number identifies a live agent session, independently of tab order.
 - Blue `●`: working. Amber `?`: question/permission waiting for you.
 - Green `✓`: completed with an unread result. Red `!`: error.
 - Grey `○`: idle, when enabled. Grey `…`: state not yet known.
 - `+N`: further matching sessions beyond the configured pill limit.
 
-Click a session to focus its terminal. Click `AI N` to focus the highest-priority
+Click a session's icon or status to focus its terminal. Click `AI N` to focus the highest-priority
 session; click `+N` to focus the first overflowing session. Questions and errors
 take precedence when space is limited. Existing visible sessions keep their slots
 across state changes.
@@ -94,6 +97,8 @@ subagents inside OpenCode or other harnesses.
   refresh loop. OverShell coalesces changes on its existing 500 ms heartbeat.
 - Only changed bar values are sent. Taj's `announce` signal forces replay after
   its startup/reload. Shubbak reconnects receive a full replay too.
+- The OpenCode bitmap is generated once per colour and cached. Taj's existing
+  image source decodes it once per changed value; state changes only update text.
 - The publisher leases `overshell-agents-online` on its pipe. The `with-agents`
   profile is selected only while that context holds, so a publisher/OverShell
   crash hides old values automatically. Graceful shutdown also clears them.

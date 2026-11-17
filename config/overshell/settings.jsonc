@@ -103,6 +103,9 @@
       "showUnknown": true,
       "deduplicateSessions": true,
       "showCount": true,
+      // The OpenCode mark matches OverShell's tabs. Other harnesses use their label.
+      "showHarnessIcons": true,
+      "iconColour": "#cdd6f4",
       // The Taj config has twelve slots; fewer can be used, with +N for overflow.
       "maxAgents": 8,
       // harness | project | session. Optional names are shortened to labelLength.

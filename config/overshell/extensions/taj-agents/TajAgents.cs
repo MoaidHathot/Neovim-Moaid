@@ -39,6 +39,8 @@ public sealed record TajAgentOptions(JsonObject Settings)
     public bool ShowExited => Flag(Settings, "showExited");
     public bool ShowUnknown => Flag(Settings, "showUnknown", true);
     public bool ShowCount => Flag(Settings, "showCount", true);
+    public bool ShowHarnessIcons => Flag(Settings, "showHarnessIcons", true);
+    public string IconColour => Text(Settings, "iconColour") ?? "#cdd6f4";
     public bool DeduplicateSessions => Flag(Settings, "deduplicateSessions", true);
     public int MaxAgents => Math.Clamp(Number(Settings, "maxAgents", Slots), 1, Slots);
     public int LabelLength => Math.Clamp(Number(Settings, "labelLength", 10), 1, 40);
@@ -81,11 +83,51 @@ public sealed record TajAgent(string Key, string TabId, string Harness, string S
 public sealed record TajAgentView(TajAgentOptions Options, IReadOnlyDictionary<string, string> Values,
     IReadOnlyDictionary<int, string> Targets, string? AttentionTarget, string? OverflowTarget);
 
+/// <summary>OpenCode's MIT-licensed mark, matching OverShell.App/Theme/Icons.xaml and HarnessIcon's muted opacity.</summary>
+public sealed class TajHarnessIcons
+{
+    private uint _colour;
+    private string? _openCode;
+
+    public string? For(string harness, string colour)
+    {
+        if (!harness.Equals("opencode", StringComparison.OrdinalIgnoreCase)) return null;
+        if (colour.Length != 7 || colour[0] != '#' ||
+            !uint.TryParse(colour.AsSpan(1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var rgb)) rgb = 0xcdd6f4;
+        if (_openCode is not null && _colour == rgb) return _openCode;
+
+        // A 4x5 frame, a transparent slot above a 2x2 block at 40% opacity.
+        // Square transparent margins preserve its aspect in Taj's square icon widget.
+        const int size = 20, unit = 4, left = 2;
+        var pixels = new byte[size * size * 4];
+        for (var y = 0; y < size; y++)
+        for (var x = left; x < left + 4 * unit; x++)
+        {
+            var column = (x - left) / unit;
+            var row = y / unit;
+            var alpha = column is 0 or 3 || row is 0 or 4 ? 255 : row >= 2 ? 102 : 0;
+            var offset = (y * size + x) * 4;
+            // The wire takes premultiplied BGRA, not a PNG or straight-alpha RGBA.
+            pixels[offset] = (byte)(((rgb & 255) * alpha + 127) / 255);
+            pixels[offset + 1] = (byte)((((rgb >> 8) & 255) * alpha + 127) / 255);
+            pixels[offset + 2] = (byte)((((rgb >> 16) & 255) * alpha + 127) / 255);
+            pixels[offset + 3] = (byte)alpha;
+        }
+        _colour = rgb;
+        return _openCode = new JsonObject
+        {
+            ["handle"] = 0, ["width"] = size, ["height"] = size,
+            ["pixels"] = Convert.ToBase64String(pixels), ["source"] = "opencode",
+        }.ToJsonString();
+    }
+}
+
 /// <summary>Session identity and visibility belong here, in the dotfiles, rather than in either application.</summary>
 public sealed class TajAgentModel
 {
     private readonly Dictionary<string, int> _numbers = new(StringComparer.Ordinal);
     private readonly string?[] _slots = new string?[TajAgentOptions.Slots];
+    private readonly TajHarnessIcons _icons = new();
 
     public TajAgentView Render(JsonObject snapshot)
     {
@@ -134,14 +176,16 @@ public sealed class TajAgentModel
             var source = $"{options.Prefix}.agent.{i + 1}";
             if (_slots[i] is not { } key)
             {
-                values[source] = values[source + ".state"] = "";
+                values[source] = values[source + ".state"] = values[source + ".icon"] = "";
                 continue;
             }
             var agent = selected[key];
+            var icon = options.ShowHarnessIcons ? _icons.For(agent.Harness, options.IconColour) : null;
             var name = options.Label switch { "project" => agent.Project, "session" => agent.Label, _ => "" };
             name = string.Concat(name.EnumerateRunes().Take(options.LabelLength).Select(rune => rune.ToString()));
-            values[source] = $"{options.HarnessLabel(agent.Harness)}{_numbers[key]}{options.StateGlyph(agent.State)}" + (name.Length > 0 ? " " + name : "");
+            values[source] = $"{(icon is null ? options.HarnessLabel(agent.Harness) : "")}{_numbers[key]}{options.StateGlyph(agent.State)}" + (name.Length > 0 ? " " + name : "");
             values[source + ".state"] = agent.State;
+            values[source + ".icon"] = icon ?? "";
             targets[i + 1] = agent.TabId;
         }
         return new(options, values, targets, visible.FirstOrDefault()?.TabId, visible.Skip(selected.Count).FirstOrDefault()?.TabId);
@@ -385,9 +429,16 @@ public sealed class TajPipe(string name, Action<string, JsonObject?> onEvent) : 
     public Task SignalAsync(string name, string value, CancellationToken cancellation) =>
         SendAsync("command", $"signal {Quote(name)}" + (value.Length == 0 ? "" : " " + Quote(value)), cancellation);
 
-    // The command parser honours surrounding quotes but has no backslash escapes.
-    // A typographic double quote keeps user labels displayable even with both quote kinds.
-    public static string Quote(string text) => "\"" + text.Replace('"', '”').Replace('\r', ' ').Replace('\n', ' ') + "\"";
+    // The command parser honours either quote kind, with no backslash escapes.
+    // Single quotes carry icon JSON verbatim. Text with both quote kinds uses a
+    // typographic double quote, since the command language cannot represent both.
+    public static string Quote(string text)
+    {
+        text = text.Replace('\r', ' ').Replace('\n', ' ');
+        if (!text.Contains('"')) return "\"" + text + "\"";
+        if (!text.Contains('\'')) return "'" + text + "'";
+        return "\"" + text.Replace('"', '”') + "\"";
+    }
 
     private async Task ReadAsync(CancellationToken cancellation)
     {

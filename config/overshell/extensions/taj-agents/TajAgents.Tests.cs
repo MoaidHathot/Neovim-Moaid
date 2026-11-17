@@ -114,8 +114,14 @@ public static class TajAgentsTests
         Check(first.SignalWrites == writes, "unchanged snapshots cause no IPC writes");
 
         await first.EventAsync("signal", new JsonObject { ["name"] = "announce", ["arguments"] = new JsonArray() }, timeout.Token);
-        await Until(() => first.SignalWrites >= writes + 26, timeout.Token);
-        Check(first.Values["overshell.agent.1"].Contains("OC1●"), "Taj announce replays all sources, including Unicode");
+        await Until(() => first.SignalWrites >= writes + 38, timeout.Token);
+        Check(first.Values["overshell.agent.1"] == "1●", "Taj announce replays the status without duplicating the icon as initials");
+        var icon = JsonNode.Parse(first.Values["overshell.agent.1.icon"])!;
+        var pixels = Convert.FromBase64String(icon["pixels"]!.GetValue<string>());
+        Check(icon["width"]!.GetValue<int>() == 20 && icon["height"]!.GetValue<int>() == 20 && pixels.Length == 1600,
+            "icon JSON survives command quoting as a complete BGRA bitmap");
+        Check(pixels.Where((_, index) => index % 4 == 3).ToHashSet().SetEquals([0, 102, 255]),
+            "the icon retains transparency and the mark's two tones");
         await first.EventAsync("signal", new JsonObject { ["name"] = "overshell-agents", ["arguments"] = new JsonArray("focus", "1") }, timeout.Token);
         var click = JsonNode.Parse(await output.ReadAsync(timeout.Token))!;
         Check(click["command"]!.GetValue<string>() == "tab.activate" && click["arguments"]!["target"]!["id"]!.GetValue<string>() == "live", "a bar click addresses the published agent's terminal");
@@ -127,7 +133,8 @@ public static class TajAgentsTests
         snapshot["tabs"]![0]!["unread"] = false;
         input.Send(snapshot);
         await Until(() => first.Values.GetValueOrDefault("overshell.count") == "", timeout.Token);
-        Check(first.Values["overshell.agent.1"] == "", "reviewed results clear their actual bar sources");
+        Check(first.Values["overshell.agent.1"] == "" && first.Values["overshell.agent.1.icon"] == "",
+            "reviewed results clear both their label and icon sources");
 
         snapshot["settings"]!["showIdle"] = true;
         input.Send(snapshot);
@@ -135,7 +142,7 @@ public static class TajAgentsTests
         await first.DisposeAsync();
         await using var second = new FakeShubbak(pipeName);
         await Until(() => second.Pinned && second.Values.GetValueOrDefault("overshell.count") == "AI 2", timeout.Token);
-        Check(second.SignalWrites == 26, "Shubbak restart reconnects and restores the current state without polling OverShell");
+        Check(second.SignalWrites == 38, "Shubbak restart reconnects and restores the current state without polling OverShell");
         input.Complete();
         await running.WaitAsync(timeout.Token);
         await Until(() => second.Disconnected, timeout.Token);
@@ -216,10 +223,10 @@ public static class TajAgentsTests
                 {
                     var message = JsonNode.Parse(line)!;
                     var payload = message["payload"]!.GetValue<string>();
-                    var signal = Regex.Match(payload, "^signal \"([^\"]+)\"(?: \"(.*)\")?$");
+                    var signal = Regex.Match(payload, "^signal \"([^\"]+)\"(?: (?:\"(.*)\"|'(.*)'))?$");
                     if (signal.Success)
                     {
-                        Values[signal.Groups[1].Value] = signal.Groups[2].Value;
+                        Values[signal.Groups[1].Value] = signal.Groups[2].Success ? signal.Groups[2].Value : signal.Groups[3].Value;
                         Interlocked.Increment(ref SignalWrites);
                     }
                     else if (payload.StartsWith("context --set"))
