@@ -566,10 +566,6 @@ return {
 					end
 
 					if client and client.name == "roslyn" then
-						if client:supports_method("textDocument/inlayHint") then
-							pcall(vim.lsp.inlay_hint.enable, true, { bufnr = buf })
-						end
-
 						if client:supports_method("textDocument/codeLens") then
 							refresh_codelens(buf)
 						end
