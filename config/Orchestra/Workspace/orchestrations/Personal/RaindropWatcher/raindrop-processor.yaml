@@ -15,7 +15,8 @@ description: |
   state to "failed", tags the raindrop `failed`, and publishes a
   raindrop-error ActionView entry so the failure is visible.
 
-  Step order is intentionally: classify -> dispatch-processor ->
+  Step order is intentionally: mark-processing -> route-rules -> infer-intent
+  (only when the rules do not settle intent) -> classify -> dispatch-processor ->
   verify-dispatch -> move-to-processed -> mark-completed ->
   clear-failure-cards / processor-summary.
   CRITICAL: `invoke_orchestration` (sync) does NOT throw when the child
@@ -35,7 +36,7 @@ description: |
   After mark-completed, `clear-failure-cards` deletes any stale
   raindrop-error / raindrop-dead-letter ActionView card left over from an
   earlier failed attempt of the same raindrop (best-effort, never fails the run).
-version: 1.3.1
+version: 1.4.0
 tags: ["personal", "raindrop", "auto", "processor"]
 defaultModel: gpt-6-astra
 
@@ -90,7 +91,6 @@ inputs:
 variables:
   zakiraCategory: "raindrop-watcher-state"
   raindropCli: "{{orchestration.sourceDirectory}}/tools/raindrop.cs"
-  routerSkillsDir: "{{orchestration.sourceDirectory}}/skills"
 
 defaultRetryPolicy:
   maxRetries: 1
@@ -257,36 +257,42 @@ steps:
       - "{{vars.zakiraCategory}}"
     timeoutSeconds: 120
 
-  - name: classify
-    type: Prompt
-    workingDirectory: "{{orchestration.tempDir}}"
+  - name: route-rules
+    type: Script
     dependsOn: [mark-processing]
-    systemPrompt: |
-      You are the RaindropWatcher router. You assign every raindrop to one
-      of the registered processor orchestrations by computing a (medium,
-      intent) pair. Follow the router skill precisely.
+    shell: pwsh
+    scriptFile: ./tools/scripts/route-rules.ps1
+    arguments: ["{{param.url}}", "{{param.title}}", "{{param.tags}}", "{{param.note}}"]
 
-      You output ONLY a single JSON object with this exact shape:
-
-      {
-        "medium": "video" | "article",
-        "intent": "recipe" | "session" | "generic",
-        "processor": "<full child-orchestration name from the routing table>",
-        "reasoning": "<one short sentence explaining the decision>"
-      }
-    userPrompt: |
-      Classify this raindrop:
-
-      url       = {{param.url}}
-      title     = {{param.title}}
-      tags      = {{param.tags}}
-      note      = {{param.note}}
-      addedAt   = {{param.addedAt}}
-
-      Output ONLY the JSON object described in the system prompt.
-    skillDirectories:
-      - "{{vars.routerSkillsDir}}"
+  - name: infer-intent
+    type: Decision
+    dependsOn: [route-rules]
+    when: "{{route-rules.output.needsDecision}}"
+    model: microsoft-decision-1
+    contextFormat: json
+    context: "{{route-rules.output.evidence}}"
+    questions:
+      - name: intent
+        kind: choice
+        instructions: >-
+          Which processing intent fits this saved bookmark? Use the title, note and URL as evidence of what the content is.
+          Prefer generic if neither specialized description is supported. A note requesting a summary does not change the subject of the bookmark.
+        options:
+          - value: recipe
+            description: A dish or instructions to prepare food, including ingredients, quantities or cooking technique. Equipment reviews and explanations of food facts are generic.
+          - value: session
+            description: A conference session, keynote, lecture, course or webinar, including a written recap or slides of a particular talk (such as BRK205). Ordinary technical articles and product news are generic.
+          - value: generic
+            description: Other content, a product review, news, general how-to, or metadata too vague to establish a recipe or a session.
     timeoutSeconds: 180
+
+  # Keep classify.output's four fields for dispatch-processor and processor-summary.
+  - name: classify
+    type: Script
+    dependsOn: [route-rules, infer-intent]
+    shell: pwsh
+    scriptFile: ./tools/scripts/route-result.ps1
+    arguments: ["{{route-rules.output}}", "{{infer-intent.output}}"]
 
   - name: dispatch-processor
     type: Prompt

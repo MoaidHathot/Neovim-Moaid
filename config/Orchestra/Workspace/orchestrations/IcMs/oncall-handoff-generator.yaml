@@ -74,14 +74,6 @@ mcps:
       - "--category"
       - "{{vars.zakiraOncallCategory}}"
 
-  - name: workiq
-    type: local
-    command: npx
-    arguments:
-      - "-y"
-      - "@microsoft/workiq"
-      - mcp
-
 steps:
   - name: prepare-shift-window
     type: Transform

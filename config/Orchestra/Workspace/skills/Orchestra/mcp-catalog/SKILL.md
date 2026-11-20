@@ -33,7 +33,7 @@ If a name is not in this catalog, it is not registered — do not fabricate.
 | Intended capability | Use this MCP |
 |---|---|
 | Microsoft 365 calendar (events, attendees, scheduling) | `calendar` or `workiq` |
-| Microsoft 365 mail (Outlook, send/read) | `mail` or `workiq` |
+| Microsoft 365 mail (Outlook) | `mail` to send; `mail` or `workiq` to search |
 | Microsoft Teams chats / channel messages / meeting transcripts | `teams` or `workiq` |
 | Microsoft 365 People / contact lookup / "about me" | `me` or `workiq` |
 | Microsoft 365 Copilot capabilities | `m365-copilot` |
@@ -61,13 +61,21 @@ of these** — Orchestra resolves them automatically. Just list the name in a
 step's `mcps:` array.
 
 The pre-registered set in this workspace:
-`calendar`, `mail`, `me`, `m365-copilot`, `teams`, `azdo`, `azure`,
+`calendar`, `mail`, `me`, `m365-copilot`, `workiq`, `teams`, `azdo`, `azure`,
 `icm-full`, `icm-readonly`, `powerreview`, `debug-mcp`.
 
 Each entry below describes purpose, when-to-use, when-NOT-to-use, and a
 copy-paste step-level reference snippet.
 
 ---
+
+## `workiq` — hosted Microsoft 365 search
+
+Use `mcps: [workiq]` to search mail, Teams, meetings, people, and related work documents.
+Use `azdo` for authoritative PR and work-item data. Orchestra connects directly to
+`https://workiq.svc.cloud.microsoft/mcp` and permits `ask` and `retrieve`. Do not add a
+top-level definition or an Authorization header. An operator can sign in with
+`orchestra mcp connect workiq` and check silent discovery with `orchestra mcp test workiq`.
 
 ## Microsoft 365 HTTP proxy MCPs (`calendar`, `mail`, `me`, `m365-copilot`)
 
@@ -79,7 +87,7 @@ These four are served over HTTP by the `m365-remote-mcps` background service
 **`workiq` vs proxy MCPs — when to choose which:**
 - Prefer **`workiq`** when an orchestration touches multiple M365 concerns
   (e.g. calendar + mail) or when consistency with existing workspace
-  orchestrations matters. workiq is local stdio with a broad toolset.
+  orchestrations matters. Its hosted `ask` and `retrieve` tools search across sources.
 - Prefer a **proxy MCP** (`calendar` / `mail` / `me` / `m365-copilot`) when
   you want a smaller, focused toolset for a single concern, or when you
   specifically need M365 Copilot (`m365-copilot`) which is not part of
@@ -187,8 +195,8 @@ steps:
 PRs, work items, repos, builds, releases, comments, threads. Configured for
 the `msazure` organization.
 **Do not use for:** anything outside AzDO. Microsoft 365 needs go to
-`workiq` / proxy MCPs. Note `workiq` also has *some* AzDO tools but `azdo`
-is the dedicated, broader option.
+`workiq` / proxy MCPs. Use `workiq` for related discussions or documents;
+use `azdo` for authoritative PR and work-item data.
 **Step-level reference:**
 
 ```yaml
@@ -287,46 +295,8 @@ orchestration uses in its top-level `mcps:` block before referencing it
 from a step.
 
 The inline-only set in this workspace:
-`workiq`, `zakira`, `recall`, `context7`, `microsoft-learn`,
+`zakira`, `recall`, `context7`, `microsoft-learn`,
 `playwright`, `orchestra`, `filesystem`.
-
----
-
-## `workiq` — Microsoft 365 + Azure DevOps super-MCP
-
-**Use for:**
-- Calendar: list/find/inspect upcoming meetings, attendees, organizers,
-  acceptance status, recurrence, free/busy.
-- Mail: search and read Outlook mail; thread/conversation lookup.
-- Teams: chat messages, channel posts, meeting transcripts.
-- People / contacts: resolve a name to an attendee record, look up
-  organizational hierarchy, find teammates.
-- Azure DevOps: pull requests (metadata, comments, diffs, threads),
-  work items, repositories, iterations.
-
-**Do not use for:** anything outside Microsoft 365 / AzDO.
-
-**Top-level definition:**
-
-```yaml
-mcps:
-  - name: workiq
-    type: local
-    command: npx
-    arguments:
-      - "-y"
-      - "@microsoft/workiq"
-      - mcp
-```
-
-**Step-level reference:**
-
-```yaml
-steps:
-  - name: find-next-meeting
-    type: Prompt
-    mcps: [workiq]
-```
 
 ---
 

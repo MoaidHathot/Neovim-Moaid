@@ -54,14 +54,6 @@ defaultRetryPolicy:
   backoffSeconds: 2
   backoffMultiplier: 2
   retryOnTimeout: true
-mcps:
-  - name: workiq
-    type: local
-    command: npx
-    arguments:
-      - "-y"
-      - "@microsoft/workiq"
-      - mcp
 steps:
   - name: resolve-identity
     type: Prompt

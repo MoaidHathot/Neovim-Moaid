@@ -49,14 +49,6 @@ mcps:
       - "--category"
       - "{{vars.zakiraCategory}}"
 
-  - name: workiq
-    type: local
-    command: npx
-    arguments:
-      - "-y"
-      - "@microsoft/workiq"
-      - mcp
-
   - name: context7
     type: local
     command: npx

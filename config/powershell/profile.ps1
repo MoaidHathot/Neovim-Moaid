@@ -612,6 +612,12 @@ function mkcd
 	Set-Location $Path
 }
 
+function LocalLaya {
+	$env:LAYA_MODEL = 'multilingual'
+	$env:LAYA_SIDECAR = '1'
+    & node 'W:\Github\LocalLaya\ask.mjs' @args
+}
+
 # Invoke-Expression (&starship init powershell)
 
 # Invoke-Expression (& { (zoxide init powershell | Out-String) })

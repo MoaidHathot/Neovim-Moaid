@@ -8,15 +8,6 @@ tags: ["debug", "diagnostics", "m365", "search"]
 defaultModel: gpt-6-astra
 defaultStepTimeoutSeconds: 300
 
-mcps:
-  - name: workiq
-    type: local
-    command: npx
-    arguments:
-      - "-y"
-      - "@microsoft/workiq"
-      - mcp
-
 inputs:
   query:
     type: string

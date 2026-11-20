@@ -138,6 +138,8 @@ RaindropWatcher/
 +- tools/
 |   +- raindrop.cs                       # .NET 10 single-file CLI for raindrop.io
 |   +- scripts/
+|       +- route-rules.ps1               # URL medium and explicit tag / session-URL overrides
+|       +- route-result.ps1              # map the selected intent to a registered processor
 |       +- fetch-article.ps1             # cheap HTTP fetch + ad-filtered image candidate extraction
 |       +- save-recipe.ps1               # write recipe md to recipes dir
 |       +- save-article-images.ps1       # download chosen article images into <recipesDir>/<slug>-images/
@@ -148,8 +150,9 @@ RaindropWatcher/
 |       +- dead-letter-process.ps1       # moves dead-letter items, marks Zakira, publishes ActionView entry
 |       +- publish-rolling-status.ps1    # tick-end: replaces the single rolling raindrop-watcher-status entry
 +- skills/
-|   +- raindrop-router/SKILL.md          # classification ruleset
+|   +- raindrop-router/SKILL.md          # legacy Prompt baseline used by the replay
 +- tests/
+    +- classify-pilot/                   # classifier replay and routing contract tests
     +- test-raindrop-cli.ps1             # arg-parsing / error-path smoke tests
     +- test-raindrop-cli-integration.ps1 # full CLI exercised against a mock raindrop.io
     +- test-raindrop-cli-tokens.ps1      # DPAPI round-trip + legacy migration tests
@@ -204,8 +207,18 @@ download).
 
 ## Routing table
 
-Determined by `skills/raindrop-router/SKILL.md`. Tags are sparse: a single
-intent tag wins; otherwise URL host + heuristics decide.
+`raindrop-processor` 1.4.0 requires an Orchestra host with `Decision` step support.
+`route-rules` derives the medium from the URL. A recognized intent tag wins;
+otherwise a known Microsoft session URL supplies the intent. If neither rule
+settles it, `infer-intent` asks Copilot's `microsoft-decision-1` for one choice
+using the host, path, title, tags and note. `classify` maps the pair to the table
+below and emits `{medium, intent, processor, reasoning}` for dispatch and reporting.
+
+An article classified as a session keeps `intent: session` even though its child
+processor is the generic article processor. For model-selected routes, the
+`infer-intent` step output records the upstream model, selected value and per-option
+probabilities. Conflicting explicit tag families, refused answers and ties fail
+classification before dispatch. See the [replay and measured results](tests/classify-pilot/README.md).
 
 | medium  | intent  | processor                              | Special handling                                   |
 |---------|---------|----------------------------------------|----------------------------------------------------|
@@ -403,9 +416,10 @@ pwsh -File tests/test-raindrop-cli-tokens.ps1
   re-fetching. Recipe markdown files use the existing overwrite-or-
   timestamp semantics in `save-recipe.ps1`.
 
-- **Adding a new content type**: write a new processor orchestration, add
-  a routing row to `skills/raindrop-router/SKILL.md`, and (optionally) add
-  a new template JSON to `$XDG_CONFIG_HOME/actionview/templates/`.
+- **Adding a new content type**: register its child orchestration, update the
+  URL/tag rules in `tools/scripts/route-rules.ps1`, the `infer-intent` choices in
+  `raindrop-processor.yaml` and the mapping in `tools/scripts/route-result.ps1`
+  as applicable. Add a labeled routing case and, if needed, an ActionView template.
 
 ## Auth + token storage details
 

@@ -1,0 +1,16 @@
+{"id":"archive-01","fingerprint":"a7d31bd00600adf9535c67b311700e94ad5304d88dcbd41ab7540cb229337ec5","expected":["video","generic","raindrop-video-generic-processor"],"decision":true}
+{"id":"archive-02","fingerprint":"3f314c666602109814326b54fe024c8ad573e302cbfe462b63ef2f6b2aca8f8b","expected":["video","recipe","raindrop-video-recipe-processor"],"decision":true}
+{"id":"archive-03","fingerprint":"6b67cbd04830873d79b09014a6f2eb2477f265175e1db4e918ea0b1750536135","expected":["article","generic","raindrop-article-generic-processor"],"decision":true}
+{"id":"archive-04","fingerprint":"792f6c7911ceaeafc666eeaf4bad0eac1818fa2dd1f8fd30f00bb731e4ce78a3","expected":["article","recipe","raindrop-article-recipe-processor"],"decision":true}
+{"id":"archive-05","fingerprint":"90fdbb2eee2e97504d0a0a362a4165225e4a47653e6f96240185328114865587","expected":["video","generic","raindrop-video-generic-processor"],"decision":true}
+{"id":"archive-06","fingerprint":"4e0b4c4755f3d766f0e2987fbd4ac71cf77686c31c912179d67af73892aec255","expected":["article","generic","raindrop-article-generic-processor"],"decision":true}
+{"id":"archive-07","fingerprint":"f2459d53403d69de0e8cebd1839a7813d3a8fbaed213ac31cedebb6dc07e6ac8","expected":["video","recipe","raindrop-video-recipe-processor"],"decision":true}
+{"id":"archive-08","fingerprint":"02514d48f2ca4fa695dee7de1fae648c77631358119a7dba91eb2022b571e3bd","expected":["article","generic","raindrop-article-generic-processor"],"decision":true}
+{"id":"tag-over-talk","input":{"url":"https://youtu.be/pilotA","title":"Architecture keynote","tags":"[\"CoOkInG\"]"},"expected":["video","recipe","raindrop-video-recipe-processor"],"decision":false}
+{"id":"article-tagged-talk","input":{"url":"https://example.org/notes","title":"Ingredients for an apple tart","tags":"[\"TaLk\"]"},"expected":["article","session","raindrop-article-generic-processor"],"decision":false}
+{"id":"session-url","input":{"url":"https://build.microsoft.com/sessions/pilot-brk","title":"Kitchen notes"},"expected":["video","session","raindrop-video-session-processor"],"decision":false}
+{"id":"tag-over-session-url","input":{"url":"https://learn.microsoft.com/en-us/sessions/pilot","title":"A recorded keynote","tags":"[\"food\"]"},"expected":["video","recipe","raindrop-video-recipe-processor"],"decision":false}
+{"id":"written-slides","input":{"url":"https://example.org/notes/42","title":"BRK205: presentation slides and speaker Q&A"},"expected":["article","session","raindrop-article-generic-processor"],"decision":true}
+{"id":"recorded-keynote","input":{"url":"https://player.vimeo.com/video/1234","title":"Opening keynote: Lessons from fifteen years of runtimes"},"expected":["video","session","raindrop-video-session-processor"],"decision":true}
+{"id":"ambiguous","input":{"url":"https://example.org/again","title":"One more thing","note":"Save for later."},"expected":["article","generic","raindrop-article-generic-processor"],"decision":true}
+{"id":"recipe-in-note","input":{"url":"https://example.org/sunday","title":"Sunday notes","note":"Grandma’s instructions: whisk 2 tbsp crème fraîche into the eggs.\nBake until just set."},"expected":["article","recipe","raindrop-article-recipe-processor"],"decision":true}

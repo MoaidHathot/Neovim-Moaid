@@ -77,11 +77,11 @@ steps:
          distinguishes TWO classes:
          - PRE-REGISTERED MCPs (declared globally in
            `config/Orchestra/orchestra.mcp.json`): `calendar`, `mail`,
-           `me`, `m365-copilot`, `teams`, `azdo`, `azure`, `icm-full`,
+           `me`, `m365-copilot`, `workiq`, `teams`, `azdo`, `azure`, `icm-full`,
            `icm-readonly`, `powerreview`, `debug-mcp`. Reference these
            by name only in step `mcps:` arrays — DO NOT add them to the
            orchestration's top-level `mcps:` block.
-         - INLINE-ONLY MCPs: `workiq`, `zakira`, `recall`, `context7`,
+         - INLINE-ONLY MCPs: `zakira`, `recall`, `context7`,
            `microsoft-learn`, `playwright`, `orchestra`, `filesystem`.
            These MUST be declared in the orchestration's top-level
            `mcps:` block with full configuration, copying the snippet
@@ -95,9 +95,9 @@ steps:
          `memory`, `state`, `browser`, `fs`. None exist. The endpoint
          `{{server.url}}/mcp/data` belongs to `orchestra` only; the
          endpoints `http://localhost:5113/mcp/<name>` belong to the
-         pre-registered M365 proxy MCPs (and you should not be writing
-         their endpoints — just reference the name). For Microsoft 365
-         work, prefer `workiq` (inline) for breadth and consistency,
+         M365 proxy. Work IQ connects directly through Orchestra; use
+         `mcps: [workiq]` without an inline definition. For Microsoft 365
+         work, prefer `workiq` for breadth and consistency,
          or one focused proxy MCP for narrower work — never both for
          the same concern. If the task needs a capability not in the
          catalog, surface that gap in the orchestration's
@@ -234,13 +234,13 @@ steps:
       10. No invented/undocumented properties.
       11. MCP usage matches the loaded `mcp-catalog` skill:
           - PRE-REGISTERED MCPs (`calendar`, `mail`, `me`,
-            `m365-copilot`, `teams`, `azdo`, `azure`, `icm-full`, `icm-readonly`,
+            `m365-copilot`, `workiq`, `teams`, `azdo`, `azure`, `icm-full`, `icm-readonly`,
             `powerreview`, `debug-mcp`) are referenced by name only in
             step `mcps:` arrays. Flag any orchestration that ALSO
             declares one of these in the top-level `mcps:` block as
             INVALID (redundant noise) and rewrite to remove the
             redundant declaration.
-          - INLINE-ONLY MCPs (`workiq`, `zakira`, `recall`, `context7`,
+          - INLINE-ONLY MCPs (`zakira`, `recall`, `context7`,
             `microsoft-learn`, `playwright`, `orchestra`, `filesystem`)
             MUST be declared in the top-level `mcps:` block with full
             configuration matching the catalog. Flag any inline-only
@@ -253,11 +253,8 @@ steps:
             `bing`, `google`, `docs`, `memory`, `state`, `browser`,
             `fs`). Flag any occurrence as INVALID and rewrite.
           - Endpoint discipline: `{{server.url}}/mcp/data` is
-            `orchestra` only; `http://localhost:5113/mcp/<name>` is the
-            pre-registered M365 proxy MCPs (the path segment must match
-            the MCP name exactly, AND such endpoints should not appear
-            in user-authored orchestrations because the proxy MCPs are
-            pre-registered). Flag any mismatch as INVALID.
+            `orchestra` only. Reference `workiq` and the M365 proxy
+            routes by their pre-registered names only.
 
       If valid, respond with: VALID
       Followed by the orchestration YAML unchanged.

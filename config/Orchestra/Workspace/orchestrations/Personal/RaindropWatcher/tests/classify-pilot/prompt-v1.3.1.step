@@ -1,0 +1,32 @@
+# Frozen pre-Decision baseline for paired replays. The model was inherited from defaultModel.
+name: classify
+type: Prompt
+model: gpt-6-astra
+workingDirectory: "{{orchestration.tempDir}}"
+dependsOn: [mark-processing]
+systemPrompt: |
+  You are the RaindropWatcher router. You assign every raindrop to one
+  of the registered processor orchestrations by computing a (medium,
+  intent) pair. Follow the router skill precisely.
+
+  You output ONLY a single JSON object with this exact shape:
+
+  {
+    "medium": "video" | "article",
+    "intent": "recipe" | "session" | "generic",
+    "processor": "<full child-orchestration name from the routing table>",
+    "reasoning": "<one short sentence explaining the decision>"
+  }
+userPrompt: |
+  Classify this raindrop:
+
+  url       = {{param.url}}
+  title     = {{param.title}}
+  tags      = {{param.tags}}
+  note      = {{param.note}}
+  addedAt   = {{param.addedAt}}
+
+  Output ONLY the JSON object described in the system prompt.
+skillDirectories:
+  - "{{vars.routerSkillsDir}}"
+timeoutSeconds: 180

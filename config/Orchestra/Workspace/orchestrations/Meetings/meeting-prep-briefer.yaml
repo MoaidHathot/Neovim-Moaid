@@ -98,14 +98,6 @@ defaultStepTimeoutSeconds: 1200
 timeoutSeconds: 2400
 
 mcps:
-  - name: workiq
-    type: local
-    command: npx
-    arguments:
-      - "-y"
-      - "@microsoft/workiq"
-      - mcp
-
   - name: zakira
     type: local
     command: dnx
